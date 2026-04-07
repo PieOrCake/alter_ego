@@ -39,6 +39,7 @@ If an LLM creating software upsets you, then perhaps this repo isn't for you. Mo
 ## Screenshots
 
 ![Equipment panel](screenshots/equipment.png)
+![Build panel](screenshots/build.png)
 ![Build library](screenshots/library.png)
 
 ## Requirements
