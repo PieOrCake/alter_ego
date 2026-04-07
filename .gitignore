@@ -1,0 +1,23 @@
+# Build
+build/
+*.dll
+*.lib
+*.o
+*.obj
+
+# Runtime user data (created by the addon)
+**/api_key.json
+**/account_data.json
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Dependencies are vendored from Crafty Legend boilerplate (lib/imgui, lib/nlohmann, include/nexus)
