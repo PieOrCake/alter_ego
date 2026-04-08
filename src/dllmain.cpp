@@ -104,6 +104,21 @@ static bool g_SkinShowUnowned = true;
 static bool g_SkinRefreshOwned = false;
 static bool g_SkinInitialized = false;
 
+// Portrait cache (for character screenshots in equipment panel)
+struct PortraitEntry {
+    std::string path;
+    int64_t modTime; // file last-write time for cache busting
+};
+static std::unordered_map<std::string, PortraitEntry> s_portraitPathCache;
+static std::unordered_set<std::string> s_portraitMissing;
+
+static int64_t GetFileModTime(const std::string& path) {
+    try {
+        auto ftime = std::filesystem::last_write_time(path);
+        return ftime.time_since_epoch().count();
+    } catch (...) { return 0; }
+}
+
 // Shopping list state
 struct SkinShopEntry {
     uint32_t skinId;
@@ -171,7 +186,7 @@ static std::string g_CurrentCharName; // currently logged-in character name from
 static int g_LibSelectedIdx = -1;
 static int g_LibFilterMode = 0;        // 0=All, 1=PvE, 2=WvW, 3=PvP, 4=Raid, 5=Fractal
 static char g_LibSearchBuf[128] = "";
-static char g_LibImportBuf[512] = "";
+static char g_LibImportBuf[4096] = "";
 static char g_LibImportName[128] = "";
 static int g_LibImportMode = 0;        // GameMode for import
 static bool g_LibShowImport = false;
@@ -756,6 +771,9 @@ void AddonRender();
 void AddonOptions();
 void OnMumbleIdentityUpdated(void* eventArgs);
 
+// Forward declarations
+static void RenderSectionHeader(const char* label, ImVec4 color, const char* suffix = nullptr);
+
 // Icon size for item icons
 static const float ICON_SIZE = 40.0f;
 static const float SMALL_ICON_SIZE = 24.0f;
@@ -901,11 +919,10 @@ static void RenderEquipmentSlot(const AlterEgo::EquipmentItem* eq, const char* s
         if (tex && tex->Resource) {
             ImVec4 borderColor = GetRarityColor(rarity);
             ImVec2 pos = ImGui::GetCursorScreenPos();
-            ImGui::GetWindowDrawList()->AddRect(
-                ImVec2(pos.x - 1, pos.y - 1),
-                ImVec2(pos.x + ICON_SIZE + 1, pos.y + ICON_SIZE + 1),
-                ImGui::ColorConvertFloat4ToU32(borderColor), 0.0f, 0, 2.0f);
             ImGui::Image(tex->Resource, ImVec2(ICON_SIZE, ICON_SIZE));
+            ImGui::GetWindowDrawList()->AddRect(
+                pos, ImVec2(pos.x + ICON_SIZE, pos.y + ICON_SIZE),
+                ImGui::ColorConvertFloat4ToU32(borderColor), 0.0f, 0, 2.0f);
         } else {
             ImVec4 col = GetRarityColor(rarity);
             ImVec2 pos = ImGui::GetCursorScreenPos();
@@ -1208,10 +1225,11 @@ static void RenderEquipRowReverse(const AlterEgo::Character& ch, const char* slo
         }
     }
 
-    // Right-align: push label to the right so icon ends at the right edge
+    // Right-align: push label to the right so icon ends near the right edge
     float colW = ImGui::GetContentRegionAvail().x;
     float textW = ImGui::CalcTextSize(name.c_str()).x;
-    float totalW = textW + 4.0f + ICON_SIZE; // text + gap + icon
+    float borderPad = 3.0f; // room for rarity border overhang
+    float totalW = textW + 4.0f + ICON_SIZE + borderPad; // text + gap + icon + border
     float offset = colW - totalW;
     if (offset > 0) ImGui::SetCursorPosX(ImGui::GetCursorPosX() + offset);
 
@@ -1431,7 +1449,7 @@ static void RenderEquipmentPanel(const AlterEgo::Character& ch) {
             bool active = (tab == t);
             bool isActiveTab = (ch.active_equipment_tab == t);
             if (isActiveTab) label += " *";
-            if (active) ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.3f, 0.5f, 0.7f, 1.0f));
+            if (active) ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.35f, 0.30f, 0.14f, 1.0f));
             ImGui::PushID(t);
             if (ImGui::SmallButton(label.c_str())) {
                 g_SelectedEquipTab = t;
@@ -1447,18 +1465,23 @@ static void RenderEquipmentPanel(const AlterEgo::Character& ch) {
     // Record start position for silhouette overlay
     ImVec2 panelStart = ImGui::GetCursorScreenPos();
 
-    // Main layout: Left (Armor + Weapons) | Right (Trinkets)
-    if (ImGui::BeginTable("##equip_main", 2, ImGuiTableFlags_None)) {
-        ImGui::TableSetupColumn("##left_col", ImGuiTableColumnFlags_WidthStretch, 1.0f);
-        ImGui::TableSetupColumn("##right_col", ImGuiTableColumnFlags_WidthStretch, 0.85f);
+    // Split draw list: channel 0 = portrait background, channel 1 = equipment foreground
+    ImDrawListSplitter splitter;
+    splitter.Split(ImGui::GetWindowDrawList(), 2);
+    splitter.SetCurrentChannel(ImGui::GetWindowDrawList(), 1); // draw content on top
 
-        ImGui::TableNextRow();
+    // Main layout: Left (Armor + Weapons) | Right (Trinkets)
+    {
+        float totalW = ImGui::GetContentRegionAvail().x;
+        float gap = 8.0f;
+        float pad = 6.0f;
+        float leftW = totalW * 0.54f;
 
         // ===== LEFT COLUMN: Armor + Weapons =====
-        ImGui::TableNextColumn();
+        ImGui::BeginGroup();
+        ImGui::Indent(pad);
 
-        ImGui::TextColored(ImVec4(0.7f, 0.7f, 0.7f, 1.0f), "Armor");
-        ImGui::Separator();
+        RenderSectionHeader("Armor", ImVec4(0.70f, 0.58f, 0.20f, 1.0f));
         RenderEquipRow(ch, "Helm", tab);
         RenderEquipRow(ch, "Shoulders", tab);
         RenderEquipRow(ch, "Coat", tab);
@@ -1468,30 +1491,45 @@ static void RenderEquipmentPanel(const AlterEgo::Character& ch) {
 
         ImGui::Spacing();
 
-        ImGui::TextColored(ImVec4(0.7f, 0.7f, 0.7f, 1.0f), "Weapons");
-        ImGui::Separator();
-        if (ImGui::BeginTable("##wpn_sets", 2, ImGuiTableFlags_None)) {
-            ImGui::TableSetupColumn("##setA", ImGuiTableColumnFlags_WidthStretch);
-            ImGui::TableSetupColumn("##setB", ImGuiTableColumnFlags_WidthStretch);
-            ImGui::TableNextRow();
-            ImGui::TableNextColumn(); RenderEquipRow(ch, "WeaponA1", tab);
-            ImGui::TableNextColumn(); RenderEquipRow(ch, "WeaponB1", tab);
-            ImGui::TableNextRow();
-            ImGui::TableNextColumn(); RenderEquipRow(ch, "WeaponA2", tab);
-            ImGui::TableNextColumn(); RenderEquipRow(ch, "WeaponB2", tab);
-            ImGui::EndTable();
+        RenderSectionHeader("Weapons", ImVec4(0.70f, 0.58f, 0.20f, 1.0f));
+        {
+            float halfW = (leftW - pad * 2 - gap - 8.0f) * 0.5f;
+            ImGui::BeginGroup();
+            ImGui::PushItemWidth(halfW);
+            RenderEquipRow(ch, "WeaponA1", tab);
+            RenderEquipRow(ch, "WeaponA2", tab);
+            ImGui::PopItemWidth();
+            ImGui::EndGroup();
+            ImGui::SameLine(0, 8.0f);
+            ImGui::BeginGroup();
+            ImGui::PushItemWidth(halfW);
+            RenderEquipRow(ch, "WeaponB1", tab);
+            RenderEquipRow(ch, "WeaponB2", tab);
+            ImGui::PopItemWidth();
+            ImGui::EndGroup();
         }
+
+        ImGui::Unindent(pad);
+        ImGui::EndGroup();
+
+        ImGui::SameLine(leftW + gap);
 
         // ===== RIGHT COLUMN: Trinkets =====
-        ImGui::TableNextColumn();
+        ImGui::BeginGroup();
 
         {
-            float colW = ImGui::GetContentRegionAvail().x;
+            float colW = totalW - leftW - gap;
             float headerW = ImGui::CalcTextSize("Trinkets").x;
-            ImGui::SetCursorPosX(ImGui::GetCursorPosX() + colW - headerW);
-            ImGui::TextColored(ImVec4(0.7f, 0.7f, 0.7f, 1.0f), "Trinkets");
+            ImGui::SetCursorPosX(ImGui::GetCursorPosX() + colW - headerW - pad);
+            ImGui::TextColored(ImVec4(0.70f, 0.58f, 0.20f, 1.0f), "Trinkets");
+            // Accent underline (right-aligned)
+            ImVec2 pos = ImGui::GetCursorScreenPos();
+            ImGui::GetWindowDrawList()->AddLine(
+                ImVec2(pos.x + colW * 0.4f, pos.y),
+                ImVec2(pos.x + colW - pad, pos.y),
+                ImGui::ColorConvertFloat4ToU32(ImVec4(0.70f, 0.58f, 0.20f, 0.30f)), 1.0f);
+            ImGui::Spacing();
         }
-        ImGui::Separator();
         RenderEquipRowReverse(ch, "Backpack", tab);
         RenderEquipRowReverse(ch, "Accessory1", tab);
         RenderEquipRowReverse(ch, "Accessory2", tab);
@@ -1500,72 +1538,157 @@ static void RenderEquipmentPanel(const AlterEgo::Character& ch) {
         RenderEquipRowReverse(ch, "Ring2", tab);
         RenderEquipRowReverse(ch, "Relic", tab);
 
-        ImGui::EndTable();
+        ImGui::EndGroup();
     }
 
-    // Draw race concept art centered in the equipment area as a semi-transparent overlay
+    // Draw character portrait (user screenshot) or race concept art as overlay
     {
         ImVec2 panelEnd = ImGui::GetCursorScreenPos();
         float panelH = panelEnd.y - panelStart.y;
         float panelW = ImGui::GetContentRegionAvail().x;
 
-        // Race concept art from GW2 wiki (CC BY-NC-SA 3.0)
-        static const std::unordered_map<std::string, std::pair<uint32_t, std::string>> RACE_ART = {
-            {"Asura",   {8000001, "https://wiki.guildwars2.com/images/3/3f/Asura_01_concept_art_%28white%29.jpg"}},
-            {"Charr",   {8000002, "https://wiki.guildwars2.com/images/5/55/Charr_01_concept_art_%28white%29.jpg"}},
-            {"Human",   {8000003, "https://wiki.guildwars2.com/images/e/e2/Human_01_concept_art_%28white%29.jpg"}},
-            {"Norn",    {8000004, "https://wiki.guildwars2.com/images/a/a7/Norn_01_concept_art_%28white%29.jpg"}},
-            {"Sylvari", {8000005, "https://wiki.guildwars2.com/images/5/54/Sylvari_01_concept_art_%28white%29.jpg"}}
-        };
+        Texture_t* overlayTex = nullptr;
+        float overlayAspect = 0.75f; // default portrait aspect (w/h)
+        ImU32 overlayTint = IM_COL32(255, 255, 255, 35); // faint for race art
 
-        auto artIt = RACE_ART.find(ch.race);
-        if (artIt != RACE_ART.end()) {
-            uint32_t artId = artIt->second.first;
-            const std::string& artUrl = artIt->second.second;
+        // Check for user portrait: AlterEgo/portraits/<Character Name>.{png,jpg,jpeg}
+        {
 
-            Texture_t* tex = AlterEgo::IconManager::GetIcon(artId);
-            if (tex && tex->Resource) {
-                // Scale art to fit panel height, maintain aspect ratio (these are portrait images ~3:4)
-                float artAspect = 0.75f; // width/height approximate
-                float artH = panelH * 0.90f;
-                float artW = artH * artAspect;
-                if (artW > panelW * 0.6f) {
-                    artW = panelW * 0.6f;
-                    artH = artW / artAspect;
+            auto cacheIt = s_portraitPathCache.find(ch.name);
+            if (cacheIt != s_portraitPathCache.end()) {
+                // Re-check mod time to detect replaced files
+                int64_t curMod = GetFileModTime(cacheIt->second.path);
+                if (curMod != cacheIt->second.modTime && curMod != 0) {
+                    cacheIt->second.modTime = curMod;
                 }
-                if (artH > 40.0f) {
-                    ImVec2 artPos(
-                        panelStart.x + panelW * 0.5f - artW * 0.5f,
-                        panelStart.y + panelH * 0.5f - artH * 0.5f
-                    );
-                    ImGui::GetWindowDrawList()->AddImage(
-                        tex->Resource,
-                        artPos,
-                        ImVec2(artPos.x + artW, artPos.y + artH),
-                        ImVec2(0, 0), ImVec2(1, 1),
-                        IM_COL32(255, 255, 255, 35) // Faint overlay
-                    );
+                // Include mod time in texture ID to bust Nexus cache on file change
+                std::string texId = "AE_PORTRAIT_" + ch.name + "_" + std::to_string(cacheIt->second.modTime);
+                try {
+                    overlayTex = APIDefs->Textures_GetOrCreateFromFile(texId.c_str(), cacheIt->second.path.c_str());
+                } catch (...) {}
+                if (overlayTex && overlayTex->Resource) {
+                    if (overlayTex->Height > 0)
+                        overlayAspect = (float)overlayTex->Width / (float)overlayTex->Height;
+                    overlayTint = IM_COL32(255, 255, 255, 55); // slightly more visible than race art
                 }
-            } else {
-                AlterEgo::IconManager::RequestIcon(artId, artUrl);
+            } else if (s_portraitMissing.find(ch.name) == s_portraitMissing.end()) {
+                // Haven't checked yet — scan for portrait file (ensure dir exists)
+                std::string portraitDir = AlterEgo::GW2API::GetDataDirectory() + "/portraits";
+                std::filesystem::create_directories(portraitDir);
+                static const char* exts[] = { ".png", ".jpg", ".jpeg" };
+                bool found = false;
+                for (const char* ext : exts) {
+                    std::string path = portraitDir + "/" + ch.name + ext;
+                    DWORD attrs = GetFileAttributesA(path.c_str());
+                    if (attrs != INVALID_FILE_ATTRIBUTES && !(attrs & FILE_ATTRIBUTE_DIRECTORY)) {
+                        int64_t modTime = GetFileModTime(path);
+                        s_portraitPathCache[ch.name] = { path, modTime };
+                        found = true;
+                        break;
+                    }
+                }
+                if (!found) {
+                    s_portraitMissing.insert(ch.name);
+                }
             }
         }
+
+        // Fallback: race concept art
+        if (!overlayTex || !overlayTex->Resource) {
+            static const std::unordered_map<std::string, std::pair<uint32_t, std::string>> RACE_ART = {
+                {"Asura",   {8000001, "https://wiki.guildwars2.com/images/3/3f/Asura_01_concept_art_%28white%29.jpg"}},
+                {"Charr",   {8000002, "https://wiki.guildwars2.com/images/5/55/Charr_01_concept_art_%28white%29.jpg"}},
+                {"Human",   {8000003, "https://wiki.guildwars2.com/images/e/e2/Human_01_concept_art_%28white%29.jpg"}},
+                {"Norn",    {8000004, "https://wiki.guildwars2.com/images/a/a7/Norn_01_concept_art_%28white%29.jpg"}},
+                {"Sylvari", {8000005, "https://wiki.guildwars2.com/images/5/54/Sylvari_01_concept_art_%28white%29.jpg"}}
+            };
+
+            auto artIt = RACE_ART.find(ch.race);
+            if (artIt != RACE_ART.end()) {
+                uint32_t artId = artIt->second.first;
+                const std::string& artUrl = artIt->second.second;
+                overlayTex = AlterEgo::IconManager::GetIcon(artId);
+                if (!overlayTex || !overlayTex->Resource) {
+                    AlterEgo::IconManager::RequestIcon(artId, artUrl);
+                }
+                overlayAspect = 0.75f;
+                overlayTint = IM_COL32(255, 255, 255, 35);
+            }
+        }
+
+        // Draw the overlay image on the background channel
+        splitter.SetCurrentChannel(ImGui::GetWindowDrawList(), 0);
+        if (overlayTex && overlayTex->Resource && panelH > 40.0f) {
+            float artH = panelH * 0.90f;
+            float artW = artH * overlayAspect;
+            if (artW > panelW * 0.6f) {
+                artW = panelW * 0.6f;
+                artH = artW / overlayAspect;
+            }
+            ImVec2 artPos(
+                panelStart.x + panelW * 0.5f - artW * 0.5f,
+                panelStart.y + panelH * 0.5f - artH * 0.5f
+            );
+            ImDrawList* dl = ImGui::GetWindowDrawList();
+            ImVec2 artMax(artPos.x + artW, artPos.y + artH);
+
+            dl->AddImage(
+                overlayTex->Resource,
+                artPos, artMax,
+                ImVec2(0, 0), ImVec2(1, 1),
+                overlayTint
+            );
+
+            // Vignette: gradient edge fade into window background
+            {
+                ImVec4 bgF = ImGui::GetStyleColorVec4(ImGuiCol_WindowBg);
+                ImU32 bg = ImGui::ColorConvertFloat4ToU32(bgF);
+                ImU32 clear = ImGui::ColorConvertFloat4ToU32(ImVec4(bgF.x, bgF.y, bgF.z, 0.0f));
+                float fadeX = artW * 0.25f; // horizontal fade width
+                float fadeY = artH * 0.20f; // vertical fade height
+
+                // Left fade
+                dl->AddRectFilledMultiColor(
+                    artPos, ImVec2(artPos.x + fadeX, artMax.y),
+                    bg, clear, clear, bg);
+                // Right fade
+                dl->AddRectFilledMultiColor(
+                    ImVec2(artMax.x - fadeX, artPos.y), artMax,
+                    clear, bg, bg, clear);
+                // Top fade
+                dl->AddRectFilledMultiColor(
+                    artPos, ImVec2(artMax.x, artPos.y + fadeY),
+                    bg, bg, clear, clear);
+                // Bottom fade
+                dl->AddRectFilledMultiColor(
+                    ImVec2(artPos.x, artMax.y - fadeY), artMax,
+                    clear, clear, bg, bg);
+            }
+        }
+        splitter.Merge(ImGui::GetWindowDrawList());
     }
 
     ImGui::Spacing();
 
     // ===== AQUATIC: Aquabreather + Aquatic Weapons =====
-    ImGui::TextColored(ImVec4(0.7f, 0.7f, 0.7f, 1.0f), "Aquatic");
-    ImGui::Separator();
+    ImGui::Indent(6.0f);
+    RenderSectionHeader("Aquatic", ImVec4(0.70f, 0.58f, 0.20f, 1.0f));
     RenderEquipRow(ch, "HelmAquatic", tab);
-    if (ImGui::BeginTable("##aq_wpn", 2, ImGuiTableFlags_None)) {
-        ImGui::TableSetupColumn("##aqA", ImGuiTableColumnFlags_WidthStretch);
-        ImGui::TableSetupColumn("##aqB", ImGuiTableColumnFlags_WidthStretch);
-        ImGui::TableNextRow();
-        ImGui::TableNextColumn(); RenderEquipRow(ch, "WeaponAquaticA", tab);
-        ImGui::TableNextColumn(); RenderEquipRow(ch, "WeaponAquaticB", tab);
-        ImGui::EndTable();
+    {
+        float halfW = (ImGui::GetContentRegionAvail().x - 8.0f) * 0.5f;
+        ImGui::BeginGroup();
+        ImGui::PushItemWidth(halfW);
+        RenderEquipRow(ch, "WeaponAquaticA", tab);
+        ImGui::PopItemWidth();
+        ImGui::EndGroup();
+        ImGui::SameLine(0, 8.0f);
+        ImGui::BeginGroup();
+        ImGui::PushItemWidth(halfW);
+        RenderEquipRow(ch, "WeaponAquaticB", tab);
+        ImGui::PopItemWidth();
+        ImGui::EndGroup();
     }
+    ImGui::Unindent(6.0f);
 }
 
 // Render the build panel
@@ -1662,7 +1785,7 @@ static void RenderBuildPanel(const AlterEgo::Character& ch) {
         if (bt.is_active) label += " *";
 
         bool active = (g_SelectedBuildTab == i);
-        if (active) ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.3f, 0.5f, 0.7f, 1.0f));
+        if (active) ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.35f, 0.30f, 0.14f, 1.0f));
         if (ImGui::SmallButton(label.c_str())) {
             g_SelectedBuildTab = i;
         }
@@ -2145,6 +2268,122 @@ static const char* GameModeLabel(AlterEgo::GameMode m) {
         case AlterEgo::GameMode::Raid:    return "Raid";
         case AlterEgo::GameMode::Fractal: return "Fractal";
         default:                          return "Other";
+    }
+}
+
+// --- Shared Build Templates ---
+
+static nlohmann::json ExportBuildToJson(const AlterEgo::SavedBuild& build) {
+    nlohmann::json j;
+    j["v"] = 1;
+    j["name"] = build.name;
+    j["chat_link"] = build.chat_link;
+    j["profession"] = build.profession;
+    j["game_mode"] = GameModeLabel(build.game_mode);
+    if (!build.notes.empty()) j["notes"] = build.notes;
+
+    // Gear
+    if (!build.gear.empty()) {
+        nlohmann::json gear = nlohmann::json::object();
+        for (const auto& [slot, gs] : build.gear) {
+            nlohmann::json s;
+            if (gs.stat_id != 0) s["stat_id"] = gs.stat_id;
+            if (!gs.stat_name.empty()) s["stat"] = gs.stat_name;
+            if (!gs.rune.empty()) s["rune"] = gs.rune;
+            if (!gs.sigil.empty()) s["sigil"] = gs.sigil;
+            if (!gs.infusion.empty()) s["infusion"] = gs.infusion;
+            if (!gs.weapon_type.empty()) s["weapon"] = gs.weapon_type;
+            if (!s.empty()) gear[slot] = s;
+        }
+        if (!gear.empty()) j["gear"] = gear;
+    }
+    if (!build.rune_name.empty()) j["rune"] = build.rune_name;
+    if (!build.relic_name.empty()) j["relic"] = build.relic_name;
+
+    return j;
+}
+
+static std::string ExportBuildToBase64(const AlterEgo::SavedBuild& build) {
+    std::string json = ExportBuildToJson(build).dump();
+    std::string b64 = AlterEgo::ChatLink::Base64Encode(
+        (const uint8_t*)json.data(), json.size());
+    return "AE1:" + b64;
+}
+
+static AlterEgo::GameMode GameModeFromLabel(const std::string& label) {
+    if (label == "PvE")     return AlterEgo::GameMode::PvE;
+    if (label == "WvW")     return AlterEgo::GameMode::WvW;
+    if (label == "PvP")     return AlterEgo::GameMode::PvP;
+    if (label == "Raid")    return AlterEgo::GameMode::Raid;
+    if (label == "Fractal") return AlterEgo::GameMode::Fractal;
+    return AlterEgo::GameMode::Other;
+}
+
+// Returns true if input is a shared build template (JSON or AE1: base64)
+// On success, populates 'out' with the imported build
+static bool ImportSharedBuild(const std::string& input, AlterEgo::SavedBuild& out, std::string& error) {
+    std::string jsonStr;
+
+    // Detect format
+    if (input.size() > 4 && input.substr(0, 4) == "AE1:") {
+        // Base64 encoded shared build
+        auto bytes = AlterEgo::ChatLink::Base64Decode(input.substr(4));
+        if (bytes.empty()) { error = "Failed to decode shared build data."; return false; }
+        jsonStr.assign(bytes.begin(), bytes.end());
+    } else if (!input.empty() && input[0] == '{') {
+        // Raw JSON
+        jsonStr = input;
+    } else {
+        return false; // Not a shared build format
+    }
+
+    try {
+        auto j = nlohmann::json::parse(jsonStr);
+        if (!j.contains("v") || !j.contains("chat_link") || !j.contains("name")) {
+            error = "Invalid shared build: missing required fields.";
+            return false;
+        }
+
+        std::string chatLink = j["chat_link"].get<std::string>();
+        std::string name = j["name"].get<std::string>();
+        std::string profession = j.value("profession", "");
+        AlterEgo::GameMode mode = GameModeFromLabel(j.value("game_mode", "PvE"));
+
+        // Need palette data to decode the build
+        if (!profession.empty() && !AlterEgo::GW2API::HasPaletteData(profession)) {
+            AlterEgo::GW2API::FetchProfessionPaletteAsync(profession);
+            error = "Loading " + profession + " skill data... try again in a moment.";
+            return false;
+        }
+
+        if (!DecodeBuildLink(chatLink, name, mode, out)) {
+            error = "Failed to decode build chat link.";
+            return false;
+        }
+
+        if (j.contains("notes")) out.notes = j["notes"].get<std::string>();
+
+        // Restore gear data
+        if (j.contains("gear")) {
+            for (auto& [slot, gs_json] : j["gear"].items()) {
+                AlterEgo::BuildGearSlot gs;
+                gs.slot = slot;
+                if (gs_json.contains("stat_id")) gs.stat_id = gs_json["stat_id"].get<uint32_t>();
+                if (gs_json.contains("stat")) gs.stat_name = gs_json["stat"].get<std::string>();
+                if (gs_json.contains("rune")) gs.rune = gs_json["rune"].get<std::string>();
+                if (gs_json.contains("sigil")) gs.sigil = gs_json["sigil"].get<std::string>();
+                if (gs_json.contains("infusion")) gs.infusion = gs_json["infusion"].get<std::string>();
+                if (gs_json.contains("weapon")) gs.weapon_type = gs_json["weapon"].get<std::string>();
+                out.gear[slot] = gs;
+            }
+        }
+        if (j.contains("rune")) out.rune_name = j["rune"].get<std::string>();
+        if (j.contains("relic")) out.relic_name = j["relic"].get<std::string>();
+
+        return true;
+    } catch (const std::exception& e) {
+        error = std::string("Failed to parse shared build: ") + e.what();
+        return false;
     }
 }
 
@@ -3920,6 +4159,21 @@ static void RenderSavedBuildPreview(const AlterEgo::SavedBuild& build) {
         if (APIDefs) APIDefs->GUI_SendAlert("Build link copied to clipboard!");
     }
     ImGui::SameLine();
+    if (ImGui::Button("Share")) {
+        ImGui::OpenPopup("Share Build##popup");
+    }
+    if (ImGui::BeginPopup("Share Build##popup")) {
+        if (ImGui::Selectable("Copy as compact code")) {
+            CopyToClipboard(ExportBuildToBase64(build));
+            if (APIDefs) APIDefs->GUI_SendAlert("Shared build copied to clipboard!");
+        }
+        if (ImGui::Selectable("Copy as JSON")) {
+            CopyToClipboard(ExportBuildToJson(build).dump(2));
+            if (APIDefs) APIDefs->GUI_SendAlert("Shared build JSON copied to clipboard!");
+        }
+        ImGui::EndPopup();
+    }
+    ImGui::SameLine();
     ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.6f, 0.15f, 0.15f, 1.0f));
     ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.8f, 0.2f, 0.2f, 1.0f));
     if (ImGui::Button("Delete")) {
@@ -3965,7 +4219,7 @@ static void RenderBuildLibrary() {
     // Import panel
     if (g_LibShowImport) {
         ImGui::Separator();
-        ImGui::Text("Paste build template chat link:");
+        ImGui::Text("Paste chat link, shared build code (AE1:...), or JSON:");
         ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x);
         ImGui::InputText("##import_link", g_LibImportBuf, sizeof(g_LibImportBuf));
 
@@ -3979,48 +4233,65 @@ static void RenderBuildLibrary() {
         ImGui::SetNextItemWidth(100.0f);
         ImGui::Combo("##import_mode", &g_LibImportMode, GameModeImportNames,
                       IM_ARRAYSIZE(GameModeImportNames));
+        ImGui::SameLine();
+        ImGui::TextColored(ImVec4(0.5f, 0.5f, 0.5f, 1.0f), "(for chat links)");
 
         ImGui::SameLine();
         if (ImGui::Button("Import")) {
-            std::string link(g_LibImportBuf);
+            std::string input(g_LibImportBuf);
             std::string name(g_LibImportName);
-            if (link.empty()) {
-                g_LibImportError = "Paste a chat link first.";
-            } else if (name.empty()) {
-                g_LibImportError = "Enter a build name.";
+            if (input.empty()) {
+                g_LibImportError = "Paste a build first.";
             } else {
-                // Detect link type
-                auto linkType = AlterEgo::ChatLink::DetectType(link);
-                if (linkType != AlterEgo::LINK_BUILD) {
-                    g_LibImportError = "Not a build template link.";
+                // Try shared build format first (AE1: base64 or JSON)
+                AlterEgo::SavedBuild sharedBuild;
+                std::string sharedError;
+                if (ImportSharedBuild(input, sharedBuild, sharedError)) {
+                    AlterEgo::GW2API::AddSavedBuild(std::move(sharedBuild));
+                    g_LibShowImport = false;
+                    g_LibImportBuf[0] = '\0';
+                    g_LibImportName[0] = '\0';
+                    g_LibImportError.clear();
+                    g_LibSelectedIdx = (int)AlterEgo::GW2API::GetSavedBuilds().size() - 1;
+                    g_LibDetailsFetched = false;
+                    if (APIDefs) APIDefs->GUI_SendAlert("Shared build imported!");
+                } else if (!sharedError.empty()) {
+                    // Shared format detected but failed
+                    g_LibImportError = sharedError;
                 } else {
-                    // First decode to get profession, then ensure palette data
-                    AlterEgo::DecodedBuildLink raw;
-                    if (!AlterEgo::ChatLink::DecodeBuild(link, raw)) {
-                        g_LibImportError = "Failed to decode build link.";
+                    // Not a shared format — try as chat link
+                    if (name.empty()) {
+                        g_LibImportError = "Enter a build name (required for chat links).";
                     } else {
-                        std::string prof = ProfessionFromCode(raw.profession);
-                        if (prof == "Unknown") {
-                            g_LibImportError = "Unknown profession in link.";
+                        auto linkType = AlterEgo::ChatLink::DetectType(input);
+                        if (linkType != AlterEgo::LINK_BUILD) {
+                            g_LibImportError = "Not a recognized build format.";
                         } else {
-                            // Ensure palette data is available
-                            if (!AlterEgo::GW2API::HasPaletteData(prof)) {
-                                AlterEgo::GW2API::FetchProfessionPaletteAsync(prof);
-                                g_LibImportError = "Loading " + prof + " skill data... try again in a moment.";
+                            AlterEgo::DecodedBuildLink raw;
+                            if (!AlterEgo::ChatLink::DecodeBuild(input, raw)) {
+                                g_LibImportError = "Failed to decode build link.";
                             } else {
-                                AlterEgo::SavedBuild build;
-                                if (DecodeBuildLink(link, name,
-                                        GameModeFromIndex(g_LibImportMode), build)) {
-                                    AlterEgo::GW2API::AddSavedBuild(std::move(build));
-                                    g_LibShowImport = false;
-                                    g_LibImportBuf[0] = '\0';
-                                    g_LibImportName[0] = '\0';
-                                    g_LibImportError.clear();
-                                    g_LibSelectedIdx = (int)AlterEgo::GW2API::GetSavedBuilds().size() - 1;
-                                    g_LibDetailsFetched = false;
-                                    if (APIDefs) APIDefs->GUI_SendAlert("Build imported!");
+                                std::string prof = ProfessionFromCode(raw.profession);
+                                if (prof == "Unknown") {
+                                    g_LibImportError = "Unknown profession in link.";
+                                } else if (!AlterEgo::GW2API::HasPaletteData(prof)) {
+                                    AlterEgo::GW2API::FetchProfessionPaletteAsync(prof);
+                                    g_LibImportError = "Loading " + prof + " skill data... try again in a moment.";
                                 } else {
-                                    g_LibImportError = "Failed to decode build.";
+                                    AlterEgo::SavedBuild build;
+                                    if (DecodeBuildLink(input, name,
+                                            GameModeFromIndex(g_LibImportMode), build)) {
+                                        AlterEgo::GW2API::AddSavedBuild(std::move(build));
+                                        g_LibShowImport = false;
+                                        g_LibImportBuf[0] = '\0';
+                                        g_LibImportName[0] = '\0';
+                                        g_LibImportError.clear();
+                                        g_LibSelectedIdx = (int)AlterEgo::GW2API::GetSavedBuilds().size() - 1;
+                                        g_LibDetailsFetched = false;
+                                        if (APIDefs) APIDefs->GUI_SendAlert("Build imported!");
+                                    } else {
+                                        g_LibImportError = "Failed to decode build.";
+                                    }
                                 }
                             }
                         }
@@ -4076,21 +4347,71 @@ static void RenderBuildLibrary() {
                 if (nameLower.find(search) == std::string::npos) continue;
             }
 
-            // Profession group header
+            // Profession group header with gradient background
             if (b.profession != lastProf) {
                 if (!lastProf.empty()) ImGui::Spacing();
                 ImVec4 profColor = GetProfessionColor(b.profession);
+
+                ImVec2 hdrPos = ImGui::GetCursorScreenPos();
+                float hdrW = ImGui::GetContentRegionAvail().x;
+                float hdrH = ImGui::GetTextLineHeightWithSpacing() + 2.0f;
+                ImDrawList* dl = ImGui::GetWindowDrawList();
+                ImU32 hdrLeft = ImGui::ColorConvertFloat4ToU32(
+                    ImVec4(profColor.x * 0.25f, profColor.y * 0.25f, profColor.z * 0.25f, 0.60f));
+                ImU32 hdrRight = IM_COL32(0, 0, 0, 0);
+                dl->AddRectFilledMultiColor(
+                    hdrPos, ImVec2(hdrPos.x + hdrW, hdrPos.y + hdrH),
+                    hdrLeft, hdrRight, hdrRight, hdrLeft);
+                // Gold underline
+                dl->AddLine(
+                    ImVec2(hdrPos.x, hdrPos.y + hdrH),
+                    ImVec2(hdrPos.x + hdrW * 0.6f, hdrPos.y + hdrH),
+                    ImGui::ColorConvertFloat4ToU32(ImVec4(profColor.x, profColor.y, profColor.z, 0.35f)), 1.0f);
+
                 ImGui::TextColored(profColor, "%s", b.profession.c_str());
-                ImGui::Separator();
                 lastProf = b.profession;
             }
 
             ImGui::PushID(i);
             bool selected = (g_LibSelectedIdx == i);
+            ImVec4 bProfColor = GetProfessionColor(b.profession);
+
+            // Profession-tinted selection highlight
+            ImVec4 bSelCol(bProfColor.x * 0.35f, bProfColor.y * 0.35f, bProfColor.z * 0.35f, 0.65f);
+            ImVec4 bHovCol(bProfColor.x * 0.25f, bProfColor.y * 0.25f, bProfColor.z * 0.25f, 0.50f);
+            ImVec4 bActCol(bProfColor.x * 0.40f, bProfColor.y * 0.40f, bProfColor.z * 0.40f, 0.75f);
+            ImGui::PushStyleColor(ImGuiCol_Header, bSelCol);
+            ImGui::PushStyleColor(ImGuiCol_HeaderHovered, bHovCol);
+            ImGui::PushStyleColor(ImGuiCol_HeaderActive, bActCol);
+
             if (ImGui::Selectable("##build", selected, 0, ImVec2(0, 32))) {
                 g_LibSelectedIdx = i;
                 g_LibDetailsFetched = false;
             }
+
+            // Profession-colored left accent bar
+            {
+                ImVec2 bRMin = ImGui::GetItemRectMin();
+                ImVec2 bRMax = ImGui::GetItemRectMax();
+                ImDrawList* dl = ImGui::GetWindowDrawList();
+                float barW = 3.0f;
+                ImU32 barCol = ImGui::ColorConvertFloat4ToU32(
+                    ImVec4(bProfColor.x, bProfColor.y, bProfColor.z,
+                           selected ? 1.0f : (ImGui::IsItemHovered() ? 0.7f : 0.35f)));
+                dl->AddRectFilled(
+                    ImVec2(bRMin.x, bRMin.y + 1), ImVec2(bRMin.x + barW, bRMax.y - 1),
+                    barCol, 1.0f);
+                if (selected) {
+                    ImU32 glowCol = ImGui::ColorConvertFloat4ToU32(
+                        ImVec4(bProfColor.x, bProfColor.y, bProfColor.z, 0.08f));
+                    dl->AddRectFilledMultiColor(
+                        ImVec2(bRMin.x + barW, bRMin.y),
+                        ImVec2(bRMin.x + barW + 30.0f, bRMax.y),
+                        glowCol, IM_COL32(0, 0, 0, 0), IM_COL32(0, 0, 0, 0), glowCol);
+                }
+            }
+
+            ImGui::PopStyleColor(3);
 
             // Record rect for drag-and-drop
             ImVec2 rMin = ImGui::GetItemRectMin();
@@ -4105,10 +4426,10 @@ static void RenderBuildLibrary() {
                 ImGui::EndDragDropSource();
             }
 
-            ImGui::SameLine(4);
+            ImGui::SameLine(8);
             ImGui::BeginGroup();
             ImGui::Text("%s", b.name.c_str());
-            ImGui::TextColored(ImVec4(0.5f, 0.5f, 0.5f, 1.0f), "%s", GameModeLabel(b.game_mode));
+            ImGui::TextColored(ImVec4(0.55f, 0.50f, 0.38f, 1.0f), "%s", GameModeLabel(b.game_mode));
             ImGui::EndGroup();
             ImGui::PopID();
         }
@@ -4211,6 +4532,133 @@ static void RenderBuildLibrary() {
     ImGui::EndChild();
 }
 
+// --- GW2-Themed UI Style ---
+
+static ImGuiStyle g_GW2Style;
+static ImGuiStyle g_BackupStyle;
+static bool g_GW2StyleBuilt = false;
+
+static void PushGW2Theme() {
+    g_BackupStyle = ImGui::GetStyle();
+    ImGui::GetStyle() = g_GW2Style;
+}
+
+static void PopGW2Theme() {
+    ImGui::GetStyle() = g_BackupStyle;
+}
+
+static void BuildGW2Theme() {
+    // Start from the current (Nexus default) style so we inherit base values
+    g_GW2Style = ImGui::GetStyle();
+    ImGuiStyle& s = g_GW2Style;
+
+    // Rounding
+    s.WindowRounding    = 6.0f;
+    s.ChildRounding     = 4.0f;
+    s.FrameRounding     = 4.0f;
+    s.PopupRounding     = 4.0f;
+    s.ScrollbarRounding = 6.0f;
+    s.GrabRounding      = 3.0f;
+    s.TabRounding       = 4.0f;
+
+    // Spacing & padding
+    s.WindowPadding     = ImVec2(10, 10);
+    s.FramePadding      = ImVec2(6, 4);
+    s.ItemSpacing       = ImVec2(8, 5);
+    s.ItemInnerSpacing  = ImVec2(6, 4);
+    s.ScrollbarSize     = 12.0f;
+    s.GrabMinSize       = 8.0f;
+    s.WindowBorderSize  = 1.0f;
+    s.ChildBorderSize   = 1.0f;
+    s.PopupBorderSize   = 1.0f;
+    s.FrameBorderSize   = 0.0f;
+    s.TabBorderSize     = 0.0f;
+
+    // Colors — dark slate base with warm gold accents
+    ImVec4* c = s.Colors;
+
+    // Backgrounds
+    c[ImGuiCol_WindowBg]             = ImVec4(0.08f, 0.08f, 0.10f, 0.96f);
+    c[ImGuiCol_ChildBg]              = ImVec4(0.07f, 0.07f, 0.09f, 0.80f);
+    c[ImGuiCol_PopupBg]              = ImVec4(0.10f, 0.10f, 0.12f, 0.96f);
+
+    // Borders
+    c[ImGuiCol_Border]               = ImVec4(0.28f, 0.25f, 0.18f, 0.50f);
+    c[ImGuiCol_BorderShadow]         = ImVec4(0.00f, 0.00f, 0.00f, 0.00f);
+
+    // Frames (input boxes, combos)
+    c[ImGuiCol_FrameBg]              = ImVec4(0.14f, 0.13f, 0.11f, 0.80f);
+    c[ImGuiCol_FrameBgHovered]       = ImVec4(0.22f, 0.20f, 0.14f, 0.80f);
+    c[ImGuiCol_FrameBgActive]        = ImVec4(0.28f, 0.25f, 0.16f, 0.90f);
+
+    // Title bar
+    c[ImGuiCol_TitleBg]              = ImVec4(0.10f, 0.09f, 0.07f, 1.00f);
+    c[ImGuiCol_TitleBgActive]        = ImVec4(0.16f, 0.14f, 0.08f, 1.00f);
+    c[ImGuiCol_TitleBgCollapsed]     = ImVec4(0.08f, 0.07f, 0.05f, 0.75f);
+
+    // Menu bar
+    c[ImGuiCol_MenuBarBg]            = ImVec4(0.12f, 0.11f, 0.09f, 1.00f);
+
+    // Scrollbar
+    c[ImGuiCol_ScrollbarBg]          = ImVec4(0.06f, 0.06f, 0.07f, 0.60f);
+    c[ImGuiCol_ScrollbarGrab]        = ImVec4(0.30f, 0.27f, 0.18f, 0.80f);
+    c[ImGuiCol_ScrollbarGrabHovered] = ImVec4(0.40f, 0.36f, 0.22f, 0.90f);
+    c[ImGuiCol_ScrollbarGrabActive]  = ImVec4(0.50f, 0.44f, 0.26f, 1.00f);
+
+    // Checkmark, slider
+    c[ImGuiCol_CheckMark]            = ImVec4(0.90f, 0.75f, 0.25f, 1.00f);
+    c[ImGuiCol_SliderGrab]           = ImVec4(0.70f, 0.58f, 0.20f, 1.00f);
+    c[ImGuiCol_SliderGrabActive]     = ImVec4(0.85f, 0.70f, 0.25f, 1.00f);
+
+    // Buttons — warm gold
+    c[ImGuiCol_Button]               = ImVec4(0.22f, 0.20f, 0.12f, 0.80f);
+    c[ImGuiCol_ButtonHovered]        = ImVec4(0.35f, 0.30f, 0.14f, 0.90f);
+    c[ImGuiCol_ButtonActive]         = ImVec4(0.45f, 0.38f, 0.16f, 1.00f);
+
+    // Headers (selectables, collapsing headers)
+    c[ImGuiCol_Header]               = ImVec4(0.18f, 0.16f, 0.10f, 0.70f);
+    c[ImGuiCol_HeaderHovered]        = ImVec4(0.28f, 0.24f, 0.12f, 0.80f);
+    c[ImGuiCol_HeaderActive]         = ImVec4(0.35f, 0.30f, 0.14f, 0.90f);
+
+    // Separator
+    c[ImGuiCol_Separator]            = ImVec4(0.28f, 0.25f, 0.18f, 0.40f);
+    c[ImGuiCol_SeparatorHovered]     = ImVec4(0.50f, 0.42f, 0.20f, 0.70f);
+    c[ImGuiCol_SeparatorActive]      = ImVec4(0.65f, 0.55f, 0.25f, 1.00f);
+
+    // Resize grip
+    c[ImGuiCol_ResizeGrip]           = ImVec4(0.30f, 0.27f, 0.18f, 0.30f);
+    c[ImGuiCol_ResizeGripHovered]    = ImVec4(0.50f, 0.44f, 0.26f, 0.60f);
+    c[ImGuiCol_ResizeGripActive]     = ImVec4(0.65f, 0.55f, 0.25f, 0.90f);
+
+    // Tabs — gold accent for active
+    c[ImGuiCol_Tab]                  = ImVec4(0.14f, 0.13f, 0.10f, 0.86f);
+    c[ImGuiCol_TabHovered]           = ImVec4(0.35f, 0.30f, 0.14f, 0.90f);
+    c[ImGuiCol_TabActive]            = ImVec4(0.28f, 0.24f, 0.10f, 1.00f);
+    c[ImGuiCol_TabUnfocused]         = ImVec4(0.10f, 0.09f, 0.07f, 0.97f);
+    c[ImGuiCol_TabUnfocusedActive]   = ImVec4(0.18f, 0.16f, 0.10f, 1.00f);
+
+    // Text
+    c[ImGuiCol_Text]                 = ImVec4(0.90f, 0.87f, 0.78f, 1.00f);
+    c[ImGuiCol_TextDisabled]         = ImVec4(0.50f, 0.47f, 0.40f, 1.00f);
+
+    // Modal dim background
+    c[ImGuiCol_ModalWindowDimBg]     = ImVec4(0.00f, 0.00f, 0.00f, 0.60f);
+
+    // Nav highlight
+    c[ImGuiCol_NavHighlight]         = ImVec4(0.70f, 0.58f, 0.20f, 1.00f);
+
+    // Table
+    c[ImGuiCol_TableHeaderBg]        = ImVec4(0.14f, 0.13f, 0.10f, 1.00f);
+    c[ImGuiCol_TableBorderStrong]    = ImVec4(0.28f, 0.25f, 0.18f, 0.60f);
+    c[ImGuiCol_TableBorderLight]     = ImVec4(0.22f, 0.20f, 0.15f, 0.40f);
+    c[ImGuiCol_TableRowBg]           = ImVec4(0.00f, 0.00f, 0.00f, 0.00f);
+    c[ImGuiCol_TableRowBgAlt]        = ImVec4(0.10f, 0.10f, 0.08f, 0.30f);
+
+    // Plot (progress bars)
+    c[ImGuiCol_PlotHistogram]        = ImVec4(0.65f, 0.55f, 0.15f, 1.00f);
+    c[ImGuiCol_PlotHistogramHovered] = ImVec4(0.80f, 0.68f, 0.20f, 1.00f);
+}
+
 // --- Addon Lifecycle ---
 
 void AddonLoad(AddonAPI_t* aApi) {
@@ -4218,6 +4666,8 @@ void AddonLoad(AddonAPI_t* aApi) {
     ImGui::SetCurrentContext((ImGuiContext*)APIDefs->ImguiContext);
     ImGui::SetAllocatorFunctions((void* (*)(size_t, void*))APIDefs->ImguiMalloc,
                                  (void(*)(void*, void*))APIDefs->ImguiFree);
+
+    BuildGW2Theme();
 
     // Initialize subsystems
     AlterEgo::GW2API::Initialize(APIDefs);
@@ -5434,6 +5884,32 @@ static std::string ShortenFractalName(const std::string& name) {
     return name;
 }
 
+// Helper: draw a gradient-backed section header with colored accent underline
+static void RenderSectionHeader(const char* label, ImVec4 color, const char* suffix) {
+    ImVec2 pos = ImGui::GetCursorScreenPos();
+    float w = ImGui::GetContentRegionAvail().x;
+    float h = ImGui::GetTextLineHeightWithSpacing() + 4.0f;
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+
+    // Gradient background
+    ImU32 left = ImGui::ColorConvertFloat4ToU32(
+        ImVec4(color.x * 0.20f, color.y * 0.20f, color.z * 0.20f, 0.50f));
+    ImU32 right = IM_COL32(0, 0, 0, 0);
+    dl->AddRectFilledMultiColor(pos, ImVec2(pos.x + w, pos.y + h), left, right, right, left);
+
+    // Accent underline
+    dl->AddLine(ImVec2(pos.x, pos.y + h), ImVec2(pos.x + w * 0.5f, pos.y + h),
+        ImGui::ColorConvertFloat4ToU32(ImVec4(color.x, color.y, color.z, 0.30f)), 1.0f);
+
+    ImGui::SetCursorScreenPos(ImVec2(pos.x + 4.0f, pos.y + 2.0f));
+    ImGui::TextColored(color, "%s", label);
+    if (suffix) {
+        ImGui::SameLine();
+        ImGui::TextColored(ImVec4(0.50f, 0.47f, 0.40f, 1.0f), "%s", suffix);
+    }
+    ImGui::SetCursorScreenPos(ImVec2(pos.x, pos.y + h + 2.0f));
+}
+
 // Helper: render a done/not-done/unknown indicator
 static void RenderClearStatus(bool fetched, bool done, const char* label) {
     if (!fetched)
@@ -5513,9 +5989,11 @@ static void RenderClears() {
     std::string weeklyResetStr = FormatTimeUntilReset(weeklyReset, std::chrono::hours(24 * 7));
 
     // ---- Daily Fractals ----
-    ImGui::TextColored(ImVec4(0.3f, 0.7f, 0.9f, 1.0f), "Daily Fractals");
-    ImGui::SameLine();
-    ImGui::TextColored(ImVec4(0.5f, 0.5f, 0.5f, 1.0f), "(resets in %s)", dailyResetStr.c_str());
+    {
+        char suffix[64];
+        snprintf(suffix, sizeof(suffix), "(resets in %s)", dailyResetStr.c_str());
+        RenderSectionHeader("Daily Fractals", ImVec4(0.3f, 0.7f, 0.9f, 1.0f), suffix);
+    }
 
     if (g_DailyFractals.empty()) {
         ImGui::TextColored(ImVec4(0.5f, 0.5f, 0.5f, 1.0f), "  No data");
@@ -5563,9 +6041,11 @@ static void RenderClears() {
     ImGui::Separator();
 
     // ---- Daily Raid Bounties ----
-    ImGui::TextColored(ImVec4(0.9f, 0.6f, 0.3f, 1.0f), "Daily Raid Bounties");
-    ImGui::SameLine();
-    ImGui::TextColored(ImVec4(0.5f, 0.5f, 0.5f, 1.0f), "(resets in %s)", dailyResetStr.c_str());
+    {
+        char suffix[64];
+        snprintf(suffix, sizeof(suffix), "(resets in %s)", dailyResetStr.c_str());
+        RenderSectionHeader("Daily Raid Bounties", ImVec4(0.9f, 0.6f, 0.3f, 1.0f), suffix);
+    }
 
     if (g_DailyBounties.empty()) {
         ImGui::TextColored(ImVec4(0.5f, 0.5f, 0.5f, 1.0f), "  No data");
@@ -5585,9 +6065,11 @@ static void RenderClears() {
     ImGui::Separator();
 
     // ---- Weekly Strikes ----
-    ImGui::TextColored(ImVec4(0.7f, 0.4f, 0.9f, 1.0f), "Weekly Strikes");
-    ImGui::SameLine();
-    ImGui::TextColored(ImVec4(0.5f, 0.5f, 0.5f, 1.0f), "(resets in %s)", weeklyResetStr.c_str());
+    {
+        char suffix[64];
+        snprintf(suffix, sizeof(suffix), "(resets in %s)", weeklyResetStr.c_str());
+        RenderSectionHeader("Weekly Strikes", ImVec4(0.7f, 0.4f, 0.9f, 1.0f), suffix);
+    }
 
     if (g_WeeklyStrikes.id == 0) {
         ImGui::TextColored(ImVec4(0.5f, 0.5f, 0.5f, 1.0f), "  No data");
@@ -5610,9 +6092,11 @@ static void RenderClears() {
     ImGui::Separator();
 
     // ---- Weekly Raids ----
-    ImGui::TextColored(ImVec4(0.9f, 0.7f, 0.3f, 1.0f), "Weekly Raids");
-    ImGui::SameLine();
-    ImGui::TextColored(ImVec4(0.5f, 0.5f, 0.5f, 1.0f), "(resets in %s)", weeklyResetStr.c_str());
+    {
+        char suffix[64];
+        snprintf(suffix, sizeof(suffix), "(resets in %s)", weeklyResetStr.c_str());
+        RenderSectionHeader("Weekly Raids", ImVec4(0.9f, 0.7f, 0.3f, 1.0f), suffix);
+    }
 
     if (g_WeeklyWings.empty()) {
         ImGui::TextColored(ImVec4(0.5f, 0.5f, 0.5f, 1.0f), "  No data");
@@ -5783,15 +6267,18 @@ void AddonRender() {
     Skinventory::WikiImage::Tick();
     Skinventory::OwnedSkins::Tick();
 
+    PushGW2Theme();
+
     // Render gear customize dialog (separate window, always checked)
     RenderGearCustomizeDialog();
     RenderSaveToLibraryDialog();
 
-    if (!g_WindowVisible) return;
+    if (!g_WindowVisible) { PopGW2Theme(); return; }
 
     ImGui::SetNextWindowSizeConstraints(ImVec2(400, 300), ImVec2(FLT_MAX, FLT_MAX));
     if (!ImGui::Begin("Alter Ego", &g_WindowVisible, ImGuiWindowFlags_NoCollapse)) {
         ImGui::End();
+        PopGW2Theme();
         return;
     }
 
@@ -6192,10 +6679,13 @@ void AddonRender() {
                     float rowHeight = g_CompactCharList ? 18.0f
                         : (28.0f + extraLines * lineH);
 
-                    // Green selection highlight for all characters
-                    ImGui::PushStyleColor(ImGuiCol_Header, ImVec4(0.1f, 0.4f, 0.15f, 0.55f));
-                    ImGui::PushStyleColor(ImGuiCol_HeaderHovered, ImVec4(0.15f, 0.45f, 0.2f, 0.65f));
-                    ImGui::PushStyleColor(ImGuiCol_HeaderActive, ImVec4(0.1f, 0.4f, 0.15f, 0.7f));
+                    // Profession-tinted selection highlight
+                    ImVec4 selCol(profColor.x * 0.35f, profColor.y * 0.35f, profColor.z * 0.35f, 0.65f);
+                    ImVec4 hovCol(profColor.x * 0.25f, profColor.y * 0.25f, profColor.z * 0.25f, 0.50f);
+                    ImVec4 actCol(profColor.x * 0.40f, profColor.y * 0.40f, profColor.z * 0.40f, 0.75f);
+                    ImGui::PushStyleColor(ImGuiCol_Header, selCol);
+                    ImGui::PushStyleColor(ImGuiCol_HeaderHovered, hovCol);
+                    ImGui::PushStyleColor(ImGuiCol_HeaderActive, actCol);
 
                     // Character entry
                     if (ImGui::Selectable("##char", selected, 0, ImVec2(0, rowHeight))) {
@@ -6203,6 +6693,32 @@ void AddonRender() {
                         g_DetailsFetched = false;
                         g_SelectedEquipTab = 0;
                         g_SelectedBuildTab = -1;
+                        // Refresh portrait detection for this character
+                        s_portraitPathCache.erase(ch.name);
+                        s_portraitMissing.erase(ch.name);
+                    }
+
+                    // Draw profession-colored left accent bar (non-compact only)
+                    if (!g_CompactCharList) {
+                        ImVec2 rMin = ImGui::GetItemRectMin();
+                        ImVec2 rMax = ImGui::GetItemRectMax();
+                        ImDrawList* dl = ImGui::GetWindowDrawList();
+                        float barW = 3.0f;
+                        ImU32 barCol = ImGui::ColorConvertFloat4ToU32(
+                            ImVec4(profColor.x, profColor.y, profColor.z,
+                                   selected ? 1.0f : (ImGui::IsItemHovered() ? 0.7f : 0.35f)));
+                        dl->AddRectFilled(
+                            ImVec2(rMin.x, rMin.y + 1), ImVec2(rMin.x + barW, rMax.y - 1),
+                            barCol, 1.0f);
+                        // Subtle glow on selected items
+                        if (selected) {
+                            ImU32 glowCol = ImGui::ColorConvertFloat4ToU32(
+                                ImVec4(profColor.x, profColor.y, profColor.z, 0.08f));
+                            dl->AddRectFilledMultiColor(
+                                ImVec2(rMin.x + barW, rMin.y),
+                                ImVec2(rMin.x + barW + 30.0f, rMax.y),
+                                glowCol, IM_COL32(0, 0, 0, 0), IM_COL32(0, 0, 0, 0), glowCol);
+                        }
                     }
 
                     // Record item rect for insertion line calculation
@@ -6304,6 +6820,7 @@ void AddonRender() {
                     }
                     // Extra lines (each on its own line with prefix)
                     if (!g_CompactCharList) {
+                        ImGui::Indent(6.0f);
                         ImVec4 dimCol = selected ? ImVec4(0.8f, 0.8f, 0.8f, 1.0f) : ImVec4(0.55f, 0.55f, 0.55f, 1.0f);
                         ImVec4 labelCol = selected ? ImVec4(0.7f, 0.7f, 0.7f, 1.0f) : ImVec4(0.45f, 0.45f, 0.45f, 1.0f);
 
@@ -6406,6 +6923,7 @@ void AddonRender() {
                                 ImGui::TextColored(dimCol, "%s ago", ago.c_str());
                             }
                         }
+                        ImGui::Unindent(6.0f);
                     }
                     ImGui::EndGroup();
 
@@ -6597,18 +7115,20 @@ void AddonRender() {
     }
 
     ImGui::End();
+    PopGW2Theme();
 }
 
 // --- Options/Settings Render ---
 
 void AddonOptions() {
+    PushGW2Theme();
     // Header with links
     ImGui::Text("Alter Ego");
     ImGui::SameLine();
     ImGui::TextColored(ImVec4(0.5f, 0.5f, 0.5f, 1.0f), "|");
     ImGui::SameLine();
-    if (ImGui::SmallButton("GitHub")) {
-        ShellExecuteA(NULL, "open", "https://github.com/PieOrCake/alter-ego", NULL, NULL, SW_SHOWNORMAL);
+    if (ImGui::SmallButton("Homepage")) {
+        ShellExecuteA(NULL, "open", "https://pie.rocks.cc/projects/alter-ego/", NULL, NULL, SW_SHOWNORMAL);
     }
     ImGui::SameLine();
     ImGui::TextColored(ImVec4(0.5f, 0.5f, 0.5f, 1.0f), "|");
@@ -6700,6 +7220,7 @@ void AddonOptions() {
         }
         ImGui::Unindent(16.0f);
     }
+    PopGW2Theme();
 }
 
 // --- Export: GetAddonDef ---

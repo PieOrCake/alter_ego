@@ -10,15 +10,21 @@ If an LLM creating software upsets you, then perhaps this repo isn't for you. Mo
 
 ## Features
 
+- **GW2-Themed UI** — Custom dark slate and gold accent theme with rounded corners, gradient section headers, and polished spacing
+  - Profession-colored accent bars and glow effects on character and build list items
+  - Scoped to Alter Ego only — won't affect other Nexus addons
 - **Character List** — All characters on your account with profession icons, level, and birthday countdown
   - Sort by name, class, level, age, or birthday — or drag to reorder
   - Compact mode option for denser lists
+  - Profession-colored accent bars with hover glow effects
 - **Equipment Panel** — Full paper-doll layout for each character's equipment tabs
   - Equipment icons with rarity-colored borders
   - Skin/transmutation display with original item info
   - Upgrade (sigil/rune) and infusion tooltips
   - Dye color preview swatches
   - Equipment tab switching
+  - Race concept art background with vignette fade
+  - Custom character portraits (see [Portraits](#character-portraits) below)
 - **Build Panel** — Specialization trait grids with animated marching-ant connection lines
   - Specialization portrait and trait icons with tooltips
   - Heal / Utility / Elite skill bar with icons
@@ -29,6 +35,9 @@ If an LLM creating software upsets you, then perhaps this repo isn't for you. Mo
   - Weapon skills display (with Elementalist attunement and Thief dual-wield support)
   - Gear customization: stat combos, runes, sigils, weapon types
   - Filter by profession and game mode, search by name
+  - **Shared Build Templates** — Export/import complete builds (traits + gear) as compact codes or JSON
+    - Share via Discord or any text field using `AE1:` compact codes
+    - [Spec for build websites →](docs/shared-build-spec.md)
 - **Skinventory** — Browse all skins in the game, track which you own
   - Filter by type, subtype, weight class
   - Skin detail panel with wiki images, TP prices, vendor prices
@@ -52,6 +61,22 @@ If an LLM creating software upsets you, then perhaps this repo isn't for you. Mo
 ![Equipment panel](screenshots/equipment.png)
 ![Build panel](screenshots/build.png)
 ![Build library](screenshots/library.png)
+![Clears](screenshots/clears.png)
+![Skinventory](screenshots/skinventory.png)
+
+## Character Portraits
+
+You can replace the default race concept art in the equipment panel with your own character screenshots.
+
+1. Navigate to your GW2 addons directory: `<GW2>/addons/AlterEgo/portraits/`
+   - This folder is created automatically when the addon first runs
+2. Save a screenshot with the **exact character name** as the filename:
+   - `Woofy Mcdogface.png`
+   - `My Cool Character.jpg`
+3. Supported formats: `.png`, `.jpg`, `.jpeg`
+4. Click the character in the list to refresh the portrait
+
+Portraits are displayed as a semi-transparent overlay with a vignette edge fade. The aspect ratio is preserved automatically. Replacing a portrait file on disk is detected automatically — just click the character again to refresh.
 
 ## Requirements
 
@@ -63,6 +88,11 @@ If an LLM creating software upsets you, then perhaps this repo isn't for you. Mo
 Copy `AlterEgo.dll` to your GW2 Nexus addons directory:
 ```
 <GW2>/addons/AlterEgo.dll
+```
+
+The addon stores its data (settings, build library, portraits, caches) in:
+```
+<GW2>/addons/AlterEgo/
 ```
 
 ## Building
