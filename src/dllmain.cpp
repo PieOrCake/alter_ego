@@ -288,6 +288,16 @@ static char g_GearStatSearch[128] = "";       // Search filter for stat combos
 static uint32_t g_GearSelectedStatId = 0;     // Currently selected stat in dialog
 static int g_GearSelectorTab = 0;             // 0 = Stats, 1 = Rune/Sigil
 
+// Save to Library dialog state
+static bool g_SaveLibDialogOpen = false;
+static char g_SaveLibName[128] = "";
+static int g_SaveLibMode = 0;              // GameMode index
+static bool g_SaveLibIncludeEquip = false;
+static int g_SaveLibEquipTab = 0;          // Selected equipment tab number (1-based)
+static std::string g_SaveLibChatLink;      // Pre-built chat link
+static std::string g_SaveLibCharName;      // Character name (to find equipment)
+static std::string g_SaveLibProfession;    // Profession name
+
 // Compute days until next character birthday from ISO date string (e.g. "2013-06-25T...")
 // Returns -1 if the date can't be parsed. Returns 0 on the birthday itself.
 static int DaysUntilBirthday(const std::string& created) {
@@ -517,6 +527,86 @@ static void LoadCharSortConfig() {
             for (const auto& name : j["custom_order"])
                 g_CustomCharOrder.push_back(name.get<std::string>());
         }
+    } catch (...) {}
+}
+
+// Session restore persistence
+static std::string g_SessionSelectedCharName; // deferred: resolve to index after chars load
+
+static void SaveSession() {
+    std::string dir = AlterEgo::GW2API::GetDataDirectory();
+    std::filesystem::create_directories(dir);
+    std::string path = dir + "/session.json";
+
+    nlohmann::json j;
+    j["window_visible"] = g_WindowVisible;
+    j["main_tab"] = g_MainTab;
+
+    // Characters tab state — save by name for stability across sort/order changes
+    const auto& chars = AlterEgo::GW2API::GetCharacters();
+    if (g_SelectedCharIdx >= 0 && g_SelectedCharIdx < (int)g_CharDisplayOrder.size()) {
+        int ri = g_CharDisplayOrder[g_SelectedCharIdx];
+        if (ri >= 0 && ri < (int)chars.size())
+            j["selected_char"] = chars[ri].name;
+    }
+    j["detail_tab"] = g_SelectedTab;
+    j["equip_tab"] = g_SelectedEquipTab;
+    j["build_tab"] = g_SelectedBuildTab;
+
+    // Build Library state — save selected build by ID
+    const auto& builds = AlterEgo::GW2API::GetSavedBuilds();
+    if (g_LibSelectedIdx >= 0 && g_LibSelectedIdx < (int)builds.size())
+        j["lib_selected_id"] = builds[g_LibSelectedIdx].id;
+    j["lib_filter"] = g_LibFilterMode;
+
+    // Skinventory state
+    j["skin_active_tab"] = g_SkinActiveTab;
+    j["skin_type"] = g_SkinSelectedType;
+    j["skin_weight"] = g_SkinSelectedWeightClass;
+    j["skin_subtype"] = g_SkinSelectedSubtype;
+    j["skin_selected_id"] = g_SkinSelectedId;
+    j["skin_show_owned"] = g_SkinShowOwned;
+    j["skin_show_unowned"] = g_SkinShowUnowned;
+
+    std::ofstream file(path);
+    if (file.is_open()) file << j.dump(2);
+}
+
+static void LoadSession() {
+    std::string path = AlterEgo::GW2API::GetDataDirectory() + "/session.json";
+    std::ifstream file(path);
+    if (!file.is_open()) return;
+    try {
+        auto j = nlohmann::json::parse(file);
+
+        if (j.contains("window_visible")) g_WindowVisible = j["window_visible"].get<bool>();
+        if (j.contains("main_tab")) g_MainTab = j["main_tab"].get<int>();
+
+        // Defer character selection — store name, resolve after chars load
+        if (j.contains("selected_char"))
+            g_SessionSelectedCharName = j["selected_char"].get<std::string>();
+        if (j.contains("detail_tab")) g_SelectedTab = j["detail_tab"].get<int>();
+        if (j.contains("equip_tab")) g_SelectedEquipTab = j["equip_tab"].get<int>();
+        if (j.contains("build_tab")) g_SelectedBuildTab = j["build_tab"].get<int>();
+
+        // Build Library — defer selection, resolve after library loads
+        if (j.contains("lib_selected_id")) {
+            std::string savedId = j["lib_selected_id"].get<std::string>();
+            const auto& builds = AlterEgo::GW2API::GetSavedBuilds();
+            for (int i = 0; i < (int)builds.size(); i++) {
+                if (builds[i].id == savedId) { g_LibSelectedIdx = i; break; }
+            }
+        }
+        if (j.contains("lib_filter")) g_LibFilterMode = j["lib_filter"].get<int>();
+
+        // Skinventory
+        if (j.contains("skin_active_tab")) g_SkinActiveTab = j["skin_active_tab"].get<int>();
+        if (j.contains("skin_type")) g_SkinSelectedType = j["skin_type"].get<std::string>();
+        if (j.contains("skin_weight")) g_SkinSelectedWeightClass = j["skin_weight"].get<std::string>();
+        if (j.contains("skin_subtype")) g_SkinSelectedSubtype = j["skin_subtype"].get<std::string>();
+        if (j.contains("skin_selected_id")) g_SkinSelectedId = j["skin_selected_id"].get<uint32_t>();
+        if (j.contains("skin_show_owned")) g_SkinShowOwned = j["skin_show_owned"].get<bool>();
+        if (j.contains("skin_show_unowned")) g_SkinShowUnowned = j["skin_show_unowned"].get<bool>();
     } catch (...) {}
 }
 
@@ -1869,10 +1959,10 @@ static void RenderBuildPanel(const AlterEgo::Character& ch) {
         ImGui::EndTooltip();
     }
 
-    // Save to Library button
+    // Save to Library button — opens dialog
     ImGui::SameLine();
     if (ImGui::Button(hasPalette ? "Save to Library" : "Save to Library (loading...)") && hasPalette) {
-        // Build the chat link first
+        // Build the chat link
         auto ProfCodeLib = [](const std::string& p) -> uint8_t {
             if (p == "Guardian")     return 1;
             if (p == "Warrior")      return 2;
@@ -1927,18 +2017,18 @@ static void RenderBuildPanel(const AlterEgo::Character& ch) {
         for (auto w : bt.weapons)
             saveLink.weapons.push_back((uint16_t)w);
 
-        std::string chatLink = AlterEgo::ChatLink::EncodeBuild(saveLink);
+        g_SaveLibChatLink = AlterEgo::ChatLink::EncodeBuild(saveLink);
 
-        // Build a name from character + tab name
-        std::string buildName = ch.name + " - " +
+        // Pre-fill dialog state
+        std::string defaultName = ch.name + " - " +
             (bt.name.empty() ? ("Tab " + std::to_string(bt.tab)) : bt.name);
-
-        // Decode the link to populate SavedBuild fields
-        AlterEgo::SavedBuild sb;
-        if (DecodeBuildLink(chatLink, buildName, AlterEgo::GameMode::PvE, sb)) {
-            AlterEgo::GW2API::AddSavedBuild(std::move(sb));
-            if (APIDefs) APIDefs->GUI_SendAlert("Build saved to library!");
-        }
+        snprintf(g_SaveLibName, sizeof(g_SaveLibName), "%s", defaultName.c_str());
+        g_SaveLibMode = 0;
+        g_SaveLibIncludeEquip = false;
+        g_SaveLibEquipTab = ch.active_equipment_tab > 0 ? ch.active_equipment_tab : 1;
+        g_SaveLibCharName = ch.name;
+        g_SaveLibProfession = ch.profession;
+        g_SaveLibDialogOpen = true;
     }
 
     // Draw profession/elite spec icon overlay in the top-right of the build panel
@@ -3108,6 +3198,145 @@ static void RenderGearCustomizeDialog() {
     ImGui::End();
 }
 
+// Save to Library dialog — lets user name the build, pick game mode, and optionally include equipment
+static void RenderSaveToLibraryDialog() {
+    if (!g_SaveLibDialogOpen) return;
+
+    ImGui::SetNextWindowSize(ImVec2(420, 0), ImGuiCond_Always);
+    if (!ImGui::Begin("Save to Library##SaveLibDialog", &g_SaveLibDialogOpen,
+            ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_AlwaysAutoResize)) {
+        ImGui::End();
+        return;
+    }
+
+    ImGui::Text("Build Name:");
+    ImGui::SetNextItemWidth(-1);
+    ImGui::InputText("##savelib_name", g_SaveLibName, sizeof(g_SaveLibName));
+
+    ImGui::Spacing();
+    ImGui::Text("Game Mode:");
+    ImGui::SetNextItemWidth(120);
+    ImGui::Combo("##savelib_mode", &g_SaveLibMode, GameModeImportNames, IM_ARRAYSIZE(GameModeImportNames));
+
+    ImGui::Spacing();
+    ImGui::Separator();
+    ImGui::Spacing();
+
+    ImGui::Checkbox("Include equipment set", &g_SaveLibIncludeEquip);
+
+    if (g_SaveLibIncludeEquip) {
+        const auto* ch = AlterEgo::GW2API::GetCharacter(g_SaveLibCharName);
+        if (ch) {
+            // Find max equipment tab
+            int maxTab = 1;
+            for (const auto& eq : ch->equipment) {
+                if (eq.tab > maxTab) maxTab = eq.tab;
+            }
+
+            ImGui::Indent(16);
+            for (int t = 1; t <= maxTab; t++) {
+                std::string label;
+                auto nameIt = ch->equipment_tab_names.find(t);
+                if (nameIt != ch->equipment_tab_names.end() && !nameIt->second.empty())
+                    label = nameIt->second;
+                else
+                    label = "Tab " + std::to_string(t);
+                if (ch->active_equipment_tab == t) label += " *";
+
+                bool sel = (g_SaveLibEquipTab == t);
+                if (ImGui::RadioButton(label.c_str(), sel))
+                    g_SaveLibEquipTab = t;
+            }
+            ImGui::Unindent(16);
+        } else {
+            ImGui::TextColored(ImVec4(0.5f, 0.5f, 0.5f, 1.0f), "  Character data not available");
+        }
+    }
+
+    ImGui::Spacing();
+    ImGui::Separator();
+    ImGui::Spacing();
+
+    if (ImGui::Button("Save", ImVec2(80, 0))) {
+        std::string name = g_SaveLibName;
+        if (name.empty()) name = "Unnamed Build";
+
+        AlterEgo::SavedBuild sb;
+        if (DecodeBuildLink(g_SaveLibChatLink, name, GameModeFromIndex(g_SaveLibMode), sb)) {
+            // Optionally populate gear from character equipment
+            if (g_SaveLibIncludeEquip) {
+                const auto* ch = AlterEgo::GW2API::GetCharacter(g_SaveLibCharName);
+                if (ch) {
+                    std::string sharedRune;
+                    for (const auto& eq : ch->equipment) {
+                        if (eq.tab != g_SaveLibEquipTab) continue;
+
+                        AlterEgo::BuildGearSlot gs;
+                        gs.slot = eq.slot;
+
+                        // Resolve stat name
+                        if (eq.stat_id != 0) {
+                            gs.stat_id = eq.stat_id;
+                            const auto* statInfo = AlterEgo::GW2API::GetItemStatInfo(eq.stat_id);
+                            if (statInfo) gs.stat_name = statInfo->name;
+                        }
+
+                        // Determine if this is an armor or weapon slot for rune/sigil
+                        bool isArmor = (eq.slot == "Helm" || eq.slot == "Shoulders" ||
+                                        eq.slot == "Coat" || eq.slot == "Gloves" ||
+                                        eq.slot == "Leggings" || eq.slot == "Boots");
+                        bool isWeapon = (eq.slot.find("Weapon") == 0);
+
+                        // Resolve upgrades (runes for armor, sigils for weapons)
+                        for (size_t ui = 0; ui < eq.upgrades.size(); ui++) {
+                            if (eq.upgrades[ui] == 0) continue;
+                            const auto* upInfo = AlterEgo::GW2API::GetItemInfo(eq.upgrades[ui]);
+                            if (!upInfo) continue;
+                            std::string upName = upInfo->name;
+                            if (isArmor && ui == 0) {
+                                gs.rune = upName;
+                                if (sharedRune.empty()) sharedRune = upName;
+                            } else if (isWeapon) {
+                                gs.sigil = upName;
+                            }
+                        }
+
+                        // Resolve weapon type from item details
+                        if (isWeapon && eq.id != 0) {
+                            const auto* itemInfo = AlterEgo::GW2API::GetItemInfo(eq.id);
+                            if (itemInfo && itemInfo->details.contains("type"))
+                                gs.weapon_type = itemInfo->details["type"].get<std::string>();
+                        }
+
+                        sb.gear[eq.slot] = gs;
+                    }
+                    sb.rune_name = sharedRune;
+
+                    // Check for relic
+                    for (const auto& eq : ch->equipment) {
+                        if (eq.tab != g_SaveLibEquipTab) continue;
+                        if (eq.slot == "Relic" && eq.id != 0) {
+                            const auto* relicInfo = AlterEgo::GW2API::GetItemInfo(eq.id);
+                            if (relicInfo) sb.relic_name = relicInfo->name;
+                            break;
+                        }
+                    }
+                }
+            }
+
+            AlterEgo::GW2API::AddSavedBuild(std::move(sb));
+            if (APIDefs) APIDefs->GUI_SendAlert("Build saved to library!");
+            g_SaveLibDialogOpen = false;
+        }
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Cancel", ImVec2(80, 0))) {
+        g_SaveLibDialogOpen = false;
+    }
+
+    ImGui::End();
+}
+
 // Render a single gear slot with icon for the build gear panel
 static void RenderBuildGearSlot(AlterEgo::SavedBuild& build, const char* slot) {
     auto it = build.gear.find(slot);
@@ -3994,8 +4223,9 @@ void AddonLoad(AddonAPI_t* aApi) {
     APIDefs->Textures_LoadFromMemory(TEX_ICON, (void*)ICON_NORMAL, ICON_NORMAL_size, nullptr);
     APIDefs->Textures_LoadFromMemory(TEX_ICON_HOVER, (void*)ICON_HOVER, ICON_HOVER_size, nullptr);
 
-    // Load settings and cached data
+    // Load settings, session, and cached data
     LoadSettings();
+    LoadSession();
     LoadClearsCache();
 
     // Register quick access shortcut
@@ -4076,6 +4306,7 @@ void AddonUnload() {
     APIDefs->GUI_Deregister(AddonOptions);
     APIDefs->GUI_Deregister(AddonRender);
 
+    SaveSession();
     SaveSettings();
     APIDefs = nullptr;
 }
@@ -5524,6 +5755,7 @@ void AddonRender() {
 
     // Render gear customize dialog (separate window, always checked)
     RenderGearCustomizeDialog();
+    RenderSaveToLibraryDialog();
 
     if (!g_WindowVisible) return;
 
@@ -5779,11 +6011,25 @@ void AddonRender() {
                     RebuildCharDisplayOrder();
                 }
 
-                // Auto-select first character if none selected
+                // Auto-select first character if none selected, or restore session
                 if (g_SelectedCharIdx < 0 || g_SelectedCharIdx >= (int)g_CharDisplayOrder.size()) {
                     g_SelectedCharIdx = 0;
+                    // Restore session: find saved character by name
+                    if (!g_SessionSelectedCharName.empty()) {
+                        for (int di = 0; di < (int)g_CharDisplayOrder.size(); di++) {
+                            int ri = g_CharDisplayOrder[di];
+                            if (ri >= 0 && ri < (int)characters.size() &&
+                                characters[ri].name == g_SessionSelectedCharName) {
+                                g_SelectedCharIdx = di;
+                                break;
+                            }
+                        }
+                        g_SessionSelectedCharName.clear();
+                        // Keep session-restored g_SelectedBuildTab and g_SelectedEquipTab
+                    } else {
+                        g_SelectedBuildTab = -1;
+                    }
                     g_DetailsFetched = false;
-                    g_SelectedBuildTab = -1;
                 }
 
                 // Character list (left) + Detail panel (right)
@@ -6437,12 +6683,12 @@ extern "C" __declspec(dllexport) AddonDefinition_t* GetAddonDef() {
     AddonDef.Version.Build = V_BUILD;
     AddonDef.Version.Revision = V_REVISION;
     AddonDef.Author = "PieOrCake.7635";
-    AddonDef.Description = "Character & build manager";
+    AddonDef.Description = "Manage characters, builds, skins, and clears";
     AddonDef.Load = AddonLoad;
     AddonDef.Unload = AddonUnload;
     AddonDef.Flags = AF_None;
     AddonDef.Provider = UP_GitHub;
-    AddonDef.UpdateLink = nullptr;
+    AddonDef.UpdateLink = "https://github.com/PieOrCake/alter_ego";
 
     return &AddonDef;
 }
