@@ -322,7 +322,8 @@ namespace AlterEgo {
         static void FetchProfessionInfoAsync(const std::string& profession);
         static const std::map<std::string, ProfessionWeaponData>* GetProfessionWeapons(const std::string& profession);
 
-        // Fetch detail data on-demand (async, direct HTTP — no auth needed)
+        // Fetch detail data on-demand (direct HTTP — no auth needed)
+        static void FetchItemDetails(const std::vector<uint32_t>& item_ids); // synchronous
         static void FetchItemDetailsAsync(const std::vector<uint32_t>& item_ids);
         static void FetchSkinDetailsAsync(const std::vector<uint32_t>& skin_ids);
         static void FetchSpecDetailsAsync(const std::vector<uint32_t>& spec_ids);
@@ -409,8 +410,7 @@ namespace AlterEgo {
         static std::string HttpGet(const std::string& url);
         static bool EnsureDataDirectory();
 
-        // Batch fetch helpers (public endpoints)
-        static void FetchItemDetails(const std::vector<uint32_t>& item_ids);
+        // Batch fetch helpers (public endpoints, synchronous)
         static void FetchSkinDetails(const std::vector<uint32_t>& skin_ids);
         static void FetchTraitDetails(const std::vector<uint32_t>& trait_ids);
 

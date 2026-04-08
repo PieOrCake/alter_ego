@@ -2564,6 +2564,7 @@ static uint32_t GetLegendaryWeaponId(const std::string& wtype) {
     if (wtype == "Sword") return 30699;          // Bolt
     if (wtype == "Torch") return 30700;          // Rodgort
     if (wtype == "Warhorn") return 30702;        // Howler
+    if (wtype == "Spear") return 30691;          // Kamohoali'i Kotaki
     return 0;
 }
 
@@ -3267,6 +3268,20 @@ static void RenderSaveToLibraryDialog() {
             if (g_SaveLibIncludeEquip) {
                 const auto* ch = AlterEgo::GW2API::GetCharacter(g_SaveLibCharName);
                 if (ch) {
+                    // Pre-fetch any item details not yet cached (weapons, upgrades)
+                    std::vector<uint32_t> missingIds;
+                    for (const auto& eq : ch->equipment) {
+                        if (eq.tab != g_SaveLibEquipTab) continue;
+                        if (eq.id != 0 && !AlterEgo::GW2API::GetItemInfo(eq.id))
+                            missingIds.push_back(eq.id);
+                        for (auto uid : eq.upgrades) {
+                            if (uid != 0 && !AlterEgo::GW2API::GetItemInfo(uid))
+                                missingIds.push_back(uid);
+                        }
+                    }
+                    if (!missingIds.empty())
+                        AlterEgo::GW2API::FetchItemDetails(missingIds);
+
                     std::string sharedRune;
                     for (const auto& eq : ch->equipment) {
                         if (eq.tab != g_SaveLibEquipTab) continue;
@@ -3908,10 +3923,25 @@ static void RenderSavedBuildPreview(const AlterEgo::SavedBuild& build) {
     ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.6f, 0.15f, 0.15f, 1.0f));
     ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.8f, 0.2f, 0.2f, 1.0f));
     if (ImGui::Button("Delete")) {
-        AlterEgo::GW2API::RemoveSavedBuild(build.id);
-        g_LibSelectedIdx = -1;
+        ImGui::OpenPopup("Delete Build?");
     }
     ImGui::PopStyleColor(2);
+
+    if (ImGui::BeginPopupModal("Delete Build?", nullptr,
+            ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoMove)) {
+        ImGui::Text("Delete \"%s\"?", build.name.c_str());
+        ImGui::Spacing();
+        if (ImGui::Button("Delete", ImVec2(80, 0))) {
+            AlterEgo::GW2API::RemoveSavedBuild(build.id);
+            g_LibSelectedIdx = -1;
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Cancel", ImVec2(80, 0))) {
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::EndPopup();
+    }
 
     if (!build.notes.empty()) {
         ImGui::Spacing();
