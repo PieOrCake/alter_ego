@@ -368,7 +368,7 @@ namespace AlterEgo {
             s_fetch_phase = 0;
             s_equip_tab_ids.clear();
             s_equip_tab_idx = 0;
-            s_fetch_message = "Fetching " + s_current_char.name + " (1/" +
+            s_fetch_message = s_current_char.name + ": Fetching (1/" +
                 std::to_string(s_chars_total) + ")...";
         }
 
@@ -473,7 +473,7 @@ namespace AlterEgo {
                 s_fetch_phase = 0;
                 s_equip_tab_ids.clear();
                 s_equip_tab_idx = 0;
-                s_fetch_message = "Fetching " + s_current_char.name + " (1/" +
+                s_fetch_message = s_current_char.name + ": Fetching (1/" +
                     std::to_string(s_chars_total) + ")...";
             }
 
@@ -538,6 +538,9 @@ namespace AlterEgo {
                 break;
             case 4:
                 endpoint = "/v2/characters/" + UrlEncode(char_name) + "/buildtabs?tabs=all&v=2021-07-15T13:00:00.000Z";
+                break;
+            case 5:
+                endpoint = "/v2/characters/" + UrlEncode(char_name) + "/crafting";
                 break;
             default:
                 return;
@@ -648,14 +651,7 @@ namespace AlterEgo {
                     s_current_char.created = cj.value("created", "");
                     s_current_char.last_modified = cj.value("last_modified", "");
                     s_current_char.deaths = cj.value("deaths", 0);
-                    if (cj.contains("crafting") && cj["crafting"].is_array()) {
-                        for (const auto& craft : cj["crafting"]) {
-                            if (craft.value("active", false)) {
-                                s_current_char.crafting.push_back(craft.value("discipline", ""));
-                                s_current_char.crafting_levels.push_back(craft.value("rating", 0));
-                            }
-                        }
-                    }
+                    // Crafting is fetched separately in phase 5 (/crafting)
                     break;
                 }
                 case 1: { // /equipmenttabs — just tab ID list [1,2,3,4,5]
@@ -761,6 +757,40 @@ namespace AlterEgo {
                     }
                     break;
                 }
+                case 5: { // /crafting
+                    std::lock_guard<std::mutex> lock(s_mutex);
+                    s_current_char.crafting.clear();
+                    s_current_char.crafting_levels.clear();
+                    s_current_char.crafting_active.clear();
+                    // Response is {"crafting": [...]} or just an array
+                    json craftArr = cj;
+                    if (cj.contains("crafting") && cj["crafting"].is_array())
+                        craftArr = cj["crafting"];
+                    if (craftArr.is_array()) {
+                        // Collect active first, then inactive, all with rating >= 1
+                        std::vector<std::tuple<std::string, int, bool>> allCrafts;
+                        for (const auto& craft : craftArr) {
+                            int rating = craft.value("rating", 0);
+                            if (rating >= 1) {
+                                allCrafts.emplace_back(
+                                    craft.value("discipline", ""),
+                                    rating,
+                                    craft.value("active", false));
+                            }
+                        }
+                        // Sort: active first
+                        std::sort(allCrafts.begin(), allCrafts.end(),
+                            [](const auto& a, const auto& b) {
+                                return std::get<2>(a) > std::get<2>(b);
+                            });
+                        for (const auto& [disc, lvl, active] : allCrafts) {
+                            s_current_char.crafting.push_back(disc);
+                            s_current_char.crafting_levels.push_back(lvl);
+                            s_current_char.crafting_active.push_back(active);
+                        }
+                    }
+                    break;
+                }
             }
         } catch (const std::exception& e) {
             if (s_api) {
@@ -778,7 +808,7 @@ namespace AlterEgo {
             switch (phase) {
                 case 0: // core done → fetch equip tab IDs
                     s_fetch_phase = 1;
-                    s_fetch_message = "Fetching equipment tabs...";
+                    s_fetch_message = s_current_char.name + ": Fetching equipment tabs...";
                     break;
                 case 1: // tab IDs done → start fetching individual tabs
                     s_fetch_phase = 2;
@@ -786,9 +816,9 @@ namespace AlterEgo {
                     if (s_equip_tab_ids.empty()) {
                         // No equipment tabs, skip to supplemental /equipment
                         s_fetch_phase = 3;
-                        s_fetch_message = "Fetching relic & tools...";
+                        s_fetch_message = s_current_char.name + ": Fetching relic & tools...";
                     } else {
-                        s_fetch_message = "Fetching equipment tab 1/" +
+                        s_fetch_message = s_current_char.name + ": Fetching equipment tab 1/" +
                             std::to_string(s_equip_tab_ids.size()) + "...";
                     }
                     break;
@@ -796,18 +826,22 @@ namespace AlterEgo {
                     if (s_equip_tab_idx >= (int)s_equip_tab_ids.size()) {
                         // All equipment tabs done → supplemental /equipment
                         s_fetch_phase = 3;
-                        s_fetch_message = "Fetching relic & tools...";
+                        s_fetch_message = s_current_char.name + ": Fetching relic & tools...";
                     } else {
-                        s_fetch_message = "Fetching equipment tab " +
+                        s_fetch_message = s_current_char.name + ": Fetching equipment tab " +
                             std::to_string(s_equip_tab_idx + 1) + "/" +
                             std::to_string(s_equip_tab_ids.size()) + "...";
                     }
                     break;
                 case 3: // supplemental /equipment done → buildtabs
                     s_fetch_phase = 4;
-                    s_fetch_message = "Fetching builds...";
+                    s_fetch_message = s_current_char.name + ": Fetching builds...";
                     break;
-                case 4: { // buildtabs done → add/update this character, then next
+                case 4: // buildtabs done → crafting
+                    s_fetch_phase = 5;
+                    s_fetch_message = s_current_char.name + ": Fetching crafting...";
+                    break;
+                case 5: { // crafting done → add/update this character, then next
                     // Add or update this character in the list
                     bool found = false;
                     for (auto& existing : s_characters) {
@@ -832,7 +866,7 @@ namespace AlterEgo {
                         s_fetch_phase = 0;
                         s_equip_tab_ids.clear();
                         s_equip_tab_idx = 0;
-                        s_fetch_message = "Fetching " + s_current_char.name + " (" +
+                        s_fetch_message = s_current_char.name + ": Fetching (" +
                             std::to_string(s_chars_fetched + 1) + "/" +
                             std::to_string(s_chars_total) + ")...";
                     } else {
@@ -851,7 +885,7 @@ namespace AlterEgo {
             SaveCharacterData();
         } else {
             // Save after each character completes (for incremental persistence)
-            if (phase == 4) SaveCharacterData();
+            if (phase == 5) SaveCharacterData();
             FetchCharacterPhase();
         }
     }
@@ -1003,11 +1037,24 @@ namespace AlterEgo {
         ch.active_equipment_tab = cj.value("active_equipment_tab", 0);
 
         if (cj.contains("crafting") && cj["crafting"].is_array()) {
+            std::vector<std::tuple<std::string, int, bool>> allCrafts;
             for (const auto& craft : cj["crafting"]) {
-                if (craft.value("active", false)) {
-                    ch.crafting.push_back(craft.value("discipline", ""));
-                    ch.crafting_levels.push_back(craft.value("rating", 0));
+                int rating = craft.value("rating", 0);
+                if (rating >= 1) {
+                    allCrafts.emplace_back(
+                        craft.value("discipline", ""),
+                        rating,
+                        craft.value("active", false));
                 }
+            }
+            std::sort(allCrafts.begin(), allCrafts.end(),
+                [](const auto& a, const auto& b) {
+                    return std::get<2>(a) > std::get<2>(b);
+                });
+            for (const auto& [disc, lvl, active] : allCrafts) {
+                ch.crafting.push_back(disc);
+                ch.crafting_levels.push_back(lvl);
+                ch.crafting_active.push_back(active);
             }
         }
 
@@ -1037,6 +1084,13 @@ namespace AlterEgo {
 
     const std::string& GW2API::GetFetchStatusMessage() {
         return s_fetch_message;
+    }
+
+    std::string GW2API::GetCurrentFetchCharName() {
+        std::lock_guard<std::mutex> lock(s_mutex);
+        if (s_fetch_status == FetchStatus::InProgress)
+            return s_current_char.name;
+        return "";
     }
 
     bool GW2API::HasCharacterData() {
@@ -1641,6 +1695,7 @@ namespace AlterEgo {
                         json craft;
                         craft["discipline"] = ch.crafting[ci];
                         craft["rating"] = (ci < ch.crafting_levels.size()) ? ch.crafting_levels[ci] : 0;
+                        craft["active"] = (ci < ch.crafting_active.size()) ? ch.crafting_active[ci] : true;
                         craft_arr.push_back(craft);
                     }
                     cj["crafting"] = craft_arr;
@@ -1750,6 +1805,7 @@ namespace AlterEgo {
                         for (const auto& craft : cj["crafting"]) {
                             ch.crafting.push_back(craft.value("discipline", ""));
                             ch.crafting_levels.push_back(craft.value("rating", 0));
+                            ch.crafting_active.push_back(craft.value("active", true));
                         }
                     }
                     ch.active_build_tab = cj.value("active_build_tab", 0);
@@ -1899,6 +1955,34 @@ namespace AlterEgo {
                 [&](const SavedBuild& b) { return b.id == id; });
             if (it == s_saved_builds.end()) return false;
             s_saved_builds.erase(it, s_saved_builds.end());
+        }
+        return SaveBuildLibrary();
+    }
+
+    bool GW2API::UpdateSavedBuild(const std::string& id, const std::string& name, const std::string& notes) {
+        {
+            std::lock_guard<std::mutex> lock(s_mutex);
+            for (auto& b : s_saved_builds) {
+                if (b.id == id) {
+                    b.name = name;
+                    b.notes = notes;
+                    break;
+                }
+            }
+        }
+        return SaveBuildLibrary();
+    }
+
+    bool GW2API::ReorderSavedBuild(int fromIdx, int toIdx) {
+        {
+            std::lock_guard<std::mutex> lock(s_mutex);
+            int n = (int)s_saved_builds.size();
+            if (fromIdx < 0 || fromIdx >= n || toIdx < 0 || toIdx > n) return false;
+            SavedBuild moved = std::move(s_saved_builds[fromIdx]);
+            s_saved_builds.erase(s_saved_builds.begin() + fromIdx);
+            int insertAt = (fromIdx < toIdx) ? toIdx - 1 : toIdx;
+            if (insertAt > (int)s_saved_builds.size()) insertAt = (int)s_saved_builds.size();
+            s_saved_builds.insert(s_saved_builds.begin() + insertAt, std::move(moved));
         }
         return SaveBuildLibrary();
     }

@@ -43,6 +43,11 @@ set(SOURCES
     src/GW2API.cpp
     src/IconManager.cpp
     src/ChatLink.cpp
+    src/HttpClient.cpp
+    src/SkinCache.cpp
+    src/OwnedSkins.cpp
+    src/Commerce.cpp
+    src/WikiImage.cpp
     ${IMGUI_SOURCES}
 )
 
@@ -59,6 +64,7 @@ set_target_properties(AlterEgo PROPERTIES
 target_link_libraries(AlterEgo
     gdi32
     wininet
+    shell32
 )
 
 # Module definition file for clean DLL export

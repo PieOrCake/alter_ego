@@ -197,8 +197,9 @@ namespace AlterEgo {
         std::string created;        // ISO date
         std::string last_modified;  // ISO date — last login/modification
         int deaths = 0;
-        std::vector<std::string> crafting;      // Active crafting disciplines
+        std::vector<std::string> crafting;      // Crafting disciplines (active first)
         std::vector<int> crafting_levels;
+        std::vector<bool> crafting_active;      // Whether each discipline is active
         std::vector<EquipmentItem> equipment;
         std::vector<BuildTemplate> build_tabs;
         std::map<int, std::string> equipment_tab_names; // tab number -> name
@@ -289,6 +290,7 @@ namespace AlterEgo {
         // --- Fetch state ---
         static FetchStatus GetFetchStatus();
         static const std::string& GetFetchStatusMessage();
+        static std::string GetCurrentFetchCharName();
 
         // --- Query ---
         static bool HasCharacterData();
@@ -337,6 +339,8 @@ namespace AlterEgo {
         static const std::vector<SavedBuild>& GetSavedBuilds();
         static bool AddSavedBuild(SavedBuild build);
         static bool RemoveSavedBuild(const std::string& id);
+        static bool UpdateSavedBuild(const std::string& id, const std::string& name, const std::string& notes);
+        static bool ReorderSavedBuild(int fromIdx, int toIdx);
         static bool LoadBuildLibrary();
         static bool SaveBuildLibrary();
 

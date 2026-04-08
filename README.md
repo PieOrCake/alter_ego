@@ -29,12 +29,23 @@ If an LLM creating software upsets you, then perhaps this repo isn't for you. Mo
   - Weapon skills display (with Elementalist attunement and Thief dual-wield support)
   - Gear customization: stat combos, runes, sigils, weapon types
   - Filter by profession and game mode, search by name
+- **Skinventory** — Browse all skins in the game, track which you own
+  - Filter by type, subtype, weight class
+  - Skin detail panel with wiki images, TP prices, vendor prices
+  - Shopping list for tracking skins you want to acquire
+- **Clears** — Track daily and weekly completion across game modes
+  - Daily Fractals grouped by tier with completion status
+  - Daily Raid Bounties
+  - Weekly Strike Missions (per-encounter tracking)
+  - Weekly Raids (per-wing, per-encounter tracking)
+  - Auto-refreshes at daily/weekly reset times and every 10 minutes
+  - Data cached to disk for instant display on addon load
 - **Chat Link Support** — Full import/export of GW2 chat links
   - Item links (with skin, upgrades, infusions)
   - Build template links
   - Skin links
   - Right-click context menu for copying links
-- **Hoard & Seek Integration** — Uses [Hoard & Seek](https://github.com/PieOrCake/hoard_and_seek) as a data source for account-wide character and equipment data
+- **Hoard & Seek Integration** — Uses [Hoard & Seek](https://github.com/PieOrCake/hoard_and_seek) as a data source for account-wide character, equipment, and achievement data
 
 ## Screenshots
 

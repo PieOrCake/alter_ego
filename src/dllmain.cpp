@@ -20,6 +20,11 @@
 #include "ChatLink.h"
 #include "HoardAndSeekAPI.h"
 #include "SpecDescriptions.h"
+#include "SkinCache.h"
+#include "OwnedSkins.h"
+#include "Commerce.h"
+#include "WikiImage.h"
+#include "HttpClient.h"
 #include <nlohmann/json.hpp>
 
 // Version constants
@@ -76,8 +81,91 @@ static int g_SelectedEquipTab = 0;     // Equipment tab filter
 static int g_SelectedBuildTab = 0;     // Build tab filter
 static bool g_ShowQAIcon = true;
 static bool g_CompactCharList = false;
+static bool g_ShowCraftingIcons = true;
+static bool g_ShowAge = false;
+static bool g_ShowPlaytime = false;
+static bool g_ShowLastLogin = false;
+static int g_BirthdayMode = 1;         // 0 = Always, 1 = A week out, 2 = Never
 static bool g_DetailsFetched = false;  // Track if we've requested details for current character
-static int g_MainTab = 0;             // 0 = Characters, 1 = Build Library
+static int g_MainTab = 0;             // 0 = Characters, 1 = Build Library, 2 = Skinventory
+static std::chrono::steady_clock::time_point g_FetchDoneTime{}; // For status message fade-out
+
+// Skinventory UI state
+static int g_SkinActiveTab = 0; // 0 = Browser, 1 = Shopping List
+static bool g_SkinSwitchToBrowser = false;
+static bool g_SkinScrollToSkin = false;
+static std::string g_SkinSelectedType = "Armor";
+static std::string g_SkinSelectedWeightClass = "Heavy";
+static std::string g_SkinSelectedSubtype = "Helm";
+static uint32_t g_SkinSelectedId = 0;
+static char g_SkinSearchFilter[256] = "";
+static bool g_SkinShowOwned = true;
+static bool g_SkinShowUnowned = true;
+static bool g_SkinRefreshOwned = false;
+static bool g_SkinInitialized = false;
+
+// Shopping list state
+struct SkinShopEntry {
+    uint32_t skinId;
+    int price;      // in copper
+    int source;     // 0 = TP, 1 = Vendor
+};
+static std::vector<SkinShopEntry> g_SkinShopList;
+static bool g_SkinShopListDirty = true;
+
+// Clears tracker state
+#define EV_AE_CLEARS_ACH_RESPONSE "EV_ALTER_EGO_CLEARS_ACH_RESP"
+static void OnClearsAchResponse(void* eventArgs);
+
+// Achievement categories: 88 = Daily Fractals, 475 = Daily Raid Bounties, 477 = Weekly Raids
+static const uint32_t CAT_DAILY_FRACTALS = 88;
+static const uint32_t CAT_DAILY_BOUNTIES = 475;
+static const uint32_t CAT_WEEKLY_RAIDS   = 477;
+static const uint32_t ACH_WEEKLY_STRIKES = 9125; // "Weekly Raid Encounters" — tracks all strikes
+
+struct ClearEntry {
+    uint32_t id = 0;
+    std::string name;
+    std::string tier;              // For fractals: "T1".."T4", "Rec"
+    bool done = false;
+    int32_t current = 0;
+    int32_t max = 0;
+    std::vector<std::string> bitNames;  // From API bits[].text
+    std::vector<bool> bitDone;          // Per-bit completion from H&S
+};
+
+static std::vector<ClearEntry> g_DailyFractals;   // cat 88
+static std::vector<ClearEntry> g_DailyBounties;   // cat 475
+static std::vector<ClearEntry> g_WeeklyWings;     // cat 477 per-wing achievements
+static ClearEntry g_WeeklyStrikes;                 // ach 9125
+
+static std::mutex g_ClearsMutex;
+static bool g_ClearsFetching = false;
+static bool g_ClearsFetched = false;
+static std::string g_ClearsStatusMsg;
+
+// Reset time tracking
+static std::chrono::system_clock::time_point g_LastDailyReset{};
+static std::chrono::system_clock::time_point g_LastWeeklyReset{};
+static std::chrono::steady_clock::time_point g_LastClearsCompletionQuery{};
+
+// Character search
+static char g_CharSearchBuf[128] = "";
+
+// MumbleLink identity for current character indicator
+struct MumbleIdentity {
+    char Name[20];
+    unsigned Profession;
+    unsigned Specialization;
+    unsigned Race;
+    unsigned MapID;
+    unsigned WorldID;
+    unsigned TeamColorID;
+    bool IsCommander;
+    float FOV;
+    unsigned UISize;
+};
+static std::string g_CurrentCharName; // currently logged-in character name from MumbleLink
 
 // Build Library UI state
 static int g_LibSelectedIdx = -1;
@@ -89,6 +177,10 @@ static int g_LibImportMode = 0;        // GameMode for import
 static bool g_LibShowImport = false;
 static std::string g_LibImportError;
 static bool g_LibDetailsFetched = false;
+static int g_LibDragIdx = -1;          // drag-and-drop source index
+static char g_LibEditName[128] = "";   // inline rename buffer
+static char g_LibEditNotes[512] = ""; // inline notes buffer
+static std::string g_LibEditBuildId;   // which build is being edited
 
 // Character list sorting
 enum CharSortMode { Sort_Custom = 0, Sort_Name, Sort_Profession, Sort_Level, Sort_Age, Sort_Birthday };
@@ -323,6 +415,33 @@ static uint32_t GetProfessionIconId(const std::string& prof) {
     return it != ids.end() ? it->second : 0;
 }
 
+// Crafting discipline icon helpers (wiki tango icons, stable IDs 9100001+)
+static uint32_t GetCraftingIconId(const std::string& disc) {
+    static const std::unordered_map<std::string, uint32_t> ids = {
+        {"Armorsmith", 9100001}, {"Artificer", 9100002}, {"Chef", 9100003},
+        {"Huntsman", 9100004}, {"Jeweler", 9100005}, {"Leatherworker", 9100006},
+        {"Scribe", 9100007}, {"Tailor", 9100008}, {"Weaponsmith", 9100009}
+    };
+    auto it = ids.find(disc);
+    return it != ids.end() ? it->second : 0;
+}
+
+static const char* GetCraftingIconUrl(const std::string& disc) {
+    static const std::unordered_map<std::string, std::string> urls = {
+        {"Armorsmith",    "https://wiki.guildwars2.com/images/3/32/Armorsmith_tango_icon_20px.png"},
+        {"Artificer",     "https://wiki.guildwars2.com/images/b/b7/Artificer_tango_icon_20px.png"},
+        {"Chef",          "https://wiki.guildwars2.com/images/8/8f/Chef_tango_icon_20px.png"},
+        {"Huntsman",      "https://wiki.guildwars2.com/images/f/f3/Huntsman_tango_icon_20px.png"},
+        {"Jeweler",       "https://wiki.guildwars2.com/images/f/f2/Jeweler_tango_icon_20px.png"},
+        {"Leatherworker", "https://wiki.guildwars2.com/images/e/e5/Leatherworker_tango_icon_20px.png"},
+        {"Scribe",        "https://wiki.guildwars2.com/images/0/0b/Scribe_tango_icon_20px.png"},
+        {"Tailor",        "https://wiki.guildwars2.com/images/4/4d/Tailor_tango_icon_20px.png"},
+        {"Weaponsmith",   "https://wiki.guildwars2.com/images/4/46/Weaponsmith_tango_icon_20px.png"}
+    };
+    auto it = urls.find(disc);
+    return it != urls.end() ? it->second.c_str() : nullptr;
+}
+
 // Copy text to Windows clipboard
 static void CopyToClipboard(const std::string& text) {
     if (!OpenClipboard(NULL)) return;
@@ -347,6 +466,11 @@ static void SaveSettings() {
     nlohmann::json j;
     j["show_qa_icon"] = g_ShowQAIcon;
     j["compact_char_list"] = g_CompactCharList;
+    j["show_crafting_icons"] = g_ShowCraftingIcons;
+    j["show_age"] = g_ShowAge;
+    j["show_playtime"] = g_ShowPlaytime;
+    j["show_last_login"] = g_ShowLastLogin;
+    j["birthday_mode"] = g_BirthdayMode;
     std::ofstream file(path);
     if (file.is_open()) file << j.dump(2);
 }
@@ -359,6 +483,11 @@ static void LoadSettings() {
         auto j = nlohmann::json::parse(file);
         if (j.contains("show_qa_icon")) g_ShowQAIcon = j["show_qa_icon"].get<bool>();
         if (j.contains("compact_char_list")) g_CompactCharList = j["compact_char_list"].get<bool>();
+        if (j.contains("show_crafting_icons")) g_ShowCraftingIcons = j["show_crafting_icons"].get<bool>();
+        if (j.contains("show_age")) g_ShowAge = j["show_age"].get<bool>();
+        if (j.contains("show_playtime")) g_ShowPlaytime = j["show_playtime"].get<bool>();
+        if (j.contains("show_last_login")) g_ShowLastLogin = j["show_last_login"].get<bool>();
+        if (j.contains("birthday_mode")) g_BirthdayMode = j["birthday_mode"].get<int>();
     } catch (...) {}
 }
 
@@ -391,6 +520,133 @@ static void LoadCharSortConfig() {
     } catch (...) {}
 }
 
+// Clears cache persistence (forward declarations for functions defined in Clears backend section)
+static std::chrono::system_clock::time_point CalcLastDailyReset(std::chrono::system_clock::time_point now);
+static std::chrono::system_clock::time_point CalcLastWeeklyReset(std::chrono::system_clock::time_point now);
+static void FetchClears();
+
+static void SaveClearsCache() {
+    std::string dir = AlterEgo::GW2API::GetDataDirectory();
+    std::filesystem::create_directories(dir);
+    std::string path = dir + "/clears_cache.json";
+
+    nlohmann::json j;
+    // Store fetch timestamp as seconds since epoch
+    auto epochSecs = std::chrono::duration_cast<std::chrono::seconds>(
+        std::chrono::system_clock::now().time_since_epoch()).count();
+    j["fetch_time"] = epochSecs;
+
+    auto serializeEntry = [](const ClearEntry& e) -> nlohmann::json {
+        nlohmann::json ej;
+        ej["id"] = e.id;
+        ej["name"] = e.name;
+        ej["tier"] = e.tier;
+        ej["done"] = e.done;
+        ej["current"] = e.current;
+        ej["max"] = e.max;
+        ej["bitNames"] = e.bitNames;
+        std::vector<int> bits;
+        for (bool b : e.bitDone) bits.push_back(b ? 1 : 0);
+        ej["bitDone"] = bits;
+        return ej;
+    };
+
+    nlohmann::json fractals = nlohmann::json::array();
+    for (const auto& e : g_DailyFractals) fractals.push_back(serializeEntry(e));
+    j["dailyFractals"] = fractals;
+
+    nlohmann::json bounties = nlohmann::json::array();
+    for (const auto& e : g_DailyBounties) bounties.push_back(serializeEntry(e));
+    j["dailyBounties"] = bounties;
+
+    nlohmann::json wings = nlohmann::json::array();
+    for (const auto& e : g_WeeklyWings) wings.push_back(serializeEntry(e));
+    j["weeklyWings"] = wings;
+
+    j["weeklyStrikes"] = serializeEntry(g_WeeklyStrikes);
+
+    std::ofstream file(path);
+    if (file.is_open()) file << j.dump(2);
+}
+
+static void LoadClearsCache() {
+    std::string path = AlterEgo::GW2API::GetDataDirectory() + "/clears_cache.json";
+    std::ifstream file(path);
+    if (!file.is_open()) return;
+
+    auto deserializeEntry = [](const nlohmann::json& ej) -> ClearEntry {
+        ClearEntry e;
+        e.id = ej.value("id", 0u);
+        e.name = ej.value("name", "");
+        e.tier = ej.value("tier", "");
+        e.done = ej.value("done", false);
+        e.current = ej.value("current", 0);
+        e.max = ej.value("max", 0);
+        if (ej.contains("bitNames") && ej["bitNames"].is_array()) {
+            for (const auto& bn : ej["bitNames"]) e.bitNames.push_back(bn.get<std::string>());
+        }
+        if (ej.contains("bitDone") && ej["bitDone"].is_array()) {
+            for (const auto& bd : ej["bitDone"]) e.bitDone.push_back(bd.get<int>() != 0);
+        }
+        return e;
+    };
+
+    try {
+        auto j = nlohmann::json::parse(file);
+
+        int64_t fetchEpoch = j.value("fetch_time", (int64_t)0);
+        auto fetchTime = std::chrono::system_clock::from_time_t((time_t)fetchEpoch);
+
+        // Check if a reset has occurred since the cached data was fetched
+        auto now = std::chrono::system_clock::now();
+        auto dailyReset = CalcLastDailyReset(now);
+        auto weeklyReset = CalcLastWeeklyReset(now);
+        bool dailyStale = fetchTime < dailyReset;
+        bool weeklyStale = fetchTime < weeklyReset;
+
+        {
+            std::lock_guard<std::mutex> lock(g_ClearsMutex);
+
+            // Load daily data only if no daily reset has occurred since fetch
+            if (!dailyStale) {
+                if (j.contains("dailyFractals") && j["dailyFractals"].is_array()) {
+                    for (const auto& ej : j["dailyFractals"])
+                        g_DailyFractals.push_back(deserializeEntry(ej));
+                }
+                if (j.contains("dailyBounties") && j["dailyBounties"].is_array()) {
+                    for (const auto& ej : j["dailyBounties"])
+                        g_DailyBounties.push_back(deserializeEntry(ej));
+                }
+            }
+
+            // Load weekly data only if no weekly reset has occurred since fetch
+            if (!weeklyStale) {
+                if (j.contains("weeklyWings") && j["weeklyWings"].is_array()) {
+                    for (const auto& ej : j["weeklyWings"])
+                        g_WeeklyWings.push_back(deserializeEntry(ej));
+                }
+                if (j.contains("weeklyStrikes")) {
+                    g_WeeklyStrikes = deserializeEntry(j["weeklyStrikes"]);
+                }
+            }
+
+            // If we loaded any data, mark as fetched
+            if (!g_DailyFractals.empty() || !g_WeeklyWings.empty()) {
+                g_ClearsFetched = true;
+                g_LastClearsCompletionQuery = std::chrono::steady_clock::now();
+            }
+
+            g_LastDailyReset = dailyReset;
+            g_LastWeeklyReset = weeklyReset;
+        }
+
+        // If any data is stale, trigger a full re-fetch
+        if (dailyStale || weeklyStale) {
+            FetchClears();
+        }
+    } catch (...) {}
+}
+
 // DLL entry point
 BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserved) {
     switch (ul_reason_for_call) {
@@ -408,6 +664,7 @@ void AddonUnload();
 void ProcessKeybind(const char* aIdentifier, bool aIsRelease);
 void AddonRender();
 void AddonOptions();
+void OnMumbleIdentityUpdated(void* eventArgs);
 
 // Icon size for item icons
 static const float ICON_SIZE = 40.0f;
@@ -1296,6 +1553,8 @@ static ImVec2 RenderTraitIcon(uint32_t trait_id, bool selected, bool isMinor, fl
 }
 
 static void RenderSkillIcon(uint32_t skill_id, float size);
+static bool DecodeBuildLink(const std::string& link, const std::string& name,
+                            AlterEgo::GameMode mode, AlterEgo::SavedBuild& out);
 
 static void RenderBuildPanel(const AlterEgo::Character& ch) {
     if (ch.build_tabs.empty()) {
@@ -1608,6 +1867,78 @@ static void RenderBuildPanel(const AlterEgo::Character& ch) {
         else
             ImGui::Text("Export this build as a GW2 chat link");
         ImGui::EndTooltip();
+    }
+
+    // Save to Library button
+    ImGui::SameLine();
+    if (ImGui::Button(hasPalette ? "Save to Library" : "Save to Library (loading...)") && hasPalette) {
+        // Build the chat link first
+        auto ProfCodeLib = [](const std::string& p) -> uint8_t {
+            if (p == "Guardian")     return 1;
+            if (p == "Warrior")      return 2;
+            if (p == "Engineer")     return 3;
+            if (p == "Ranger")       return 4;
+            if (p == "Thief")        return 5;
+            if (p == "Elementalist") return 6;
+            if (p == "Mesmer")       return 7;
+            if (p == "Necromancer")  return 8;
+            if (p == "Revenant")     return 9;
+            return 0;
+        };
+
+        AlterEgo::DecodedBuildLink saveLink{};
+        saveLink.profession = ProfCodeLib(bt.profession);
+        for (int i = 0; i < 3; i++) {
+            saveLink.specs[i].spec_id = (uint8_t)bt.specializations[i].spec_id;
+            for (int t = 0; t < 3; t++)
+                saveLink.specs[i].traits[t] = (uint8_t)bt.specializations[i].traits[t];
+        }
+        auto ToPaletteLib = [&](uint32_t skill_id) -> uint16_t {
+            if (skill_id == 0) return 0;
+            return AlterEgo::GW2API::GetPaletteIdFromSkill(bt.profession, skill_id);
+        };
+        saveLink.terrestrial_skills[0] = ToPaletteLib(bt.terrestrial_skills.heal);
+        saveLink.terrestrial_skills[1] = ToPaletteLib(bt.terrestrial_skills.utilities[0]);
+        saveLink.terrestrial_skills[2] = ToPaletteLib(bt.terrestrial_skills.utilities[1]);
+        saveLink.terrestrial_skills[3] = ToPaletteLib(bt.terrestrial_skills.utilities[2]);
+        saveLink.terrestrial_skills[4] = ToPaletteLib(bt.terrestrial_skills.elite);
+        saveLink.aquatic_skills[0] = ToPaletteLib(bt.aquatic_skills.heal);
+        saveLink.aquatic_skills[1] = ToPaletteLib(bt.aquatic_skills.utilities[0]);
+        saveLink.aquatic_skills[2] = ToPaletteLib(bt.aquatic_skills.utilities[1]);
+        saveLink.aquatic_skills[3] = ToPaletteLib(bt.aquatic_skills.utilities[2]);
+        saveLink.aquatic_skills[4] = ToPaletteLib(bt.aquatic_skills.elite);
+        if (bt.profession == "Ranger") {
+            saveLink.pets[0] = (uint8_t)bt.pets.terrestrial[0];
+            saveLink.pets[1] = (uint8_t)bt.pets.terrestrial[1];
+            saveLink.pets[2] = (uint8_t)bt.pets.aquatic[0];
+            saveLink.pets[3] = (uint8_t)bt.pets.aquatic[1];
+        }
+        if (bt.profession == "Revenant") {
+            auto LegByte = [](const std::string& s) -> uint8_t {
+                if (s.size() > 6 && s.substr(0, 6) == "Legend")
+                    return (uint8_t)std::atoi(s.c_str() + 6);
+                return 0;
+            };
+            saveLink.legends[0] = LegByte(bt.legends.terrestrial[0]);
+            saveLink.legends[1] = LegByte(bt.legends.terrestrial[1]);
+            saveLink.legends[2] = LegByte(bt.legends.aquatic[0]);
+            saveLink.legends[3] = LegByte(bt.legends.aquatic[1]);
+        }
+        for (auto w : bt.weapons)
+            saveLink.weapons.push_back((uint16_t)w);
+
+        std::string chatLink = AlterEgo::ChatLink::EncodeBuild(saveLink);
+
+        // Build a name from character + tab name
+        std::string buildName = ch.name + " - " +
+            (bt.name.empty() ? ("Tab " + std::to_string(bt.tab)) : bt.name);
+
+        // Decode the link to populate SavedBuild fields
+        AlterEgo::SavedBuild sb;
+        if (DecodeBuildLink(chatLink, buildName, AlterEgo::GameMode::PvE, sb)) {
+            AlterEgo::GW2API::AddSavedBuild(std::move(sb));
+            if (APIDefs) APIDefs->GUI_SendAlert("Build saved to library!");
+        }
     }
 
     // Draw profession/elite spec icon overlay in the top-right of the build panel
@@ -3466,6 +3797,9 @@ static void RenderBuildLibrary() {
 
     ImGui::BeginChild("LibList", ImVec2(listWidth, 0), true);
     {
+        struct LibItemRect { float yMin, yMax; int buildIdx; };
+        std::vector<LibItemRect> libItemRects;
+
         // Group by profession
         std::string lastProf;
         for (int i = 0; i < (int)builds.size(); i++) {
@@ -3498,12 +3832,66 @@ static void RenderBuildLibrary() {
                 g_LibSelectedIdx = i;
                 g_LibDetailsFetched = false;
             }
+
+            // Record rect for drag-and-drop
+            ImVec2 rMin = ImGui::GetItemRectMin();
+            ImVec2 rMax = ImGui::GetItemRectMax();
+            libItemRects.push_back({ rMin.y, rMax.y, i });
+
+            // Drag source
+            if (ImGui::BeginDragDropSource(ImGuiDragDropFlags_None)) {
+                g_LibDragIdx = i;
+                ImGui::SetDragDropPayload("BUILD_REORDER", &i, sizeof(int));
+                ImGui::Text("%s", b.name.c_str());
+                ImGui::EndDragDropSource();
+            }
+
             ImGui::SameLine(4);
             ImGui::BeginGroup();
             ImGui::Text("%s", b.name.c_str());
             ImGui::TextColored(ImVec4(0.5f, 0.5f, 0.5f, 1.0f), "%s", GameModeLabel(b.game_mode));
             ImGui::EndGroup();
             ImGui::PopID();
+        }
+
+        // Draw insertion line and handle drop
+        if (g_LibDragIdx >= 0 && ImGui::GetDragDropPayload() != nullptr) {
+            float mouseY = ImGui::GetMousePos().y;
+            int insertVisIdx = (int)libItemRects.size();
+            float bestLineY = 0;
+
+            for (int vi = 0; vi < (int)libItemRects.size(); vi++) {
+                float midY = (libItemRects[vi].yMin + libItemRects[vi].yMax) * 0.5f;
+                if (mouseY < midY) {
+                    insertVisIdx = vi;
+                    bestLineY = libItemRects[vi].yMin;
+                    break;
+                }
+            }
+            if (insertVisIdx == (int)libItemRects.size() && !libItemRects.empty())
+                bestLineY = libItemRects.back().yMax;
+
+            ImDrawList* dl = ImGui::GetWindowDrawList();
+            float xMin = ImGui::GetWindowPos().x + 2;
+            float xMax = xMin + ImGui::GetWindowContentRegionMax().x - 4;
+            dl->AddLine(ImVec2(xMin, bestLineY), ImVec2(xMax, bestLineY),
+                IM_COL32(100, 180, 255, 220), 2.0f);
+
+            if (ImGui::IsMouseReleased(0)) {
+                int targetBuildIdx = (insertVisIdx < (int)libItemRects.size())
+                    ? libItemRects[insertVisIdx].buildIdx : (int)builds.size();
+                if (g_LibDragIdx != targetBuildIdx) {
+                    AlterEgo::GW2API::ReorderSavedBuild(g_LibDragIdx, targetBuildIdx);
+                    // Fix selection to follow the moved build
+                    if (g_LibSelectedIdx == g_LibDragIdx) {
+                        int newIdx = (g_LibDragIdx < targetBuildIdx) ? targetBuildIdx - 1 : targetBuildIdx;
+                        g_LibSelectedIdx = newIdx;
+                    }
+                }
+                g_LibDragIdx = -1;
+            }
+        } else if (ImGui::IsMouseReleased(0)) {
+            g_LibDragIdx = -1;
         }
     }
     ImGui::EndChild();
@@ -3524,6 +3912,38 @@ static void RenderBuildLibrary() {
             }
             g_LibDetailsFetched = true;
         }
+
+        // Inline rename + notes editing
+        if (g_LibEditBuildId != build.id) {
+            g_LibEditBuildId = build.id;
+            strncpy(g_LibEditName, build.name.c_str(), sizeof(g_LibEditName) - 1);
+            g_LibEditName[sizeof(g_LibEditName) - 1] = '\0';
+            strncpy(g_LibEditNotes, build.notes.c_str(), sizeof(g_LibEditNotes) - 1);
+            g_LibEditNotes[sizeof(g_LibEditNotes) - 1] = '\0';
+        }
+
+        ImGui::Text("Name:");
+        ImGui::SameLine();
+        ImGui::SetNextItemWidth(250.0f);
+        if (ImGui::InputText("##edit_name", g_LibEditName, sizeof(g_LibEditName),
+                ImGuiInputTextFlags_EnterReturnsTrue)) {
+            AlterEgo::GW2API::UpdateSavedBuild(build.id, g_LibEditName, g_LibEditNotes);
+        }
+        if (ImGui::IsItemDeactivatedAfterEdit()) {
+            AlterEgo::GW2API::UpdateSavedBuild(build.id, g_LibEditName, g_LibEditNotes);
+        }
+
+        ImGui::Text("Notes:");
+        ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x);
+        if (ImGui::InputTextMultiline("##edit_notes", g_LibEditNotes, sizeof(g_LibEditNotes),
+                ImVec2(0, 60))) {
+            // live typing — save handled on deactivate
+        }
+        if (ImGui::IsItemDeactivatedAfterEdit()) {
+            AlterEgo::GW2API::UpdateSavedBuild(build.id, g_LibEditName, g_LibEditNotes);
+        }
+
+        ImGui::Separator();
 
         RenderSavedBuildPreview(build);
     } else {
@@ -3551,6 +3971,9 @@ void AddonLoad(AddonAPI_t* aApi) {
     LoadCharSortConfig();
     RebuildCharDisplayOrder();
 
+    // Subscribe to MumbleLink identity for current character indicator
+    APIDefs->Events_Subscribe("EV_MUMBLE_IDENTITY_UPDATED", OnMumbleIdentityUpdated);
+
     // Subscribe to H&S events
     APIDefs->Events_Subscribe(EV_HOARD_PONG, AlterEgo::GW2API::OnHoardPong);
     APIDefs->Events_Subscribe(EV_HOARD_DATA_UPDATED, AlterEgo::GW2API::OnHoardDataUpdated);
@@ -3558,6 +3981,7 @@ void AddonLoad(AddonAPI_t* aApi) {
     APIDefs->Events_Subscribe(EV_AE_CHAR_DATA_RESP, AlterEgo::GW2API::OnCharDataResponse);
     APIDefs->Events_Subscribe(EV_AE_SKIN_UNLOCK_RESP, AlterEgo::GW2API::OnSkinUnlocksResponse);
     APIDefs->Events_Subscribe(EV_AE_ITEM_LOC_RESP, AlterEgo::GW2API::OnItemLocationResponse);
+    APIDefs->Events_Subscribe(EV_AE_CLEARS_ACH_RESPONSE, OnClearsAchResponse);
 
     // Register render functions
     APIDefs->GUI_Register(RT_Render, AddonRender);
@@ -3570,8 +3994,9 @@ void AddonLoad(AddonAPI_t* aApi) {
     APIDefs->Textures_LoadFromMemory(TEX_ICON, (void*)ICON_NORMAL, ICON_NORMAL_size, nullptr);
     APIDefs->Textures_LoadFromMemory(TEX_ICON_HOVER, (void*)ICON_HOVER, ICON_HOVER_size, nullptr);
 
-    // Load settings
+    // Load settings and cached data
     LoadSettings();
+    LoadClearsCache();
 
     // Register quick access shortcut
     if (g_ShowQAIcon) {
@@ -3593,10 +4018,43 @@ void AddonLoad(AddonAPI_t* aApi) {
     // Ping H&S to check availability
     AlterEgo::GW2API::PingHoard();
 
+    // Initialize Skinventory subsystems
+    {
+        std::string dataDir = AlterEgo::GW2API::GetDataDirectory();
+        std::string skinDataDir = dataDir + "\\Skinventory";
+        try { std::filesystem::create_directories(skinDataDir); } catch (...) {}
+        std::string wikiCacheDir = skinDataDir + "\\wiki_cache";
+
+        Skinventory::SkinCache::SetDataDirectory(skinDataDir);
+        Skinventory::Commerce::SetDataDirectory(skinDataDir);
+        Skinventory::OwnedSkins::SetDataDirectory(skinDataDir);
+        Skinventory::OwnedSkins::Initialize(APIDefs);
+        Skinventory::WikiImage::Initialize(APIDefs, wikiCacheDir);
+
+        if (Skinventory::SkinCache::LoadFromDisk()) {
+            Skinventory::SkinCache::UpdateCacheAsync();
+        } else {
+            Skinventory::SkinCache::FetchAllSkinsAsync();
+        }
+
+        if (!Skinventory::Commerce::LoadItemMap()) {
+            Skinventory::Commerce::BuildItemMapAsync();
+        }
+
+        // Ping H&S so Skinventory's OwnedSkins receives the pong
+        // (must be after Initialize which subscribes to EV_HOARD_PONG)
+        Skinventory::OwnedSkins::PingHoardAndSeek();
+
+        g_SkinInitialized = true;
+    }
+
     APIDefs->Log(LOGL_INFO, "AlterEgo", "Addon loaded successfully");
 }
 
 void AddonUnload() {
+    // Unsubscribe MumbleLink identity
+    APIDefs->Events_Unsubscribe("EV_MUMBLE_IDENTITY_UPDATED", OnMumbleIdentityUpdated);
+
     // Unsubscribe H&S events
     APIDefs->Events_Unsubscribe(EV_HOARD_PONG, AlterEgo::GW2API::OnHoardPong);
     APIDefs->Events_Unsubscribe(EV_HOARD_DATA_UPDATED, AlterEgo::GW2API::OnHoardDataUpdated);
@@ -3604,6 +4062,11 @@ void AddonUnload() {
     APIDefs->Events_Unsubscribe(EV_AE_CHAR_DATA_RESP, AlterEgo::GW2API::OnCharDataResponse);
     APIDefs->Events_Unsubscribe(EV_AE_SKIN_UNLOCK_RESP, AlterEgo::GW2API::OnSkinUnlocksResponse);
     APIDefs->Events_Unsubscribe(EV_AE_ITEM_LOC_RESP, AlterEgo::GW2API::OnItemLocationResponse);
+    APIDefs->Events_Unsubscribe(EV_AE_CLEARS_ACH_RESPONSE, OnClearsAchResponse);
+
+    // Shutdown Skinventory subsystems
+    Skinventory::WikiImage::Shutdown();
+    Skinventory::OwnedSkins::Shutdown();
 
     AlterEgo::IconManager::Shutdown();
     AlterEgo::GW2API::Shutdown();
@@ -3615,6 +4078,12 @@ void AddonUnload() {
 
     SaveSettings();
     APIDefs = nullptr;
+}
+
+void OnMumbleIdentityUpdated(void* eventArgs) {
+    if (!eventArgs) return;
+    const MumbleIdentity* id = (const MumbleIdentity*)eventArgs;
+    g_CurrentCharName = std::string(id->Name);
 }
 
 void ProcessKeybind(const char* aIdentifier, bool aIsRelease) {
@@ -3629,11 +4098,1429 @@ void ProcessKeybind(const char* aIdentifier, bool aIsRelease) {
     }
 }
 
+// =========================================================================
+// Clears - Backend
+// =========================================================================
+
+// Calculate the most recent daily reset (00:00 UTC) before 'now'
+static std::chrono::system_clock::time_point CalcLastDailyReset(std::chrono::system_clock::time_point now) {
+    auto tt = std::chrono::system_clock::to_time_t(now);
+    struct tm utc{};
+#ifdef _WIN32
+    gmtime_s(&utc, &tt);
+#else
+    gmtime_r(&tt, &utc);
+#endif
+    utc.tm_hour = 0; utc.tm_min = 0; utc.tm_sec = 0;
+    auto reset = std::chrono::system_clock::from_time_t(
+#ifdef _WIN32
+        _mkgmtime(&utc)
+#else
+        timegm(&utc)
+#endif
+    );
+    if (reset > now) reset -= std::chrono::hours(24);
+    return reset;
+}
+
+// Calculate the most recent weekly reset (Monday 07:30 UTC) before 'now'
+static std::chrono::system_clock::time_point CalcLastWeeklyReset(std::chrono::system_clock::time_point now) {
+    auto tt = std::chrono::system_clock::to_time_t(now);
+    struct tm utc{};
+#ifdef _WIN32
+    gmtime_s(&utc, &tt);
+#else
+    gmtime_r(&tt, &utc);
+#endif
+    // tm_wday: 0=Sun, 1=Mon, ...
+    int daysSinceMonday = (utc.tm_wday + 6) % 7; // Mon=0, Tue=1, ... Sun=6
+    utc.tm_hour = 7; utc.tm_min = 30; utc.tm_sec = 0;
+    utc.tm_mday -= daysSinceMonday;
+    auto reset = std::chrono::system_clock::from_time_t(
+#ifdef _WIN32
+        _mkgmtime(&utc)
+#else
+        timegm(&utc)
+#endif
+    );
+    if (reset > now) reset -= std::chrono::hours(24 * 7);
+    return reset;
+}
+
+// Format time until next reset as human-readable string
+static std::string FormatTimeUntilReset(std::chrono::system_clock::time_point resetTime,
+                                         std::chrono::hours period) {
+    auto now = std::chrono::system_clock::now();
+    auto nextReset = resetTime + period;
+    if (nextReset <= now) return "now";
+    auto remaining = std::chrono::duration_cast<std::chrono::seconds>(nextReset - now).count();
+    int h = (int)(remaining / 3600);
+    int m = (int)((remaining % 3600) / 60);
+    if (h > 0) {
+        char buf[32];
+        snprintf(buf, sizeof(buf), "%dh %dm", h, m);
+        return buf;
+    }
+    char buf[32];
+    snprintf(buf, sizeof(buf), "%dm", m);
+    return buf;
+}
+
+// Parse tier from fractal achievement name
+static std::string ParseFractalTier(const std::string& name) {
+    if (name.find("Tier 4") != std::string::npos) return "T4";
+    if (name.find("Tier 3") != std::string::npos) return "T3";
+    if (name.find("Tier 2") != std::string::npos) return "T2";
+    if (name.find("Tier 1") != std::string::npos) return "T1";
+    if (name.find("Recommended") != std::string::npos) return "Rec";
+    return "";
+}
+
+// Send H&S achievement query for all currently tracked clears IDs
+static void SendClearsAchQuery() {
+    std::vector<uint32_t> allIds;
+    {
+        std::lock_guard<std::mutex> lock(g_ClearsMutex);
+        for (const auto& e : g_DailyFractals) allIds.push_back(e.id);
+        for (const auto& e : g_DailyBounties) allIds.push_back(e.id);
+        for (const auto& e : g_WeeklyWings)   allIds.push_back(e.id);
+        if (g_WeeklyStrikes.id > 0) allIds.push_back(g_WeeklyStrikes.id);
+    }
+    if (allIds.empty() || !APIDefs) return;
+
+    HoardQueryAchievementRequest req{};
+    req.api_version = HOARD_API_VERSION;
+    strncpy(req.requester, "Alter Ego", sizeof(req.requester) - 1);
+    strncpy(req.response_event, EV_AE_CLEARS_ACH_RESPONSE, sizeof(req.response_event) - 1);
+    req.id_count = (uint32_t)std::min(allIds.size(), (size_t)200);
+    for (uint32_t i = 0; i < req.id_count; i++) {
+        req.ids[i] = allIds[i];
+    }
+    APIDefs->Events_Raise(EV_HOARD_QUERY_ACHIEVEMENT, &req);
+}
+
+// H&S achievement response handler for all clears
+static void OnClearsAchResponse(void* eventArgs) {
+    if (!eventArgs) return;
+    auto* resp = (HoardQueryAchievementResponse*)eventArgs;
+    if (resp->api_version != HOARD_API_VERSION) { delete resp; return; }
+
+    if (resp->status != HOARD_STATUS_OK) {
+        std::lock_guard<std::mutex> lock(g_ClearsMutex);
+        if (resp->status == HOARD_STATUS_PENDING) {
+            g_ClearsStatusMsg = "Waiting for H&S permission...";
+            // Retry after a delay — user is being prompted by H&S
+            std::thread([]() {
+                std::this_thread::sleep_for(std::chrono::seconds(3));
+                SendClearsAchQuery();
+            }).detach();
+        } else {
+            if (resp->status == HOARD_STATUS_DENIED)
+                g_ClearsStatusMsg = "H&S permission denied";
+            else
+                g_ClearsStatusMsg = "H&S error";
+            g_ClearsFetching = false;
+        }
+        delete resp;
+        return;
+    }
+
+    // Build lookup maps from response
+    struct AchData {
+        bool done;
+        int32_t current;
+        int32_t max;
+        std::set<uint32_t> bits;
+    };
+    std::unordered_map<uint32_t, AchData> achMap;
+    for (uint32_t i = 0; i < resp->entry_count; i++) {
+        auto& e = resp->entries[i];
+        AchData ad;
+        ad.done = e.done;
+        ad.current = e.current;
+        ad.max = e.max;
+        for (uint32_t b = 0; b < e.bit_count && b < 64; b++) {
+            ad.bits.insert(e.bits[b]);
+        }
+        achMap[e.id] = std::move(ad);
+    }
+
+    {
+        std::lock_guard<std::mutex> lock(g_ClearsMutex);
+
+        // Apply to all tracked entries
+        auto applyTo = [&](ClearEntry& ce) {
+            auto it = achMap.find(ce.id);
+            if (it != achMap.end()) {
+                ce.done = it->second.done;
+                ce.current = it->second.current;
+                ce.max = it->second.max;
+                ce.bitDone.assign(ce.bitNames.size(), false);
+                for (uint32_t bitIdx : it->second.bits) {
+                    if (bitIdx < ce.bitDone.size()) {
+                        ce.bitDone[bitIdx] = true;
+                    }
+                }
+            }
+        };
+
+        for (auto& e : g_DailyFractals)  applyTo(e);
+        for (auto& e : g_DailyBounties)  applyTo(e);
+        for (auto& e : g_WeeklyWings)    applyTo(e);
+        applyTo(g_WeeklyStrikes);
+
+        g_ClearsFetched = true;
+        g_ClearsFetching = false;
+        g_ClearsStatusMsg = "";
+        g_LastClearsCompletionQuery = std::chrono::steady_clock::now();
+    }
+
+    // Persist to disk
+    SaveClearsCache();
+
+    delete resp;
+}
+
+// Helper: fetch a category's achievement IDs from public API
+static std::vector<uint32_t> FetchCategoryIds(uint32_t catId) {
+    std::string url = "https://api.guildwars2.com/v2/achievements/categories/" + std::to_string(catId);
+    std::string json = Skinventory::HttpClient::Get(url);
+    std::vector<uint32_t> ids;
+    try {
+        auto j = nlohmann::json::parse(json);
+        if (j.contains("achievements") && j["achievements"].is_array()) {
+            for (const auto& id : j["achievements"]) {
+                ids.push_back(id.get<uint32_t>());
+            }
+        }
+    } catch (...) {}
+    return ids;
+}
+
+// Helper: fetch achievement details (name, bits) from public API
+static std::vector<ClearEntry> FetchAchievementDetails(const std::vector<uint32_t>& ids) {
+    std::vector<ClearEntry> entries;
+    if (ids.empty()) return entries;
+
+    std::string idStr;
+    for (size_t i = 0; i < ids.size(); i++) {
+        if (i > 0) idStr += ",";
+        idStr += std::to_string(ids[i]);
+    }
+    std::string json = Skinventory::HttpClient::Get(
+        "https://api.guildwars2.com/v2/achievements?ids=" + idStr);
+    if (json.empty()) return entries;
+
+    try {
+        auto j = nlohmann::json::parse(json);
+        if (j.is_array()) {
+            for (const auto& ach : j) {
+                ClearEntry ce;
+                ce.id = ach.value("id", 0u);
+                ce.name = ach.value("name", "");
+                if (ce.id == 0 || ce.name.empty()) continue;
+
+                // Parse bits (sub-objectives)
+                if (ach.contains("bits") && ach["bits"].is_array()) {
+                    for (const auto& bit : ach["bits"]) {
+                        ce.bitNames.push_back(bit.value("text", ""));
+                    }
+                }
+
+                // Parse tier count from tiers
+                if (ach.contains("tiers") && ach["tiers"].is_array()) {
+                    auto& tiers = ach["tiers"];
+                    if (!tiers.empty()) {
+                        ce.max = tiers.back().value("count", 0);
+                    }
+                }
+
+                entries.push_back(std::move(ce));
+            }
+        }
+    } catch (...) {}
+    return entries;
+}
+
+// Fetch all clears data (runs on background thread)
+static void FetchClears() {
+    if (g_ClearsFetching) return;
+    g_ClearsFetching = true;
+    {
+        std::lock_guard<std::mutex> lock(g_ClearsMutex);
+        g_ClearsStatusMsg = "Fetching achievement data...";
+        g_ClearsFetched = false;
+    }
+
+    std::thread([]() {
+        // Step 1: Fetch all category achievement IDs
+        auto fractalIds = FetchCategoryIds(CAT_DAILY_FRACTALS);
+        auto bountyIds  = FetchCategoryIds(CAT_DAILY_BOUNTIES);
+        auto weeklyIds  = FetchCategoryIds(CAT_WEEKLY_RAIDS);
+
+        if (fractalIds.empty() && bountyIds.empty() && weeklyIds.empty()) {
+            std::lock_guard<std::mutex> lock(g_ClearsMutex);
+            g_ClearsStatusMsg = "Failed to fetch achievement categories";
+            g_ClearsFetching = false;
+            return;
+        }
+
+        // Step 2: Fetch all achievement details
+        {
+            std::lock_guard<std::mutex> lock(g_ClearsMutex);
+            g_ClearsStatusMsg = "Fetching achievement details...";
+        }
+
+        auto fractalEntries = FetchAchievementDetails(fractalIds);
+        for (auto& e : fractalEntries) {
+            e.tier = ParseFractalTier(e.name);
+        }
+
+        auto bountyEntries = FetchAchievementDetails(bountyIds);
+        auto weeklyEntries = FetchAchievementDetails(weeklyIds);
+
+        // Separate weekly entries into wings vs strikes meta
+        ClearEntry strikesEntry{};
+        std::vector<ClearEntry> wingEntries;
+        for (auto& e : weeklyEntries) {
+            if (e.id == ACH_WEEKLY_STRIKES) {
+                strikesEntry = std::move(e);
+            } else if (!e.bitNames.empty()) {
+                // Per-wing achievements have bits for encounters
+                wingEntries.push_back(std::move(e));
+            }
+        }
+
+        {
+            std::lock_guard<std::mutex> lock(g_ClearsMutex);
+            g_DailyFractals = std::move(fractalEntries);
+            g_DailyBounties = std::move(bountyEntries);
+            g_WeeklyWings = std::move(wingEntries);
+            g_WeeklyStrikes = std::move(strikesEntry);
+            g_ClearsStatusMsg = "Querying completion...";
+        }
+
+        // Step 3: Query H&S for completion
+        SendClearsAchQuery();
+    }).detach();
+}
+
+// =========================================================================
+// Skinventory UI
+// =========================================================================
+
+static ImVec4 GetSkinRarityColor(const std::string& rarity) {
+    if (rarity == "Junk")       return ImVec4(0.67f, 0.67f, 0.67f, 1.0f);
+    if (rarity == "Basic")      return ImVec4(1.0f, 1.0f, 1.0f, 1.0f);
+    if (rarity == "Fine")       return ImVec4(0.38f, 0.58f, 1.0f, 1.0f);
+    if (rarity == "Masterwork") return ImVec4(0.12f, 0.72f, 0.12f, 1.0f);
+    if (rarity == "Rare")       return ImVec4(0.98f, 0.82f, 0.0f, 1.0f);
+    if (rarity == "Exotic")     return ImVec4(1.0f, 0.65f, 0.0f, 1.0f);
+    if (rarity == "Ascended")   return ImVec4(0.98f, 0.35f, 0.56f, 1.0f);
+    if (rarity == "Legendary")  return ImVec4(0.63f, 0.21f, 0.93f, 1.0f);
+    return ImVec4(0.8f, 0.8f, 0.8f, 1.0f);
+}
+
+static const ImVec4 COIN_GOLD   = ImVec4(0.85f, 0.75f, 0.10f, 1.0f);
+static const ImVec4 COIN_SILVER = ImVec4(0.75f, 0.75f, 0.75f, 1.0f);
+static const ImVec4 COIN_COPPER = ImVec4(0.72f, 0.45f, 0.20f, 1.0f);
+
+static void DrawCoinIcon(ImVec4 color, float radius) {
+    ImVec2 pos = ImGui::GetCursorScreenPos();
+    float y_center = pos.y + ImGui::GetTextLineHeight() * 0.5f;
+    ImGui::GetWindowDrawList()->AddCircleFilled(
+        ImVec2(pos.x + radius, y_center), radius,
+        ImGui::GetColorU32(color));
+    ImGui::GetWindowDrawList()->AddCircle(
+        ImVec2(pos.x + radius, y_center), radius,
+        ImGui::GetColorU32(ImVec4(color.x * 0.5f, color.y * 0.5f, color.z * 0.5f, 1.0f)));
+    ImGui::Dummy(ImVec2(radius * 2.0f + 1.0f, ImGui::GetTextLineHeight()));
+}
+
+static void RenderCoins(int copper) {
+    if (copper <= 0) {
+        ImGui::TextColored(COIN_COPPER, "0");
+        ImGui::SameLine(0, 2);
+        DrawCoinIcon(COIN_COPPER, 5.0f);
+        return;
+    }
+    int gold = copper / 10000;
+    int silver = (copper % 10000) / 100;
+    int cop = copper % 100;
+
+    bool needSame = false;
+    if (gold > 0) {
+        ImGui::TextColored(COIN_GOLD, "%d", gold);
+        ImGui::SameLine(0, 1);
+        DrawCoinIcon(COIN_GOLD, 5.0f);
+        needSame = true;
+    }
+    if (silver > 0 || gold > 0) {
+        if (needSame) ImGui::SameLine(0, 2);
+        ImGui::TextColored(COIN_SILVER, "%d", silver);
+        ImGui::SameLine(0, 1);
+        DrawCoinIcon(COIN_SILVER, 5.0f);
+        needSame = true;
+    }
+    if (needSame) ImGui::SameLine(0, 2);
+    ImGui::TextColored(COIN_COPPER, "%d", cop);
+    ImGui::SameLine(0, 1);
+    DrawCoinIcon(COIN_COPPER, 5.0f);
+}
+
+static void RenderSkinCategoryNav() {
+    ImGui::BeginChild("CategoryNav", ImVec2(180, 0), true);
+
+    auto drawBullet = [](ImVec4 color) {
+        ImVec2 pos = ImGui::GetCursorScreenPos();
+        float y_center = pos.y + ImGui::GetTextLineHeight() * 0.5f;
+        ImGui::GetWindowDrawList()->AddCircleFilled(
+            ImVec2(pos.x + 4.0f, y_center), 4.0f,
+            ImGui::GetColorU32(color));
+        ImGui::Dummy(ImVec2(12.0f, ImGui::GetTextLineHeight()));
+        ImGui::SameLine(0, 2);
+    };
+
+    ImGui::Text("Category");
+    ImGui::Separator();
+
+    drawBullet(ImVec4(0.45f, 0.65f, 0.85f, 1.0f));
+    if (ImGui::Selectable("Armor", g_SkinSelectedType == "Armor")) {
+        g_SkinSelectedType = "Armor";
+        g_SkinSelectedWeightClass = "Heavy";
+        g_SkinSelectedSubtype = "Helm";
+        g_SkinSelectedId = 0;
+    }
+    drawBullet(ImVec4(0.85f, 0.45f, 0.35f, 1.0f));
+    if (ImGui::Selectable("Weapons", g_SkinSelectedType == "Weapon")) {
+        g_SkinSelectedType = "Weapon";
+        g_SkinSelectedWeightClass = "";
+        g_SkinSelectedSubtype = "Axe";
+        g_SkinSelectedId = 0;
+    }
+    drawBullet(ImVec4(0.65f, 0.50f, 0.80f, 1.0f));
+    if (ImGui::Selectable("Back", g_SkinSelectedType == "Back")) {
+        g_SkinSelectedType = "Back";
+        g_SkinSelectedWeightClass = "";
+        g_SkinSelectedSubtype = "";
+        g_SkinSelectedId = 0;
+    }
+
+    ImGui::Separator();
+
+    if (g_SkinSelectedType == "Armor") {
+        ImGui::Text("Weight Class");
+        auto wcColor = [](const std::string& wc) -> ImVec4 {
+            if (wc == "Heavy")  return ImVec4(0.65f, 0.65f, 0.70f, 1.0f);
+            if (wc == "Medium") return ImVec4(0.65f, 0.50f, 0.30f, 1.0f);
+            if (wc == "Light")  return ImVec4(0.55f, 0.45f, 0.70f, 1.0f);
+            return ImVec4(0.5f, 0.5f, 0.5f, 1.0f);
+        };
+        for (const auto& wc : Skinventory::SkinCache::GetArmorWeights()) {
+            if (wc == "Clothing") continue;
+            size_t count = Skinventory::SkinCache::GetCategorySkinCount("Armor", g_SkinSelectedSubtype, wc);
+            std::string label = wc + " (" + std::to_string(count) + ")";
+            drawBullet(wcColor(wc));
+            if (ImGui::Selectable(label.c_str(), g_SkinSelectedWeightClass == wc)) {
+                g_SkinSelectedWeightClass = wc;
+                g_SkinSelectedId = 0;
+            }
+        }
+
+        ImGui::Separator();
+        ImGui::Text("Slot");
+        for (const auto& slot : Skinventory::SkinCache::GetArmorSlots(g_SkinSelectedWeightClass)) {
+            size_t count = Skinventory::SkinCache::GetCategorySkinCount("Armor", slot, g_SkinSelectedWeightClass);
+            std::string label = slot + " (" + std::to_string(count) + ")";
+            drawBullet(ImVec4(0.45f, 0.65f, 0.85f, 1.0f));
+            if (ImGui::Selectable(label.c_str(), g_SkinSelectedSubtype == slot)) {
+                g_SkinSelectedSubtype = slot;
+                g_SkinSelectedId = 0;
+            }
+        }
+    } else if (g_SkinSelectedType == "Weapon") {
+        ImGui::Text("Weapon Type");
+        for (const auto& wt : Skinventory::SkinCache::GetWeaponTypes()) {
+            size_t count = Skinventory::SkinCache::GetCategorySkinCount("Weapon", wt, "");
+            std::string label = wt + " (" + std::to_string(count) + ")";
+            drawBullet(ImVec4(0.85f, 0.45f, 0.35f, 1.0f));
+            if (ImGui::Selectable(label.c_str(), g_SkinSelectedSubtype == wt)) {
+                g_SkinSelectedSubtype = wt;
+                g_SkinSelectedId = 0;
+            }
+        }
+    }
+
+    ImGui::EndChild();
+}
+
+static void RenderSkinList() {
+    ImGui::BeginChild("SkinList", ImVec2(300, 0), true);
+
+    ImGui::PushItemWidth(-1);
+    ImGui::InputTextWithHint("##skinfilter", "Filter skins...", g_SkinSearchFilter, sizeof(g_SkinSearchFilter));
+    ImGui::PopItemWidth();
+
+    if (Skinventory::OwnedSkins::HasData()) {
+        ImGui::Checkbox("Owned", &g_SkinShowOwned);
+        ImGui::SameLine();
+        ImGui::Checkbox("Unowned", &g_SkinShowUnowned);
+    }
+
+    ImGui::Separator();
+
+    std::vector<uint32_t> skins;
+    if (g_SkinSelectedType == "Armor") {
+        skins = Skinventory::SkinCache::GetSkinsByCategory("Armor", g_SkinSelectedSubtype, g_SkinSelectedWeightClass);
+    } else if (g_SkinSelectedType == "Weapon") {
+        skins = Skinventory::SkinCache::GetSkinsByCategory("Weapon", g_SkinSelectedSubtype, "");
+    } else if (g_SkinSelectedType == "Back") {
+        skins = Skinventory::SkinCache::GetSkinsByCategory("Back", "", "");
+    }
+
+    std::string filterLower(g_SkinSearchFilter);
+    std::transform(filterLower.begin(), filterLower.end(), filterLower.begin(), ::tolower);
+
+    int ownedCount = 0;
+    int totalCount = 0;
+
+    bool showStatus = Skinventory::OwnedSkins::HasData();
+    float statusHeight = showStatus ? (ImGui::GetFrameHeightWithSpacing() + ImGui::GetStyle().ItemSpacing.y) : 0;
+    float scrollHeight = ImGui::GetContentRegionAvail().y - statusHeight;
+
+    // Pre-filter skins into a display list for clipping
+    struct SkinDisplayEntry { uint32_t id; bool owned; };
+    std::vector<SkinDisplayEntry> displaySkins;
+    displaySkins.reserve(skins.size());
+    bool hasOwnerData = Skinventory::OwnedSkins::HasData();
+    for (uint32_t skinId : skins) {
+        auto skinOpt = Skinventory::SkinCache::GetSkin(skinId);
+        if (!skinOpt || skinOpt->name.empty()) continue;
+
+        totalCount++;
+        bool owned = Skinventory::OwnedSkins::IsOwned(skinId);
+        if (owned) ownedCount++;
+
+        if (hasOwnerData) {
+            if (owned && !g_SkinShowOwned) continue;
+            if (!owned && !g_SkinShowUnowned) continue;
+        }
+
+        if (!filterLower.empty()) {
+            std::string nameLower = skinOpt->name;
+            std::transform(nameLower.begin(), nameLower.end(), nameLower.begin(), ::tolower);
+            if (nameLower.find(filterLower) == std::string::npos) continue;
+        }
+
+        displaySkins.push_back({skinId, owned});
+    }
+
+    ImGui::BeginChild("SkinListScroll", ImVec2(0, scrollHeight));
+    ImGuiListClipper clipper;
+    clipper.Begin((int)displaySkins.size());
+    while (clipper.Step()) {
+        for (int row = clipper.DisplayStart; row < clipper.DisplayEnd; row++) {
+            const auto& entry = displaySkins[row];
+            auto skinOpt = Skinventory::SkinCache::GetSkin(entry.id);
+            if (!skinOpt) continue;
+            const auto& skin = *skinOpt;
+
+            if (row % 2 == 1) {
+                ImVec2 rowMin = ImGui::GetCursorScreenPos();
+                ImVec2 rowMax(rowMin.x + ImGui::GetContentRegionAvail().x,
+                              rowMin.y + ImGui::GetTextLineHeightWithSpacing());
+                ImGui::GetWindowDrawList()->AddRectFilled(rowMin, rowMax,
+                    ImGui::GetColorU32(ImVec4(0.25f, 0.25f, 0.28f, 0.35f)));
+            }
+
+            bool selected = (g_SkinSelectedId == entry.id);
+            if (hasOwnerData) {
+                if (entry.owned) {
+                    ImGui::TextColored(ImVec4(0.35f, 0.82f, 0.35f, 1.0f), "+");
+                } else {
+                    ImGui::TextColored(ImVec4(0.4f, 0.4f, 0.4f, 1.0f), " -");
+                }
+                ImGui::SameLine(0, 4);
+            }
+            std::string label = skin.name + "##" + std::to_string(entry.id);
+            ImGui::PushStyleColor(ImGuiCol_Text, GetSkinRarityColor(skin.rarity));
+            if (ImGui::Selectable(label.c_str(), selected)) {
+                g_SkinSelectedId = entry.id;
+                Skinventory::WikiImage::RequestImage(entry.id, skin.name, skin.weight_class);
+                Skinventory::Commerce::FetchPriceForSkin(entry.id);
+            }
+            ImGui::PopStyleColor();
+            if (selected && g_SkinScrollToSkin) {
+                ImGui::SetScrollHereY(0.5f);
+                g_SkinScrollToSkin = false;
+            }
+        }
+    }
+    ImGui::EndChild();
+
+    if (showStatus && totalCount > 0) {
+        ImGui::Separator();
+        float fraction = (float)ownedCount / (float)totalCount;
+        char overlay[64];
+        snprintf(overlay, sizeof(overlay), "%d / %d owned", ownedCount, totalCount);
+        ImGui::PushStyleColor(ImGuiCol_PlotHistogram, ImVec4(0.25f, 0.65f, 0.25f, 1.0f));
+        ImGui::ProgressBar(fraction, ImVec2(-1, 0), overlay);
+        ImGui::PopStyleColor();
+    }
+
+    ImGui::EndChild();
+}
+
+static void RenderSkinDetailPanel() {
+    ImGui::BeginChild("SkinDetailPanel", ImVec2(0, 0), true);
+
+    if (g_SkinSelectedId == 0) {
+        ImGui::TextWrapped("Select a skin to view details.");
+        ImGui::EndChild();
+        return;
+    }
+
+    auto skinOpt = Skinventory::SkinCache::GetSkin(g_SkinSelectedId);
+    if (!skinOpt) {
+        ImGui::Text("Skin not found.");
+        ImGui::EndChild();
+        return;
+    }
+    const auto& skin = *skinOpt;
+
+    auto sectionHeader = [](const char* label) {
+        ImGui::Spacing();
+        ImGui::TextColored(ImVec4(0.6f, 0.75f, 0.9f, 1.0f), "%s", label);
+        ImGui::Separator();
+    };
+
+    ImGui::PushStyleColor(ImGuiCol_Text, GetSkinRarityColor(skin.rarity));
+    ImGui::TextWrapped("%s", skin.name.c_str());
+    ImGui::PopStyleColor();
+
+    ImGui::Text("%s%s%s",
+        skin.type.c_str(),
+        skin.subtype.empty() ? "" : (" / " + skin.subtype).c_str(),
+        skin.weight_class.empty() ? "" : (" / " + skin.weight_class).c_str());
+    ImGui::TextColored(GetSkinRarityColor(skin.rarity), "%s", skin.rarity.c_str());
+    ImGui::SameLine();
+    ImGui::TextColored(ImVec4(0.5f, 0.5f, 0.5f, 1.0f), "(ID: %u)", skin.id);
+
+    if (Skinventory::OwnedSkins::HasData()) {
+        bool owned = Skinventory::OwnedSkins::IsOwned(g_SkinSelectedId);
+        if (owned) {
+            ImGui::TextColored(ImVec4(0.35f, 0.82f, 0.35f, 1.0f), "OWNED");
+        } else {
+            ImGui::TextColored(ImVec4(1.0f, 0.3f, 0.3f, 1.0f), "NOT OWNED");
+        }
+    }
+
+    // Pricing (unowned only)
+    bool isOwned = Skinventory::OwnedSkins::HasData() &&
+                   Skinventory::OwnedSkins::IsOwned(g_SkinSelectedId);
+    if (!isOwned) {
+        int vendorPrice = Skinventory::Commerce::GetVendorPrice(g_SkinSelectedId);
+        const auto* price = Skinventory::Commerce::GetPrice(g_SkinSelectedId);
+        bool hasPrice = (vendorPrice > 0) ||
+                        (price && price->tradeable && (price->sell_price > 0 || price->buy_price > 0)) ||
+                        (!price && vendorPrice == 0);
+
+        if (hasPrice) {
+            sectionHeader("Pricing");
+
+            if (vendorPrice > 0) {
+                ImGui::TextColored(ImVec4(0.4f, 0.8f, 0.4f, 1.0f), "Vendor:");
+                ImGui::SameLine();
+                RenderCoins(vendorPrice);
+            }
+
+            if (price) {
+                if (price->tradeable) {
+                    if (price->sell_price > 0) {
+                        ImGui::Text("TP Buy:");
+                        ImGui::SameLine();
+                        RenderCoins(price->sell_price);
+                    }
+                    if (price->buy_price > 0) {
+                        ImGui::Text("TP Sell:");
+                        ImGui::SameLine();
+                        RenderCoins(price->buy_price);
+                    }
+                }
+            } else if (vendorPrice == 0) {
+                if (Skinventory::Commerce::IsItemMapReady()) {
+                    ImGui::TextColored(ImVec4(0.6f, 0.6f, 0.6f, 1.0f), "Price: click to load");
+                } else {
+                    ImGui::TextColored(ImVec4(0.6f, 0.6f, 0.6f, 1.0f), "Item map loading...");
+                }
+            }
+        }
+    }
+
+    // Acquisition
+    {
+        auto wikiData = Skinventory::WikiImage::GetWikiData(g_SkinSelectedId);
+        bool hasAny = !wikiData.acquisition.empty() || !wikiData.collection.empty() ||
+                      !wikiData.set_name.empty() || !wikiData.vendor_name.empty();
+        if (hasAny) {
+            sectionHeader("Acquisition");
+            if (!wikiData.acquisition.empty()) {
+                ImGui::TextColored(ImVec4(0.8f, 0.8f, 0.6f, 1.0f), "Source:");
+                ImGui::SameLine();
+                ImGui::TextWrapped("%s", wikiData.acquisition.c_str());
+            }
+            if (!wikiData.collection.empty()) {
+                ImGui::TextColored(ImVec4(0.8f, 0.8f, 0.6f, 1.0f), "Collection:");
+                ImGui::SameLine();
+                ImGui::TextWrapped("%s", wikiData.collection.c_str());
+            }
+            if (!wikiData.set_name.empty()) {
+                ImGui::TextColored(ImVec4(0.8f, 0.8f, 0.6f, 1.0f), "Set:");
+                ImGui::SameLine();
+                ImGui::TextWrapped("%s", wikiData.set_name.c_str());
+            }
+            if (!wikiData.vendor_name.empty()) {
+                ImGui::TextColored(ImVec4(0.8f, 0.8f, 0.6f, 1.0f), "Vendor:");
+                ImGui::SameLine();
+                if (!wikiData.vendor_location.empty()) {
+                    ImGui::TextWrapped("%s (%s)", wikiData.vendor_name.c_str(),
+                                       wikiData.vendor_location.c_str());
+                } else {
+                    ImGui::TextWrapped("%s", wikiData.vendor_name.c_str());
+                }
+            }
+            if (!wikiData.vendor_cost.empty()) {
+                ImGui::TextColored(ImVec4(0.8f, 0.8f, 0.6f, 1.0f), "Cost:");
+                ImGui::SameLine();
+                std::string costStr = wikiData.vendor_cost;
+                std::string keysStr = wikiData.vendor_cost_keys;
+                std::vector<std::string> iconKeys;
+                {
+                    std::istringstream kss(keysStr);
+                    std::string kk;
+                    while (std::getline(kss, kk, ',')) {
+                        if (!kk.empty()) iconKeys.push_back(kk);
+                    }
+                }
+                std::vector<std::string> costParts;
+                {
+                    size_t p = 0;
+                    while (true) {
+                        size_t sep = costStr.find(" + ", p);
+                        if (sep == std::string::npos) {
+                            costParts.push_back(costStr.substr(p));
+                            break;
+                        }
+                        costParts.push_back(costStr.substr(p, sep - p));
+                        p = sep + 3;
+                    }
+                }
+                for (size_t ci = 0; ci < costParts.size(); ci++) {
+                    if (ci > 0) {
+                        ImGui::SameLine(0, 2);
+                        ImGui::TextColored(ImVec4(0.6f, 0.6f, 0.6f, 1.0f), "+");
+                        ImGui::SameLine(0, 2);
+                    }
+                    if (ci < iconKeys.size()) {
+                        Texture_t* cIcon = Skinventory::WikiImage::GetCurrencyIcon(iconKeys[ci]);
+                        if (cIcon && cIcon->Resource) {
+                            float iconH = ImGui::GetTextLineHeight();
+                            float iconW = iconH * ((float)cIcon->Width / (float)cIcon->Height);
+                            ImGui::Image(cIcon->Resource, ImVec2(iconW, iconH));
+                            ImGui::SameLine(0, 3);
+                        }
+                    }
+                    ImGui::TextColored(ImVec4(0.9f, 0.7f, 1.0f, 1.0f), "%s", costParts[ci].c_str());
+                }
+            }
+            if (!wikiData.vendor_waypoint.empty()) {
+                static float s_copiedTimer = 0.0f;
+                static uint32_t s_copiedSkinId = 0;
+
+                ImGui::TextColored(ImVec4(0.8f, 0.8f, 0.6f, 1.0f), "Waypoint:");
+                ImGui::SameLine();
+                ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.4f, 0.7f, 1.0f, 1.0f));
+                if (ImGui::SmallButton(wikiData.vendor_waypoint.c_str())) {
+                    if (OpenClipboard(NULL)) {
+                        EmptyClipboard();
+                        HGLOBAL hMem = GlobalAlloc(GMEM_MOVEABLE,
+                            wikiData.vendor_waypoint.size() + 1);
+                        if (hMem) {
+                            char* pMem = (char*)GlobalLock(hMem);
+                            memcpy(pMem, wikiData.vendor_waypoint.c_str(),
+                                   wikiData.vendor_waypoint.size() + 1);
+                            GlobalUnlock(hMem);
+                            SetClipboardData(CF_TEXT, hMem);
+                        }
+                        CloseClipboard();
+                    }
+                    s_copiedTimer = 2.0f;
+                    s_copiedSkinId = g_SkinSelectedId;
+                }
+                ImGui::PopStyleColor();
+
+                if (s_copiedTimer > 0.0f && s_copiedSkinId == g_SkinSelectedId) {
+                    ImGui::SameLine();
+                    ImGui::TextColored(ImVec4(0.35f, 0.82f, 0.35f, s_copiedTimer / 2.0f),
+                                       "Copied!");
+                    s_copiedTimer -= ImGui::GetIO().DeltaTime;
+                }
+            }
+        }
+    }
+
+    // Preview
+    sectionHeader("Preview");
+
+    Texture_t* wikiTex = Skinventory::WikiImage::GetImage(g_SkinSelectedId);
+    if (wikiTex && wikiTex->Resource) {
+        float panelWidth = ImGui::GetContentRegionAvail().x;
+        float maxHeight = 400.0f;
+        float imgW = (float)wikiTex->Width;
+        float imgH = (float)wikiTex->Height;
+
+        float scale = panelWidth / imgW;
+        if (imgH * scale > maxHeight) {
+            scale = maxHeight / imgH;
+        }
+
+        float displayW = imgW * scale;
+        float displayH = imgH * scale;
+
+        ImGui::Image(wikiTex->Resource, ImVec2(displayW, displayH));
+    } else if (Skinventory::WikiImage::IsLoading(g_SkinSelectedId)) {
+        ImGui::TextColored(ImVec4(1.0f, 0.85f, 0.0f, 1.0f), "Loading wiki image...");
+    }
+
+    // Action buttons
+    ImGui::Separator();
+    if (ImGui::Button("Open Wiki Page")) {
+        std::string wikiUrl = "https://wiki.guildwars2.com/wiki/" + skin.name;
+        std::replace(wikiUrl.begin(), wikiUrl.end(), ' ', '_');
+        ShellExecuteA(NULL, "open", wikiUrl.c_str(), NULL, NULL, SW_SHOWNORMAL);
+    }
+
+    ImGui::EndChild();
+}
+
+static void RenderSkinShoppingList() {
+    if (!Skinventory::OwnedSkins::HasData()) {
+        ImGui::TextWrapped("Hoard & Seek data not yet loaded. Ensure Hoard & Seek is installed and has fetched account data.");
+        return;
+    }
+
+    if (!Skinventory::Commerce::IsItemMapReady()) {
+        std::string fetchMsg = Skinventory::Commerce::GetFetchStatus();
+        ImGui::TextColored(ImVec4(1.0f, 0.85f, 0.0f, 1.0f), "%s", fetchMsg.c_str());
+        ImGui::TextWrapped("Building the skin-to-item map from the GW2 API. This is a one-time operation and will be cached for future sessions.");
+        return;
+    }
+
+    static bool s_needsFetch = true;
+    if (ImGui::Button("Refresh Prices") && !Skinventory::Commerce::IsFetching()) {
+        g_SkinShopListDirty = true;
+        s_needsFetch = true;
+    }
+    ImGui::SameLine();
+    ImGui::Text("Category:");
+    ImGui::SameLine();
+    static int shopTypeFilter = 0;
+    int prevFilter = shopTypeFilter;
+    ImGui::RadioButton("All##shop", &shopTypeFilter, 0); ImGui::SameLine();
+    ImGui::RadioButton("Armor##shop", &shopTypeFilter, 1); ImGui::SameLine();
+    ImGui::RadioButton("Weapons##shop", &shopTypeFilter, 2);
+    if (shopTypeFilter != prevFilter) {
+        g_SkinShopListDirty = true;
+    }
+
+    ImGui::Text("Source:");
+    ImGui::SameLine();
+    static int shopSourceFilter = 0;
+    int prevSource = shopSourceFilter;
+    ImGui::RadioButton("All##src", &shopSourceFilter, 0); ImGui::SameLine();
+    ImGui::RadioButton("TP##src", &shopSourceFilter, 1); ImGui::SameLine();
+    ImGui::RadioButton("Vendor##src", &shopSourceFilter, 2);
+    if (shopSourceFilter != prevSource) {
+        g_SkinShopListDirty = true;
+    }
+
+    if (Skinventory::Commerce::IsFetching()) {
+        std::string fetchMsg = Skinventory::Commerce::GetFetchStatus();
+        ImGui::TextColored(ImVec4(1.0f, 0.85f, 0.0f, 1.0f), "%s", fetchMsg.c_str());
+    }
+
+    ImGui::Separator();
+
+    static bool s_wasFetching = false;
+    bool isFetching = Skinventory::Commerce::IsFetching();
+    if (s_wasFetching && !isFetching) {
+        g_SkinShopListDirty = true;
+        s_needsFetch = false;
+    }
+    s_wasFetching = isFetching;
+
+    if (g_SkinShopListDirty && !isFetching) {
+        g_SkinShopList.clear();
+
+        std::vector<uint32_t> to_price;
+
+        auto collectSkins = [&](const std::string& type, const std::string& subtype,
+                                 const std::string& weight) {
+            auto skins = Skinventory::SkinCache::GetSkinsByCategory(type, subtype, weight);
+            for (uint32_t id : skins) {
+                if (!Skinventory::OwnedSkins::IsOwned(id)) {
+                    to_price.push_back(id);
+                }
+            }
+        };
+
+        if (shopTypeFilter == 0 || shopTypeFilter == 1) {
+            for (const auto& wc : Skinventory::SkinCache::GetArmorWeights()) {
+                for (const auto& slot : Skinventory::SkinCache::GetArmorSlots(wc)) {
+                    collectSkins("Armor", slot, wc);
+                }
+            }
+        }
+        if (shopTypeFilter == 0 || shopTypeFilter == 2) {
+            for (const auto& wt : Skinventory::SkinCache::GetWeaponTypes()) {
+                collectSkins("Weapon", wt, "");
+            }
+        }
+
+        if (s_needsFetch) {
+            Skinventory::Commerce::FetchPricesForSkins(to_price);
+        }
+
+        for (uint32_t id : to_price) {
+            int vendorPrice = Skinventory::Commerce::GetVendorPrice(id);
+            const auto* p = Skinventory::Commerce::GetPrice(id);
+            int tpPrice = (p && p->tradeable && p->sell_price > 0) ? p->sell_price : 0;
+
+            bool useVendor = false;
+            bool useTP = false;
+
+            if (vendorPrice > 0 && tpPrice > 0) {
+                if (vendorPrice <= tpPrice) useVendor = true;
+                else useTP = true;
+            } else if (vendorPrice > 0) {
+                useVendor = true;
+            } else if (tpPrice > 0) {
+                useTP = true;
+            }
+
+            if (useVendor && shopSourceFilter == 1) { useVendor = false; useTP = (tpPrice > 0); }
+            if (useTP && shopSourceFilter == 2) { useTP = false; useVendor = (vendorPrice > 0); }
+
+            if (useVendor) {
+                g_SkinShopList.push_back({id, vendorPrice, 1});
+            } else if (useTP) {
+                g_SkinShopList.push_back({id, tpPrice, 0});
+            }
+        }
+
+        std::sort(g_SkinShopList.begin(), g_SkinShopList.end(),
+            [](const auto& a, const auto& b) { return a.price < b.price; });
+
+        g_SkinShopListDirty = false;
+    }
+
+    int tpCount = 0, vendorCount = 0;
+    for (const auto& e : g_SkinShopList) {
+        if (e.source == 0) tpCount++;
+        else vendorCount++;
+    }
+
+    ImGui::Text("Cheapest unowned skins: %d TP, %d Vendor (%zu total)",
+                tpCount, vendorCount, g_SkinShopList.size());
+    ImGui::Separator();
+
+    float reserveHeight = ImGui::GetFrameHeightWithSpacing() * 2.0f;
+    ImVec2 tableSize(0.0f, -reserveHeight);
+    if (ImGui::BeginTable("ShoppingList", 5,
+        ImGuiTableFlags_ScrollY | ImGuiTableFlags_RowBg |
+        ImGuiTableFlags_BordersInnerH | ImGuiTableFlags_Sortable,
+        tableSize)) {
+
+        ImGui::TableSetupColumn("Name", ImGuiTableColumnFlags_WidthStretch, 0.0f, 0);
+        ImGui::TableSetupColumn("Type", ImGuiTableColumnFlags_WidthFixed, 80, 1);
+        ImGui::TableSetupColumn("Source", ImGuiTableColumnFlags_WidthFixed, 55, 2);
+        ImGui::TableSetupColumn("Rarity", ImGuiTableColumnFlags_WidthFixed, 65, 3);
+        ImGui::TableSetupColumn("Price", ImGuiTableColumnFlags_WidthFixed | ImGuiTableColumnFlags_DefaultSort, 120, 4);
+        ImGui::TableHeadersRow();
+
+        if (ImGuiTableSortSpecs* sortSpecs = ImGui::TableGetSortSpecs()) {
+            if (sortSpecs->SpecsDirty && sortSpecs->SpecsCount > 0) {
+                const ImGuiTableColumnSortSpecs& spec = sortSpecs->Specs[0];
+                bool ascending = (spec.SortDirection == ImGuiSortDirection_Ascending);
+                int col = spec.ColumnUserID;
+
+                std::sort(g_SkinShopList.begin(), g_SkinShopList.end(),
+                    [col, ascending](const auto& a, const auto& b) {
+                        if (col == 4) {
+                            return ascending ? a.price < b.price : a.price > b.price;
+                        }
+                        if (col == 2) {
+                            return ascending ? a.source < b.source : a.source > b.source;
+                        }
+                        auto sa = Skinventory::SkinCache::GetSkin(a.skinId);
+                        auto sb = Skinventory::SkinCache::GetSkin(b.skinId);
+                        if (!sa || !sb) return false;
+
+                        int cmp = 0;
+                        if (col == 0) {
+                            cmp = sa->name.compare(sb->name);
+                        } else if (col == 1) {
+                            cmp = sa->subtype.compare(sb->subtype);
+                        } else if (col == 3) {
+                            cmp = sa->rarity.compare(sb->rarity);
+                        }
+                        return ascending ? cmp < 0 : cmp > 0;
+                    });
+                sortSpecs->SpecsDirty = false;
+            }
+        }
+
+        ImGuiListClipper clipper;
+        clipper.Begin((int)g_SkinShopList.size());
+        while (clipper.Step()) {
+            for (int row = clipper.DisplayStart; row < clipper.DisplayEnd; row++) {
+                const auto& entry = g_SkinShopList[row];
+                auto skinOpt = Skinventory::SkinCache::GetSkin(entry.skinId);
+                if (!skinOpt) continue;
+                const auto& skin = *skinOpt;
+
+                ImGui::TableNextRow();
+                ImGui::TableNextColumn();
+
+                std::string selectLabel = skin.name + "##shop" + std::to_string(entry.skinId);
+                ImGui::PushStyleColor(ImGuiCol_Text, GetSkinRarityColor(skin.rarity));
+                if (ImGui::Selectable(selectLabel.c_str(), g_SkinSelectedId == entry.skinId,
+                    ImGuiSelectableFlags_SpanAllColumns)) {
+                    g_SkinSelectedId = entry.skinId;
+                    Skinventory::WikiImage::RequestImage(entry.skinId, skin.name, skin.weight_class);
+                    Skinventory::Commerce::FetchPriceForSkin(entry.skinId);
+                    g_SkinSelectedType = skin.type;
+                    if (skin.type == "Armor") {
+                        g_SkinSelectedWeightClass = skin.weight_class;
+                    }
+                    g_SkinSelectedSubtype = skin.subtype;
+                    g_SkinSwitchToBrowser = true;
+                    g_SkinScrollToSkin = true;
+                }
+                ImGui::PopStyleColor();
+
+                ImGui::TableNextColumn();
+                ImGui::Text("%s", skin.subtype.c_str());
+
+                ImGui::TableNextColumn();
+                if (entry.source == 1) {
+                    ImGui::TextColored(ImVec4(0.4f, 0.8f, 0.4f, 1.0f), "Vendor");
+                } else {
+                    ImGui::TextColored(ImVec4(0.9f, 0.75f, 0.3f, 1.0f), "TP");
+                }
+
+                ImGui::TableNextColumn();
+                ImGui::TextColored(GetSkinRarityColor(skin.rarity), "%s", skin.rarity.c_str());
+
+                ImGui::TableNextColumn();
+                RenderCoins(entry.price);
+            }
+        }
+
+        ImGui::EndTable();
+    }
+
+    if (!g_SkinShopList.empty()) {
+        int tpTotal = 0, vendorTotal = 0;
+        for (const auto& e : g_SkinShopList) {
+            if (e.source == 0) tpTotal += e.price;
+            else vendorTotal += e.price;
+        }
+        ImGui::Separator();
+        ImGui::Text("TP total:");
+        ImGui::SameLine();
+        RenderCoins(tpTotal);
+        if (vendorTotal > 0) {
+            ImGui::SameLine();
+            ImGui::Text("  Vendor total:");
+            ImGui::SameLine();
+            RenderCoins(vendorTotal);
+        }
+    }
+}
+
+// Helper: strip fractal achievement name to short form
+static std::string ShortenFractalName(const std::string& name) {
+    // "Daily Recommended Fractal—Swampland" → "Swampland"
+    auto pos = name.find("Fractal");
+    if (pos != std::string::npos && pos + 7 < name.size()) {
+        size_t start = pos + 7;
+        while (start < name.size() && (name[start] == ' ' || (unsigned char)name[start] == 0xe2)) {
+            if ((unsigned char)name[start] == 0xe2 && start + 2 < name.size())
+                start += 3;
+            else
+                start++;
+        }
+        return name.substr(start);
+    }
+    // "Daily Tier 4 Swampland" → "Swampland"
+    auto pos2 = name.find("Tier");
+    if (pos2 != std::string::npos) {
+        size_t afterTier = name.find(' ', pos2 + 5);
+        if (afterTier != std::string::npos && afterTier + 1 < name.size())
+            return name.substr(afterTier + 1);
+    }
+    return name;
+}
+
+// Helper: render a done/not-done/unknown indicator
+static void RenderClearStatus(bool fetched, bool done, const char* label) {
+    if (!fetched)
+        ImGui::TextColored(ImVec4(0.4f, 0.4f, 0.4f, 1.0f), "[?] %s", label);
+    else if (done)
+        ImGui::TextColored(ImVec4(0.35f, 0.82f, 0.35f, 1.0f), "[x] %s", label);
+    else
+        ImGui::TextColored(ImVec4(0.9f, 0.9f, 0.9f, 1.0f), "[ ] %s", label);
+}
+
+static void RenderClears() {
+    auto now = std::chrono::system_clock::now();
+
+    // Compute reset times
+    auto dailyReset = CalcLastDailyReset(now);
+    auto weeklyReset = CalcLastWeeklyReset(now);
+
+    // Detect resets — clear stale data and auto re-fetch achievement lists
+    bool resetTriggered = false;
+    if (g_LastDailyReset != std::chrono::system_clock::time_point{} && dailyReset > g_LastDailyReset) {
+        std::lock_guard<std::mutex> lock(g_ClearsMutex);
+        g_DailyFractals.clear();
+        g_DailyBounties.clear();
+        g_ClearsFetched = false;
+        resetTriggered = true;
+    }
+    if (g_LastWeeklyReset != std::chrono::system_clock::time_point{} && weeklyReset > g_LastWeeklyReset) {
+        std::lock_guard<std::mutex> lock(g_ClearsMutex);
+        g_WeeklyWings.clear();
+        g_WeeklyStrikes = ClearEntry{};
+        g_ClearsFetched = false;
+        resetTriggered = true;
+    }
+    g_LastDailyReset = dailyReset;
+    g_LastWeeklyReset = weeklyReset;
+
+    // Auto re-fetch full data at reset boundaries
+    if (resetTriggered && !g_ClearsFetching) {
+        FetchClears();
+    }
+
+    // Auto re-query completion every 10 minutes (if we have data and not currently fetching)
+    auto steadyNow = std::chrono::steady_clock::now();
+    if (g_ClearsFetched && !g_ClearsFetching &&
+        g_LastClearsCompletionQuery != std::chrono::steady_clock::time_point{} &&
+        (steadyNow - g_LastClearsCompletionQuery) >= std::chrono::minutes(10)) {
+        g_LastClearsCompletionQuery = steadyNow;
+        SendClearsAchQuery();
+    }
+
+    // Refresh button + status
+    bool fetching = g_ClearsFetching;
+    if (fetching) ImGui::PushStyleVar(ImGuiStyleVar_Alpha, 0.5f);
+    if (ImGui::SmallButton("Refresh##clears") && !fetching) {
+        FetchClears();
+    }
+    if (fetching) ImGui::PopStyleVar();
+    ImGui::SameLine();
+    {
+        std::lock_guard<std::mutex> lock(g_ClearsMutex);
+        if (fetching) {
+            ImGui::TextColored(ImVec4(1.0f, 0.85f, 0.0f, 1.0f), "%s", g_ClearsStatusMsg.c_str());
+        } else if (!g_ClearsFetched && g_DailyFractals.empty()) {
+            ImGui::TextColored(ImVec4(0.5f, 0.5f, 0.5f, 1.0f), "Click Refresh to load data");
+        } else if (!g_ClearsStatusMsg.empty()) {
+            ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.4f, 1.0f), "%s", g_ClearsStatusMsg.c_str());
+        } else {
+            ImGui::TextColored(ImVec4(0.6f, 0.6f, 0.6f, 1.0f), "Data loaded");
+        }
+    }
+
+    ImGui::Separator();
+
+    std::lock_guard<std::mutex> lock(g_ClearsMutex);
+
+    std::string dailyResetStr = FormatTimeUntilReset(dailyReset, std::chrono::hours(24));
+    std::string weeklyResetStr = FormatTimeUntilReset(weeklyReset, std::chrono::hours(24 * 7));
+
+    // ---- Daily Fractals ----
+    ImGui::TextColored(ImVec4(0.3f, 0.7f, 0.9f, 1.0f), "Daily Fractals");
+    ImGui::SameLine();
+    ImGui::TextColored(ImVec4(0.5f, 0.5f, 0.5f, 1.0f), "(resets in %s)", dailyResetStr.c_str());
+
+    if (g_DailyFractals.empty()) {
+        ImGui::TextColored(ImVec4(0.5f, 0.5f, 0.5f, 1.0f), "  No data");
+    } else {
+        const char* tierOrder[] = {"T4", "T3", "T2", "T1", "Rec"};
+        for (const char* tier : tierOrder) {
+            std::vector<const ClearEntry*> tierEntries;
+            for (const auto& e : g_DailyFractals) {
+                if (e.tier == tier) tierEntries.push_back(&e);
+            }
+            if (tierEntries.empty()) continue;
+
+            // Sort by shortened name so order is consistent across tiers
+            std::sort(tierEntries.begin(), tierEntries.end(),
+                [](const ClearEntry* a, const ClearEntry* b) {
+                    return ShortenFractalName(a->name) < ShortenFractalName(b->name);
+                });
+
+            bool allDone = g_ClearsFetched;
+            for (const auto* e : tierEntries) {
+                if (!e->done) { allDone = false; break; }
+            }
+
+            if (allDone)
+                ImGui::TextColored(ImVec4(0.35f, 0.82f, 0.35f, 1.0f), "  %-4s", tier);
+            else
+                ImGui::TextColored(ImVec4(0.8f, 0.8f, 0.8f, 1.0f), "  %-4s", tier);
+
+            for (const auto* e : tierEntries) {
+                ImGui::SameLine();
+                std::string shortName = ShortenFractalName(e->name);
+                RenderClearStatus(g_ClearsFetched, e->done, shortName.c_str());
+            }
+        }
+        // Uncategorized
+        for (const auto& e : g_DailyFractals) {
+            if (!e.tier.empty()) continue;
+            ImGui::Text("  ");
+            ImGui::SameLine();
+            RenderClearStatus(g_ClearsFetched, e.done, e.name.c_str());
+        }
+    }
+
+    ImGui::Spacing();
+    ImGui::Separator();
+
+    // ---- Daily Raid Bounties ----
+    ImGui::TextColored(ImVec4(0.9f, 0.6f, 0.3f, 1.0f), "Daily Raid Bounties");
+    ImGui::SameLine();
+    ImGui::TextColored(ImVec4(0.5f, 0.5f, 0.5f, 1.0f), "(resets in %s)", dailyResetStr.c_str());
+
+    if (g_DailyBounties.empty()) {
+        ImGui::TextColored(ImVec4(0.5f, 0.5f, 0.5f, 1.0f), "  No data");
+    } else {
+        for (const auto& e : g_DailyBounties) {
+            // Strip "Raid Bounty: " prefix
+            std::string display = e.name;
+            if (display.find("Raid Bounty: ") == 0)
+                display = display.substr(13);
+            ImGui::Text("  ");
+            ImGui::SameLine();
+            RenderClearStatus(g_ClearsFetched, e.done, display.c_str());
+        }
+    }
+
+    ImGui::Spacing();
+    ImGui::Separator();
+
+    // ---- Weekly Strikes ----
+    ImGui::TextColored(ImVec4(0.7f, 0.4f, 0.9f, 1.0f), "Weekly Strikes");
+    ImGui::SameLine();
+    ImGui::TextColored(ImVec4(0.5f, 0.5f, 0.5f, 1.0f), "(resets in %s)", weeklyResetStr.c_str());
+
+    if (g_WeeklyStrikes.id == 0) {
+        ImGui::TextColored(ImVec4(0.5f, 0.5f, 0.5f, 1.0f), "  No data");
+    } else {
+        for (size_t i = 0; i < g_WeeklyStrikes.bitNames.size(); i++) {
+            bool bitDone = (i < g_WeeklyStrikes.bitDone.size()) ? g_WeeklyStrikes.bitDone[i] : false;
+            ImGui::Text("  ");
+            ImGui::SameLine();
+            RenderClearStatus(g_ClearsFetched, bitDone, g_WeeklyStrikes.bitNames[i].c_str());
+        }
+        if (g_ClearsFetched && g_WeeklyStrikes.max > 0) {
+            int doneCount = 0;
+            for (bool b : g_WeeklyStrikes.bitDone) { if (b) doneCount++; }
+            ImGui::TextColored(ImVec4(0.5f, 0.5f, 0.5f, 1.0f), "  %d / %d completed",
+                doneCount, (int)g_WeeklyStrikes.bitNames.size());
+        }
+    }
+
+    ImGui::Spacing();
+    ImGui::Separator();
+
+    // ---- Weekly Raids ----
+    ImGui::TextColored(ImVec4(0.9f, 0.7f, 0.3f, 1.0f), "Weekly Raids");
+    ImGui::SameLine();
+    ImGui::TextColored(ImVec4(0.5f, 0.5f, 0.5f, 1.0f), "(resets in %s)", weeklyResetStr.c_str());
+
+    if (g_WeeklyWings.empty()) {
+        ImGui::TextColored(ImVec4(0.5f, 0.5f, 0.5f, 1.0f), "  No data");
+    } else {
+        if (ImGui::BeginTable("RaidWingsTable", 2, ImGuiTableFlags_BordersInnerH | ImGuiTableFlags_RowBg)) {
+            ImGui::TableSetupColumn("Wing", ImGuiTableColumnFlags_WidthFixed, 220);
+            ImGui::TableSetupColumn("Encounters", ImGuiTableColumnFlags_WidthStretch);
+            ImGui::TableHeadersRow();
+
+            for (const auto& wing : g_WeeklyWings) {
+                ImGui::TableNextRow();
+                ImGui::TableNextColumn();
+
+                // Strip "Weekly " prefix
+                std::string wingName = wing.name;
+                if (wingName.find("Weekly ") == 0)
+                    wingName = wingName.substr(7);
+
+                bool allDone = g_ClearsFetched && wing.done;
+                if (allDone)
+                    ImGui::TextColored(ImVec4(0.35f, 0.82f, 0.35f, 1.0f), "%s", wingName.c_str());
+                else
+                    ImGui::Text("%s", wingName.c_str());
+
+                ImGui::TableNextColumn();
+                for (size_t i = 0; i < wing.bitNames.size(); i++) {
+                    bool bitDone = (i < wing.bitDone.size()) ? wing.bitDone[i] : false;
+                    if (i > 0) ImGui::SameLine();
+                    RenderClearStatus(g_ClearsFetched, bitDone, wing.bitNames[i].c_str());
+                    if (i + 1 < wing.bitNames.size()) {
+                        ImGui::SameLine();
+                        ImGui::TextColored(ImVec4(0.3f, 0.3f, 0.3f, 1.0f), "|");
+                    }
+                }
+            }
+            ImGui::EndTable();
+        }
+    }
+}
+
+static void RenderSkinventory() {
+    auto cacheStatus = Skinventory::SkinCache::GetStatus();
+
+    if (cacheStatus == Skinventory::CacheStatus::Loading ||
+        cacheStatus == Skinventory::CacheStatus::Empty) {
+        std::string msg = Skinventory::SkinCache::GetStatusMessage();
+        ImGui::TextColored(ImVec4(1.0f, 0.85f, 0.0f, 1.0f), "%s", msg.c_str());
+        return;
+    }
+
+    if (cacheStatus == Skinventory::CacheStatus::Error) {
+        std::string msg = Skinventory::SkinCache::GetStatusMessage();
+        ImGui::TextColored(ImVec4(1.0f, 0.3f, 0.3f, 1.0f), "Error: %s", msg.c_str());
+        return;
+    }
+
+    // Status bar + manual refresh
+    {
+        static auto s_lastRefreshTime = std::chrono::steady_clock::time_point{};
+        static bool s_refreshPending = false;
+
+        // Consume H&S data-updated flag (e.g. user refreshed in H&S)
+        if (Skinventory::OwnedSkins::ConsumeDataUpdatedFlag()) {
+            g_SkinRefreshOwned = true;
+        }
+
+        bool isQuerying = Skinventory::OwnedSkins::IsQuerying();
+        bool canRefresh = Skinventory::OwnedSkins::IsHoardAndSeekAvailable() && !isQuerying;
+
+        if (!canRefresh) ImGui::PushStyleVar(ImGuiStyleVar_Alpha, 0.5f);
+        if (ImGui::SmallButton("Refresh Owned") && canRefresh) {
+            g_SkinRefreshOwned = true;
+        }
+        if (!canRefresh) ImGui::PopStyleVar();
+
+        // Kick off batch query when requested
+        if (g_SkinRefreshOwned && canRefresh) {
+            g_SkinRefreshOwned = false;
+            s_refreshPending = true;
+
+            std::vector<uint32_t> allIds;
+            auto collectAll = [&](const std::string& type, const std::string& subtype,
+                                   const std::string& weight) {
+                auto ids = Skinventory::SkinCache::GetSkinsByCategory(type, subtype, weight);
+                allIds.insert(allIds.end(), ids.begin(), ids.end());
+            };
+            for (const auto& wc : Skinventory::SkinCache::GetArmorWeights()) {
+                for (const auto& slot : Skinventory::SkinCache::GetArmorSlots(wc)) {
+                    collectAll("Armor", slot, wc);
+                }
+            }
+            for (const auto& wt : Skinventory::SkinCache::GetWeaponTypes()) {
+                collectAll("Weapon", wt, "");
+            }
+            collectAll("Back", "", "");
+            if (!allIds.empty()) {
+                Skinventory::OwnedSkins::RequestOwnedSkins(allIds);
+            }
+        }
+
+        // Detect when query finishes
+        if (s_refreshPending && !isQuerying) {
+            s_refreshPending = false;
+            s_lastRefreshTime = std::chrono::steady_clock::now();
+        }
+
+        // Status text
+        ImGui::SameLine();
+        if (isQuerying) {
+            std::string hsMsg = Skinventory::OwnedSkins::GetStatusMessage();
+            ImGui::TextColored(ImVec4(1.0f, 0.85f, 0.0f, 1.0f), "%s", hsMsg.c_str());
+        } else if (Skinventory::OwnedSkins::HasData()) {
+            size_t owned = Skinventory::OwnedSkins::GetOwnedCount();
+            if (s_lastRefreshTime != std::chrono::steady_clock::time_point{}) {
+                auto elapsed = std::chrono::steady_clock::now() - s_lastRefreshTime;
+                int secs = (int)std::chrono::duration_cast<std::chrono::seconds>(elapsed).count();
+                if (secs < 60)
+                    ImGui::TextColored(ImVec4(0.6f, 0.6f, 0.6f, 1.0f), "%zu owned  |  Refreshed %ds ago", owned, secs);
+                else
+                    ImGui::TextColored(ImVec4(0.6f, 0.6f, 0.6f, 1.0f), "%zu owned  |  Refreshed %dm ago", owned, secs / 60);
+            } else {
+                ImGui::TextColored(ImVec4(0.6f, 0.6f, 0.6f, 1.0f), "%zu owned (cached)", owned);
+            }
+        } else if (!Skinventory::OwnedSkins::IsHoardAndSeekAvailable()) {
+            ImGui::TextColored(ImVec4(0.5f, 0.5f, 0.5f, 1.0f), "Waiting for Hoard & Seek...");
+        } else {
+            ImGui::TextColored(ImVec4(0.5f, 0.5f, 0.5f, 1.0f), "Click Refresh Owned to query skins");
+        }
+
+        if (cacheStatus == Skinventory::CacheStatus::Updating) {
+            ImGui::SameLine();
+            std::string updateMsg = Skinventory::SkinCache::GetStatusMessage();
+            ImGui::TextColored(ImVec4(1.0f, 0.85f, 0.0f, 1.0f), "| %s", updateMsg.c_str());
+        }
+    }
+
+    ImGui::Separator();
+
+    if (ImGui::BeginTabBar("##skin_tabs")) {
+        ImGuiTabItemFlags browserFlags = 0;
+        if (g_SkinSwitchToBrowser) {
+            browserFlags = ImGuiTabItemFlags_SetSelected;
+            g_SkinSwitchToBrowser = false;
+        }
+        if (ImGui::BeginTabItem("Browser", nullptr, browserFlags)) {
+            g_SkinActiveTab = 0;
+            RenderSkinCategoryNav();
+            ImGui::SameLine();
+            RenderSkinList();
+            ImGui::SameLine();
+            RenderSkinDetailPanel();
+            ImGui::EndTabItem();
+        }
+        if (ImGui::BeginTabItem("Shopping List")) {
+            g_SkinActiveTab = 1;
+            RenderSkinShoppingList();
+            ImGui::EndTabItem();
+        }
+        ImGui::EndTabBar();
+    }
+}
+
 // --- Main Render ---
 
 void AddonRender() {
     // Process icon download queue every frame
     AlterEgo::IconManager::Tick();
+    Skinventory::WikiImage::Tick();
+    Skinventory::OwnedSkins::Tick();
 
     // Render gear customize dialog (separate window, always checked)
     RenderGearCustomizeDialog();
@@ -3712,14 +5599,41 @@ void AddonRender() {
     } else if (hoardStatus == AlterEgo::HoardStatus::PermDenied) {
         ImGui::TextColored(ImVec4(1.0f, 0.3f, 0.3f, 1.0f), "H&S permission denied. Enable in H&S settings.");
     } else if (fetchStatus == AlterEgo::FetchStatus::InProgress) {
+        g_FetchDoneTime = std::chrono::steady_clock::time_point{}; // reset fade timer while in progress
         ImGui::TextColored(ImVec4(1.0f, 0.85f, 0.0f, 1.0f), "%s",
             AlterEgo::GW2API::GetFetchStatusMessage().c_str());
-    } else if (fetchStatus == AlterEgo::FetchStatus::Error) {
-        ImGui::TextColored(ImVec4(1.0f, 0.3f, 0.3f, 1.0f), "%s",
-            AlterEgo::GW2API::GetFetchStatusMessage().c_str());
-    } else if (fetchStatus == AlterEgo::FetchStatus::Success) {
-        ImGui::TextColored(ImVec4(0.35f, 0.82f, 0.35f, 1.0f), "%s",
-            AlterEgo::GW2API::GetFetchStatusMessage().c_str());
+    } else if (fetchStatus == AlterEgo::FetchStatus::Error ||
+               fetchStatus == AlterEgo::FetchStatus::Success) {
+        // Record completion time on first frame after finishing
+        if (g_FetchDoneTime == std::chrono::steady_clock::time_point{})
+            g_FetchDoneTime = std::chrono::steady_clock::now();
+        float elapsed = std::chrono::duration<float>(
+            std::chrono::steady_clock::now() - g_FetchDoneTime).count();
+        if (elapsed < 5.0f) {
+            float alpha = (elapsed < 4.0f) ? 1.0f : (5.0f - elapsed); // fade during last second
+            ImVec4 col = (fetchStatus == AlterEgo::FetchStatus::Error)
+                ? ImVec4(1.0f, 0.3f, 0.3f, alpha)
+                : ImVec4(0.35f, 0.82f, 0.35f, alpha);
+            ImGui::TextColored(col, "%s",
+                AlterEgo::GW2API::GetFetchStatusMessage().c_str());
+        }
+        // After 5s, fall through to show "Last updated" below
+        if (elapsed >= 5.0f && !AlterEgo::GW2API::HasCharacterData()) {
+            ImGui::TextColored(ImVec4(0.6f, 0.6f, 0.6f, 1.0f),
+                "H&S connected. Click Refresh to load characters.");
+        } else if (elapsed >= 5.0f) {
+            time_t last = AlterEgo::GW2API::GetLastUpdated();
+            if (last > 0) {
+                time_t now_t = std::time(nullptr);
+                int el = (int)difftime(now_t, last);
+                std::string ago;
+                if (el < 60) ago = "just now";
+                else if (el < 3600) ago = std::to_string(el / 60) + "m ago";
+                else if (el < 86400) ago = std::to_string(el / 3600) + "h ago";
+                else ago = std::to_string(el / 86400) + "d ago";
+                ImGui::TextColored(ImVec4(0.6f, 0.6f, 0.6f, 1.0f), "Last updated %s", ago.c_str());
+            }
+        }
     } else if (!AlterEgo::GW2API::HasCharacterData()) {
         ImGui::TextColored(ImVec4(0.6f, 0.6f, 0.6f, 1.0f),
             "H&S connected. Click Refresh to load characters.");
@@ -3941,20 +5855,71 @@ void AddonRender() {
                     ImGui::Separator();
                 }
 
+                // Character search bar
+                {
+                    ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x);
+                    ImGui::InputTextWithHint("##charsearch", "Search...", g_CharSearchBuf, sizeof(g_CharSearchBuf));
+                }
+
                 // Collect item rects for insertion-line drag-and-drop
                 struct CharItemRect { float yMin, yMax; };
                 std::vector<CharItemRect> itemRects;
                 itemRects.reserve(g_CharDisplayOrder.size());
 
+                // Cache which character is currently being fetched
+                std::string fetchingCharName = AlterEgo::GW2API::GetCurrentFetchCharName();
+
+                // Prepare lowercase search string
+                std::string charSearchLower;
+                if (g_CharSearchBuf[0] != '\0') {
+                    charSearchLower = g_CharSearchBuf;
+                    std::transform(charSearchLower.begin(), charSearchLower.end(),
+                                   charSearchLower.begin(), ::tolower);
+                }
+
                 for (int di = 0; di < (int)g_CharDisplayOrder.size(); di++) {
                     int realIdx = g_CharDisplayOrder[di];
                     if (realIdx < 0 || realIdx >= (int)characters.size()) continue;
                     const auto& ch = characters[realIdx];
+
+                    // Apply search filter
+                    if (!charSearchLower.empty()) {
+                        std::string nameLower = ch.name;
+                        std::transform(nameLower.begin(), nameLower.end(), nameLower.begin(), ::tolower);
+                        std::string profLower = ch.profession;
+                        std::transform(profLower.begin(), profLower.end(), profLower.begin(), ::tolower);
+                        if (nameLower.find(charSearchLower) == std::string::npos &&
+                            profLower.find(charSearchLower) == std::string::npos)
+                            continue;
+                    }
                     ImGui::PushID(di);
 
                     bool selected = (g_SelectedCharIdx == di);
+                    bool isLoggedIn = (!g_CurrentCharName.empty() && ch.name == g_CurrentCharName);
                     ImVec4 profColor = GetProfessionColor(ch.profession);
-                    float rowHeight = g_CompactCharList ? 18.0f : 28.0f;
+
+                    // Count extra lines for dynamic row height
+                    int extraLines = 0;
+                    if (!g_CompactCharList) {
+                        if (g_ShowCraftingIcons && !ch.crafting.empty()) extraLines++;
+                        if (g_ShowAge && !ch.created.empty()) extraLines++;
+                        if (g_ShowPlaytime && ch.age > 0) extraLines++;
+                        if (g_ShowLastLogin && !ch.last_modified.empty()) extraLines++;
+                        if (g_BirthdayMode != 2) {
+                            int bdays = DaysUntilBirthday(ch.created);
+                            bool showBday = (g_BirthdayMode == 0 && bdays >= 0) ||
+                                            (g_BirthdayMode == 1 && bdays >= 0 && bdays <= 7);
+                            if (showBday) extraLines++;
+                        }
+                    }
+                    float lineH = ImGui::GetTextLineHeightWithSpacing();
+                    float rowHeight = g_CompactCharList ? 18.0f
+                        : (28.0f + extraLines * lineH);
+
+                    // Green selection highlight for all characters
+                    ImGui::PushStyleColor(ImGuiCol_Header, ImVec4(0.1f, 0.4f, 0.15f, 0.55f));
+                    ImGui::PushStyleColor(ImGuiCol_HeaderHovered, ImVec4(0.15f, 0.45f, 0.2f, 0.65f));
+                    ImGui::PushStyleColor(ImGuiCol_HeaderActive, ImVec4(0.1f, 0.4f, 0.15f, 0.7f));
 
                     // Character entry
                     if (ImGui::Selectable("##char", selected, 0, ImVec2(0, rowHeight))) {
@@ -3967,6 +5932,7 @@ void AddonRender() {
                     // Record item rect for insertion line calculation
                     ImVec2 rMin = ImGui::GetItemRectMin();
                     ImVec2 rMax = ImGui::GetItemRectMax();
+
                     itemRects.push_back({ rMin.y, rMax.y });
 
                     // Drag source for Custom sort mode
@@ -3987,7 +5953,7 @@ void AddonRender() {
                         uint32_t profIconId = GetProfessionIconId(ch.profession);
                         const char* profIconUrl = GetProfessionIconUrl(ch.profession);
                         ImVec2 cpos = ImGui::GetCursorPos();
-                        float yOff = (rowHeight - iconSz) * 0.5f;
+                        float yOff = (extraLines > 0) ? 2.0f : (rowHeight - iconSz) * 0.5f;
                         if (profIconId && profIconUrl) {
                             auto* tex = AlterEgo::IconManager::GetIcon(profIconId);
                             if (tex && tex->Resource) {
@@ -3995,7 +5961,6 @@ void AddonRender() {
                                 ImGui::Image(tex->Resource, ImVec2(iconSz, iconSz));
                             } else {
                                 AlterEgo::IconManager::RequestIcon(profIconId, profIconUrl);
-                                // Reserve space for icon while loading
                                 ImGui::SetCursorPos(ImVec2(cpos.x, cpos.y + yOff));
                                 ImGui::Dummy(ImVec2(iconSz, iconSz));
                             }
@@ -4004,24 +5969,171 @@ void AddonRender() {
                             ImGui::Dummy(ImVec2(iconSz, iconSz));
                         }
                         ImGui::SameLine(0, 4);
-                        // Vertically center text with icon
-                        float textYOff = (rowHeight - ImGui::GetTextLineHeight()) * 0.5f;
+                        float textYOff = (extraLines > 0) ? 2.0f : (rowHeight - ImGui::GetTextLineHeight()) * 0.5f;
                         ImGui::SetCursorPosY(cpos.y + textYOff);
                     }
+                    // First line: name + level + green dot
                     ImGui::TextColored(profColor, "%s", ch.name.c_str());
                     ImGui::SameLine();
-                    ImGui::TextColored(ImVec4(0.5f, 0.5f, 0.5f, 1.0f), "Lv%d", ch.level);
+                    ImGui::TextColored(selected ? ImVec4(0.75f, 0.75f, 0.75f, 1.0f) : ImVec4(0.5f, 0.5f, 0.5f, 1.0f), "Lv%d", ch.level);
+                    if (isLoggedIn) {
+                        ImGui::SameLine();
+                        float dotY = ImGui::GetCursorScreenPos().y - 3.0f + ImGui::GetTextLineHeight() * 0.5f;
+                        float dotX = ImGui::GetCursorScreenPos().x;
+                        ImGui::GetWindowDrawList()->AddCircleFilled(
+                            ImVec2(dotX + 3.0f, dotY), 3.0f,
+                            IM_COL32(60, 200, 80, 255));
+                        ImGui::Dummy(ImVec2(8, 0));
+                    }
+                    // Spinning refresh icon for the character currently being fetched
+                    if (!fetchingCharName.empty() && ch.name == fetchingCharName) {
+                        ImGui::SameLine();
+                        ImDrawList* dl = ImGui::GetWindowDrawList();
+                        float iconR = 5.0f;
+                        ImVec2 scrPos = ImGui::GetCursorScreenPos();
+                        float cx = scrPos.x + iconR + 1.0f;
+                        float cy = scrPos.y + ImGui::GetTextLineHeight() * 0.5f;
+                        float angle = (float)ImGui::GetTime() * 3.0f; // spin speed
+                        ImU32 col = IM_COL32(255, 220, 60, 220);
+                        // Draw two arcs with arrowheads
+                        for (int arc = 0; arc < 2; arc++) {
+                            float arcStart = angle + arc * 3.14159f;
+                            int segments = 8;
+                            float arcSpan = 2.4f; // ~137 degrees per arc
+                            for (int s = 0; s < segments; s++) {
+                                float a0 = arcStart + (arcSpan * s / segments);
+                                float a1 = arcStart + (arcSpan * (s + 1) / segments);
+                                dl->AddLine(
+                                    ImVec2(cx + cosf(a0) * iconR, cy + sinf(a0) * iconR),
+                                    ImVec2(cx + cosf(a1) * iconR, cy + sinf(a1) * iconR),
+                                    col, 1.5f);
+                            }
+                            // Arrowhead at end of arc
+                            float aEnd = arcStart + arcSpan;
+                            float tx = cosf(aEnd); // tangent direction (perpendicular to radius)
+                            float ty = sinf(aEnd);
+                            ImVec2 tip(cx + tx * iconR, cy + ty * iconR);
+                            // Arrow points along the arc direction (tangent)
+                            float tanX = -ty; // tangent = perpendicular to radial
+                            float tanY = tx;
+                            float arrSz = 3.0f;
+                            // Two sides of the arrowhead
+                            ImVec2 p1(tip.x - tanX * arrSz + tx * arrSz * 0.5f,
+                                      tip.y - tanY * arrSz + ty * arrSz * 0.5f);
+                            ImVec2 p2(tip.x - tanX * arrSz - tx * arrSz * 0.5f,
+                                      tip.y - tanY * arrSz - ty * arrSz * 0.5f);
+                            dl->AddTriangleFilled(tip, p1, p2, col);
+                        }
+                        ImGui::Dummy(ImVec2(iconR * 2.0f + 2.0f, 0));
+                    }
+                    // Extra lines (each on its own line with prefix)
                     if (!g_CompactCharList) {
-                        int bdays = DaysUntilBirthday(ch.created);
-                        if (bdays >= 0 && bdays <= 7) {
+                        ImVec4 dimCol = selected ? ImVec4(0.8f, 0.8f, 0.8f, 1.0f) : ImVec4(0.55f, 0.55f, 0.55f, 1.0f);
+                        ImVec4 labelCol = selected ? ImVec4(0.7f, 0.7f, 0.7f, 1.0f) : ImVec4(0.45f, 0.45f, 0.45f, 1.0f);
+
+                        // 1. Crafting icons (no prefix, inactive dimmed)
+                        if (g_ShowCraftingIcons && !ch.crafting.empty()) {
+                            const float craftIconSz = 14.0f;
+                            for (size_t ci = 0; ci < ch.crafting.size(); ci++) {
+                                if (ci > 0) ImGui::SameLine(0, 2);
+                                const std::string& disc = ch.crafting[ci];
+                                bool isActive = (ci < ch.crafting_active.size()) ? ch.crafting_active[ci] : true;
+                                float iconAlpha = isActive ? 1.0f : 0.35f;
+                                uint32_t cIconId = GetCraftingIconId(disc);
+                                const char* cIconUrl = GetCraftingIconUrl(disc);
+                                bool rendered = false;
+                                if (cIconId && cIconUrl) {
+                                    auto* tex = AlterEgo::IconManager::GetIcon(cIconId);
+                                    if (tex && tex->Resource) {
+                                        ImGui::Image(tex->Resource, ImVec2(craftIconSz, craftIconSz),
+                                            ImVec2(0, 0), ImVec2(1, 1),
+                                            ImVec4(1, 1, 1, iconAlpha));
+                                        rendered = true;
+                                    } else {
+                                        AlterEgo::IconManager::RequestIcon(cIconId, cIconUrl);
+                                    }
+                                }
+                                if (!rendered) ImGui::Dummy(ImVec2(craftIconSz, craftIconSz));
+                                if (ImGui::IsItemHovered()) {
+                                    ImGui::BeginTooltip();
+                                    int lvl = (ci < ch.crafting_levels.size()) ? ch.crafting_levels[ci] : 0;
+                                    ImGui::Text("%s %d%s", disc.c_str(), lvl,
+                                        isActive ? "" : " (inactive)");
+                                    ImGui::EndTooltip();
+                                }
+                            }
+                        }
+
+                        // 2. Age: (character creation age)
+                        if (g_ShowAge && !ch.created.empty()) {
+                            struct tm ctm = {};
+                            if (sscanf(ch.created.c_str(), "%d-%d-%dT%d:%d:%d",
+                                    &ctm.tm_year, &ctm.tm_mon, &ctm.tm_mday,
+                                    &ctm.tm_hour, &ctm.tm_min, &ctm.tm_sec) == 6) {
+                                ctm.tm_year -= 1900;
+                                ctm.tm_mon -= 1;
+                                time_t created_t = mktime(&ctm);
+                                time_t now_t = std::time(nullptr);
+                                int totalDays = (int)(difftime(now_t, created_t) / 86400.0);
+                                ImGui::TextColored(labelCol, "Age:");
+                                ImGui::SameLine();
+                                if (totalDays >= 365)
+                                    ImGui::TextColored(dimCol, "%dy %dd", totalDays / 365, totalDays % 365);
+                                else
+                                    ImGui::TextColored(dimCol, "%dd", totalDays);
+                            }
+                        }
+
+                        // 3. Next Birthday: (right after Age)
+                        if (g_BirthdayMode != 2) {
+                            int bdays = DaysUntilBirthday(ch.created);
+                            bool showBday = (g_BirthdayMode == 0 && bdays >= 0) ||
+                                            (g_BirthdayMode == 1 && bdays >= 0 && bdays <= 7);
+                            if (showBday) {
+                                ImGui::TextColored(labelCol, "Next Birthday:");
+                                ImGui::SameLine();
+                                if (bdays == 0)
+                                    ImGui::TextColored(ImVec4(1.0f, 0.85f, 0.0f, 1.0f), "Today!");
+                                else
+                                    ImGui::TextColored(ImVec4(0.8f, 0.7f, 0.3f, 1.0f), "%dd", bdays);
+                            }
+                        }
+
+                        // 4. Playtime:
+                        if (g_ShowPlaytime && ch.age > 0) {
+                            int hours = ch.age / 3600;
+                            ImGui::TextColored(labelCol, "Playtime:");
                             ImGui::SameLine();
-                            if (bdays == 0)
-                                ImGui::TextColored(ImVec4(1.0f, 0.85f, 0.0f, 1.0f), "Birthday!");
+                            if (hours >= 24)
+                                ImGui::TextColored(dimCol, "%dd %dh", hours / 24, hours % 24);
                             else
-                                ImGui::TextColored(ImVec4(0.8f, 0.7f, 0.3f, 1.0f), "%dd", bdays);
+                                ImGui::TextColored(dimCol, "%dh", hours);
+                        }
+
+                        // 5. Last Login:
+                        if (g_ShowLastLogin && !ch.last_modified.empty()) {
+                            struct tm tm = {};
+                            if (sscanf(ch.last_modified.c_str(), "%d-%d-%dT%d:%d:%d",
+                                    &tm.tm_year, &tm.tm_mon, &tm.tm_mday,
+                                    &tm.tm_hour, &tm.tm_min, &tm.tm_sec) == 6) {
+                                tm.tm_year -= 1900;
+                                tm.tm_mon -= 1;
+                                time_t login = mktime(&tm);
+                                time_t now_t = std::time(nullptr);
+                                int elapsed = (int)difftime(now_t, login);
+                                std::string ago;
+                                if (elapsed < 3600) ago = std::to_string(elapsed / 60) + "m";
+                                else if (elapsed < 86400) ago = std::to_string(elapsed / 3600) + "h";
+                                else ago = std::to_string(elapsed / 86400) + "d";
+                                ImGui::TextColored(labelCol, "Last Login:");
+                                ImGui::SameLine();
+                                ImGui::TextColored(dimCol, "%s ago", ago.c_str());
+                            }
                         }
                     }
                     ImGui::EndGroup();
+
+                    ImGui::PopStyleColor(3);
 
                     ImGui::PopID();
                 }
@@ -4193,6 +6305,18 @@ void AddonRender() {
             ImGui::EndTabItem();
         }
 
+        if (g_SkinInitialized && ImGui::BeginTabItem("Skinventory")) {
+            g_MainTab = 2;
+            RenderSkinventory();
+            ImGui::EndTabItem();
+        }
+
+        if (ImGui::BeginTabItem("Clears")) {
+            g_MainTab = 3;
+            RenderClears();
+            ImGui::EndTabItem();
+        }
+
         ImGui::EndTabBar();
     }
 
@@ -4262,8 +6386,43 @@ void AddonOptions() {
         }
         SaveSettings();
     }
-    if (ImGui::Checkbox("Compact character list", &g_CompactCharList)) {
+    ImGui::Spacing();
+    ImGui::Separator();
+    ImGui::Text("Character List:");
+    if (ImGui::Checkbox("Compact mode", &g_CompactCharList)) {
         SaveSettings();
+    }
+    if (!g_CompactCharList) {
+        ImGui::Indent(16.0f);
+        if (ImGui::Checkbox("Crafting Profession Icons", &g_ShowCraftingIcons)) {
+            SaveSettings();
+        }
+        if (ImGui::Checkbox("Age", &g_ShowAge)) {
+            SaveSettings();
+        }
+        if (ImGui::Checkbox("Playtime", &g_ShowPlaytime)) {
+            SaveSettings();
+        }
+        if (ImGui::Checkbox("Last Login", &g_ShowLastLogin)) {
+            SaveSettings();
+        }
+        ImGui::Text("Next Birthday");
+        ImGui::SameLine();
+        if (ImGui::RadioButton("Always", g_BirthdayMode == 0)) {
+            g_BirthdayMode = 0;
+            SaveSettings();
+        }
+        ImGui::SameLine();
+        if (ImGui::RadioButton("A week out", g_BirthdayMode == 1)) {
+            g_BirthdayMode = 1;
+            SaveSettings();
+        }
+        ImGui::SameLine();
+        if (ImGui::RadioButton("Never", g_BirthdayMode == 2)) {
+            g_BirthdayMode = 2;
+            SaveSettings();
+        }
+        ImGui::Unindent(16.0f);
     }
 }
 
