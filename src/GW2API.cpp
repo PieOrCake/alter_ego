@@ -83,6 +83,8 @@ namespace AlterEgo {
     std::unordered_map<std::string, ProfessionInfo> GW2API::s_profession_cache;
     std::unordered_map<std::string, std::map<std::string, ProfessionWeaponData>> GW2API::s_profession_weapons;
     std::vector<SavedBuild> GW2API::s_saved_builds;
+    std::unordered_map<std::string, uint32_t> GW2API::s_item_name_id_cache;
+    bool GW2API::s_item_name_cache_dirty = false;
     std::unordered_map<std::string, std::unordered_map<uint16_t, uint32_t>> GW2API::s_palette_to_skill;
     std::unordered_map<std::string, std::unordered_map<uint32_t, uint16_t>> GW2API::s_skill_to_palette;
     std::unordered_set<std::string> GW2API::s_palette_fetching;
@@ -623,8 +625,48 @@ namespace AlterEgo {
             }
         }
 
+        // For truncated responses, attempt to recover by closing open brackets
+        std::string json_str;
+        uint32_t parse_len = resp->truncated
+            ? std::min(resp->json_length, (uint32_t)sizeof(((HoardQueryApiResponse*)0)->json))
+            : resp->json_length;
+        if (resp->truncated) {
+            json_str.assign(resp->json, parse_len);
+            // Find the last complete top-level object in the array.
+            // The /equipment response is {"equipment":[{...},{...},...]}
+            // We search backward for '}' at brace depth 0 (end of a complete object).
+            size_t last_complete = std::string::npos;
+            int depth = 0;
+            bool in_str = false;
+            for (size_t i = 0; i < json_str.size(); i++) {
+                char c = json_str[i];
+                if (c == '\\' && in_str) { i++; continue; } // skip escaped char
+                if (c == '"') { in_str = !in_str; continue; }
+                if (in_str) continue;
+                if (c == '{') depth++;
+                else if (c == '}') {
+                    depth--;
+                    if (depth == 1) // closing a top-level equipment object (depth 1 = inside the array)
+                        last_complete = i;
+                }
+            }
+            if (last_complete != std::string::npos) {
+                json_str.resize(last_complete + 1);
+                json_str += "]}"; // close the equipment array and outer object
+            } else {
+                // Couldn't find a complete object — wrap as empty
+                json_str = "{\"equipment\":[]}";
+            }
+            if (s_api) {
+                s_api->Log(LOGL_INFO, "AlterEgo",
+                    ("Truncation recovery: trimmed to " + std::to_string(json_str.size()) + " bytes").c_str());
+            }
+        }
+
         try {
-            json cj = json::parse(resp->json, resp->json + resp->json_length);
+            json cj = resp->truncated
+                ? json::parse(json_str)
+                : json::parse(resp->json, resp->json + resp->json_length);
 
             // Check for API error response
             if (cj.is_object() && cj.contains("text")) {
@@ -883,6 +925,7 @@ namespace AlterEgo {
         if (done) {
             if (s_api) s_api->Log(LOGL_INFO, "AlterEgo", s_fetch_message.c_str());
             SaveCharacterData();
+            SaveItemNameCache();
         } else {
             // Save after each character completes (for incremental persistence)
             if (phase == 5) SaveCharacterData();
@@ -1129,6 +1172,76 @@ namespace AlterEgo {
         return (it != s_item_cache.end()) ? &it->second : nullptr;
     }
 
+    uint32_t GW2API::FindItemIdByName(const std::string& name) {
+        if (name.empty()) return 0;
+        std::lock_guard<std::mutex> lock(s_mutex);
+        // Check full item cache first
+        for (const auto& [id, info] : s_item_cache) {
+            if (info.name == name) return id;
+        }
+        // Fallback to persistent name→ID cache
+        auto it = s_item_name_id_cache.find(name);
+        if (it != s_item_name_id_cache.end()) return it->second;
+        return 0;
+    }
+
+    void GW2API::CacheItemNameId(const std::string& name, uint32_t id) {
+        if (name.empty() || id == 0) return;
+        std::lock_guard<std::mutex> lock(s_mutex);
+        auto it = s_item_name_id_cache.find(name);
+        if (it == s_item_name_id_cache.end() || it->second != id) {
+            s_item_name_id_cache[name] = id;
+            s_item_name_cache_dirty = true;
+        }
+    }
+
+    bool GW2API::LoadItemNameCache() {
+        std::string path = GetDataDirectory() + "/item_name_cache.json";
+        std::ifstream file(path);
+        if (!file.is_open()) return false;
+        try {
+            json j;
+            file >> j;
+            std::lock_guard<std::mutex> lock(s_mutex);
+            s_item_name_id_cache.clear();
+            if (j.is_object()) {
+                for (auto it = j.begin(); it != j.end(); ++it) {
+                    s_item_name_id_cache[it.key()] = it.value().get<uint32_t>();
+                }
+            }
+            s_item_name_cache_dirty = false;
+            if (s_api) {
+                s_api->Log(LOGL_INFO, "AlterEgo",
+                    ("Loaded item name cache: " + std::to_string(s_item_name_id_cache.size()) + " entries").c_str());
+            }
+            return true;
+        } catch (...) {
+            return false;
+        }
+    }
+
+    bool GW2API::SaveItemNameCache() {
+        {
+            std::lock_guard<std::mutex> lock(s_mutex);
+            if (!s_item_name_cache_dirty) return true;
+        }
+        EnsureDataDirectory();
+        std::string path = GetDataDirectory() + "/item_name_cache.json";
+        json j;
+        {
+            std::lock_guard<std::mutex> lock(s_mutex);
+            for (const auto& [name, id] : s_item_name_id_cache) {
+                j[name] = id;
+            }
+            s_item_name_cache_dirty = false;
+        }
+        std::ofstream file(path);
+        if (!file.is_open()) return false;
+        file << j.dump(2);
+        file.flush();
+        return true;
+    }
+
     const SkinInfo* GW2API::GetSkinInfo(uint32_t skin_id) {
         std::lock_guard<std::mutex> lock(s_mutex);
         auto it = s_skin_cache.find(skin_id);
@@ -1325,6 +1438,11 @@ namespace AlterEgo {
                             info.description = StripHtmlTags(item["description"].get<std::string>());
                         if (item.contains("details"))
                             info.details = item["details"];
+                        // Also populate persistent name→ID cache
+                        if (!info.name.empty()) {
+                            s_item_name_id_cache[info.name] = info.id;
+                            s_item_name_cache_dirty = true;
+                        }
                         s_item_cache[info.id] = info;
                     }
                 }
@@ -2040,7 +2158,9 @@ namespace AlterEgo {
                         gsj["stat_id"] = gs.stat_id;
                         gsj["stat_name"] = gs.stat_name;
                         if (!gs.rune.empty()) gsj["rune"] = gs.rune;
+                        if (gs.rune_id != 0) gsj["rune_id"] = gs.rune_id;
                         if (!gs.sigil.empty()) gsj["sigil"] = gs.sigil;
+                        if (gs.sigil_id != 0) gsj["sigil_id"] = gs.sigil_id;
                         if (!gs.infusion.empty()) gsj["infusion"] = gs.infusion;
                         if (!gs.weapon_type.empty()) gsj["weapon_type"] = gs.weapon_type;
                         gearJ[slot] = gsj;
@@ -2048,7 +2168,9 @@ namespace AlterEgo {
                     bj["gear"] = gearJ;
                 }
                 if (!b.rune_name.empty()) bj["rune_name"] = b.rune_name;
+                if (b.rune_id != 0) bj["rune_id"] = b.rune_id;
                 if (!b.relic_name.empty()) bj["relic_name"] = b.relic_name;
+                if (b.relic_id != 0) bj["relic_id"] = b.relic_id;
 
                 arr.push_back(bj);
             }
@@ -2145,14 +2267,18 @@ namespace AlterEgo {
                             gs.stat_id = it.value().value("stat_id", (uint32_t)0);
                             gs.stat_name = it.value().value("stat_name", "");
                             gs.rune = it.value().value("rune", "");
+                            gs.rune_id = it.value().value("rune_id", (uint32_t)0);
                             gs.sigil = it.value().value("sigil", "");
+                            gs.sigil_id = it.value().value("sigil_id", (uint32_t)0);
                             gs.infusion = it.value().value("infusion", "");
                             gs.weapon_type = it.value().value("weapon_type", "");
                             b.gear[gs.slot] = gs;
                         }
                     }
                     b.rune_name = bj.value("rune_name", "");
+                    b.rune_id = bj.value("rune_id", (uint32_t)0);
                     b.relic_name = bj.value("relic_name", "");
+                    b.relic_id = bj.value("relic_id", (uint32_t)0);
 
                     s_saved_builds.push_back(std::move(b));
                 }

@@ -35,9 +35,14 @@ If an LLM creating software upsets you, then perhaps this repo isn't for you. Mo
   - Weapon skills display (with Elementalist attunement and Thief dual-wield support)
   - Gear customization: stat combos, runes, sigils, weapon types
   - Filter by profession and game mode, search by name
-  - **Shared Build Templates** — Export/import complete builds (traits + gear) as compact codes or JSON
-    - Share via Discord or any text field using `AE1:` compact codes
+  - **Shared Build Templates** — Export/import complete builds (traits + gear) via multiple formats
+    - `AE2:` compact binary codes — fits full builds in GW2's 199-char chat limit
+    - `AE1:` base64 JSON codes — for Discord/text sharing
+    - Raw JSON import/export
     - [Spec for build websites →](docs/shared-build-spec.md)
+  - **Chat Build Detection** — Automatically detects AE2 build codes in GW2 chat
+    - Toast notification with one-click import to your build library
+    - Works across all chat channels (party, squad, whisper, etc.)
 - **Skinventory** — Browse all skins in the game, track which you own
   - Filter by type, subtype, weight class
   - Skin detail panel with wiki images, TP prices, vendor prices
@@ -49,7 +54,7 @@ If an LLM creating software upsets you, then perhaps this repo isn't for you. Mo
   - Weekly Raids (per-wing, per-encounter tracking)
   - Auto-refreshes at daily/weekly reset times and every 10 minutes
   - Data cached to disk for instant display on addon load
-- **Chat Link Support** — Full import/export of GW2 chat links
+- **Chat Link Support** — Full import/export of GW2 chat links and build codes
   - Item links (with skin, upgrades, infusions)
   - Build template links
   - Skin links
@@ -82,6 +87,7 @@ Portraits are displayed as a semi-transparent overlay with a vignette edge fade.
 
 - [Raidcore Nexus](https://raidcore.gg/Nexus) (API v6)
 - [Hoard & Seek](https://github.com/PieOrCake/hoard_and_seek) addon (provides character data via GW2 API)
+- [Events: Chat](https://raidcore.gg/Nexus) addon (optional — enables chat build detection)
 
 ## Installation
 

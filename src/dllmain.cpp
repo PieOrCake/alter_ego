@@ -30,7 +30,7 @@
 // Version constants
 #define V_MAJOR 0
 #define V_MINOR 9
-#define V_BUILD 0
+#define V_BUILD 2
 #define V_REVISION 0
 
 // Quick Access icon identifiers
@@ -86,6 +86,7 @@ static bool g_ShowAge = false;
 static bool g_ShowPlaytime = false;
 static bool g_ShowLastLogin = false;
 static int g_BirthdayMode = 1;         // 0 = Always, 1 = A week out, 2 = Never
+static float g_CharListWidth = 200.0f; // Resizable character list column width
 static bool g_DetailsFetched = false;  // Track if we've requested details for current character
 static int g_MainTab = 0;             // 0 = Characters, 1 = Build Library, 2 = Skinventory
 static std::chrono::steady_clock::time_point g_FetchDoneTime{}; // For status message fade-out
@@ -183,6 +184,7 @@ struct MumbleIdentity {
 static std::string g_CurrentCharName; // currently logged-in character name from MumbleLink
 
 // Build Library UI state
+static float g_LibListWidth = 220.0f; // Resizable build list column width
 static int g_LibSelectedIdx = -1;
 static int g_LibFilterMode = 0;        // 0=All, 1=PvE, 2=WvW, 3=PvP, 4=Raid, 5=Fractal
 static char g_LibSearchBuf[128] = "";
@@ -196,6 +198,95 @@ static int g_LibDragIdx = -1;          // drag-and-drop source index
 static char g_LibEditName[128] = "";   // inline rename buffer
 static char g_LibEditNotes[512] = ""; // inline notes buffer
 static std::string g_LibEditBuildId;   // which build is being edited
+static int g_LibCtxDeleteIdx = -1;     // deferred delete from context menu
+
+// =========================================================================
+// Events: Chat integration — detect build links in game chat
+// Struct definitions from jsantorek/GW2-Chat (used by "Events: Chat" addon)
+// =========================================================================
+#define EV_CHAT_MESSAGE "EV_CHAT:Message"
+
+typedef char* ChatStringUTF8;
+
+typedef struct {
+    uint32_t Data1;
+    uint16_t Data2;
+    uint16_t Data3;
+    uint8_t  Data4[8];
+} ChatGUID;
+
+typedef struct {
+    uint32_t Low;
+    uint32_t High;
+} ChatTimestamp;
+
+enum ChatMessageType {
+    ChatMsg_Error = 0,
+    ChatMsg_Guild,
+    ChatMsg_GuildMotD,
+    ChatMsg_Local,
+    ChatMsg_Map,
+    ChatMsg_Party,
+    ChatMsg_Squad,
+    ChatMsg_SquadMessage,
+    ChatMsg_SquadBroadcast,
+    ChatMsg_TeamPvP,
+    ChatMsg_TeamWvW,
+    ChatMsg_Whisper,
+    ChatMsg_Emote,
+    ChatMsg_EmoteCustom
+};
+
+enum ChatMetadataFlags {
+    ChatFlag_None = 0,
+    ChatFlag_Whisper_IsFromMe = 1 << 4,
+};
+
+typedef struct {
+    ChatGUID       Account;
+    ChatStringUTF8 CharacterName;
+    ChatStringUTF8 AccountName;
+    ChatStringUTF8 Content;
+} ChatGenericMessage;
+
+typedef struct {
+    ChatTimestamp       DateTime;
+    ChatMessageType     Type;
+    ChatMetadataFlags   Flags;
+    union {
+        ChatGenericMessage Whisper;
+        ChatGenericMessage Local;
+        ChatGenericMessage Map;
+        ChatGenericMessage Party;
+        ChatGenericMessage Squad;
+        ChatStringUTF8     SquadMessage;
+        ChatGenericMessage TeamPvP;
+        ChatGenericMessage ErrorGeneric;
+    };
+} EvChatMessage;
+
+// Build toast notification state
+struct BuildToast {
+    bool active = false;
+    std::string sender;         // Character name of who sent it
+    std::string chat_link;      // The [&...] build template link
+    std::string ae2_code;       // Full AE2: code if detected (empty = plain chat link)
+    std::string profession;     // Decoded profession name
+    std::string spec_name;      // Elite spec if available
+    std::string channel;        // "Party", "Squad", "Whisper", etc.
+    bool has_gear = false;      // True if AE2 with gear data
+};
+static BuildToast g_BuildToast;
+static std::mutex g_BuildToastMutex;
+static bool g_ChatBuildDetection = true;  // master toggle
+static float g_ToastPosX = -1.0f;        // -1 = auto-center
+static float g_ToastPosY = 100.0f;
+static bool g_ToastPosInitialized = false;
+static bool g_ToastNeedsFocus = false;
+
+static void OnEvChatMessage(void* eventArgs);
+static void PushGW2Theme();
+static void PopGW2Theme();
 
 // Character list sorting
 enum CharSortMode { Sort_Custom = 0, Sort_Name, Sort_Profession, Sort_Level, Sort_Age, Sort_Birthday };
@@ -496,6 +587,11 @@ static void SaveSettings() {
     j["show_playtime"] = g_ShowPlaytime;
     j["show_last_login"] = g_ShowLastLogin;
     j["birthday_mode"] = g_BirthdayMode;
+    j["char_list_width"] = g_CharListWidth;
+    j["lib_list_width"] = g_LibListWidth;
+    j["chat_build_detection"] = g_ChatBuildDetection;
+    j["toast_pos_x"] = g_ToastPosX;
+    j["toast_pos_y"] = g_ToastPosY;
     std::ofstream file(path);
     if (file.is_open()) file << j.dump(2);
 }
@@ -513,6 +609,11 @@ static void LoadSettings() {
         if (j.contains("show_playtime")) g_ShowPlaytime = j["show_playtime"].get<bool>();
         if (j.contains("show_last_login")) g_ShowLastLogin = j["show_last_login"].get<bool>();
         if (j.contains("birthday_mode")) g_BirthdayMode = j["birthday_mode"].get<int>();
+        if (j.contains("char_list_width")) g_CharListWidth = j["char_list_width"].get<float>();
+        if (j.contains("lib_list_width")) g_LibListWidth = j["lib_list_width"].get<float>();
+        if (j.contains("chat_build_detection")) g_ChatBuildDetection = j["chat_build_detection"].get<bool>();
+        if (j.contains("toast_pos_x")) g_ToastPosX = j["toast_pos_x"].get<float>();
+        if (j.contains("toast_pos_y")) g_ToastPosY = j["toast_pos_y"].get<float>();
     } catch (...) {}
 }
 
@@ -703,11 +804,12 @@ static void LoadClearsCache() {
         auto fetchTime = std::chrono::system_clock::from_time_t((time_t)fetchEpoch);
 
         // Check if a reset has occurred since the cached data was fetched
+        // Add 60s buffer so we don't treat cache as stale before the API has updated
         auto now = std::chrono::system_clock::now();
-        auto dailyReset = CalcLastDailyReset(now);
-        auto weeklyReset = CalcLastWeeklyReset(now);
-        bool dailyStale = fetchTime < dailyReset;
-        bool weeklyStale = fetchTime < weeklyReset;
+        auto dailyReset = CalcLastDailyReset(now) + std::chrono::seconds(60);
+        auto weeklyReset = CalcLastWeeklyReset(now) + std::chrono::seconds(60);
+        bool dailyStale = fetchTime < dailyReset && now >= dailyReset;
+        bool weeklyStale = fetchTime < weeklyReset && now >= weeklyReset;
 
         {
             std::lock_guard<std::mutex> lock(g_ClearsMutex);
@@ -729,6 +831,19 @@ static void LoadClearsCache() {
                 if (j.contains("weeklyWings") && j["weeklyWings"].is_array()) {
                     for (const auto& ej : j["weeklyWings"])
                         g_WeeklyWings.push_back(deserializeEntry(ej));
+                    // Sort into canonical W1-W8 order
+                    static const std::unordered_map<uint32_t, int> wingOrder = {
+                        {9128, 1}, {9147, 2}, {9182, 3}, {9144, 4},
+                        {9111, 5}, {9120, 6}, {9156, 7}, {9181, 8},
+                    };
+                    std::sort(g_WeeklyWings.begin(), g_WeeklyWings.end(),
+                        [](const ClearEntry& a, const ClearEntry& b) {
+                            auto ai = wingOrder.find(a.id);
+                            auto bi = wingOrder.find(b.id);
+                            int ao = (ai != wingOrder.end()) ? ai->second : 99;
+                            int bo = (bi != wingOrder.end()) ? bi->second : 99;
+                            return ao < bo;
+                        });
                 }
                 if (j.contains("weeklyStrikes")) {
                     g_WeeklyStrikes = deserializeEntry(j["weeklyStrikes"]);
@@ -1095,6 +1210,15 @@ static void RenderEquipmentSlot(const AlterEgo::EquipmentItem* eq, const char* s
                 ImGui::PushTextWrapPos(300.0f);
                 std::string idesc = StripGW2Markup(item_info->description);
                 ImGui::TextColored(ImVec4(0.6f, 0.8f, 0.6f, 1.0f), "%s", idesc.c_str());
+                ImGui::PopTextWrapPos();
+            }
+
+            // Legendary relic API limitation note
+            if (item_info && item_info->type == "Relic" && item_info->rarity == "Legendary") {
+                ImGui::Spacing();
+                ImGui::PushTextWrapPos(300.0f);
+                ImGui::TextColored(ImVec4(0.6f, 0.6f, 0.4f, 1.0f),
+                    "The API does not expose which relic effect\nthis legendary relic is emulating.");
                 ImGui::PopTextWrapPos();
             }
 
@@ -2310,6 +2434,398 @@ static std::string ExportBuildToBase64(const AlterEgo::SavedBuild& build) {
     return "AE1:" + b64;
 }
 
+// =========================================================================
+// AE2: Compact binary build format — fits in GW2 chat (~130-150 chars)
+// =========================================================================
+//
+// Format (all multi-byte values are little-endian):
+//   [0]     uint8   version = 2
+//   [1]     uint8   flags: bits 0-2 = game_mode (0-5), bit 3 = has_gear,
+//                          bit 4 = has_rune, bit 5 = has_relic
+//   [2]     uint8   build_link_len (N)
+//   [3..3+N-1]     raw build link bytes (base64 payload of [&...])
+//   If has_gear:
+//     uint16  gear_mask (bitmask of populated slots, see AE2_SLOT_*)
+//     For each set bit in gear_mask (in bit order):
+//       uint16  stat_id
+//   If has_rune:
+//     uint32  rune_id (GW2 item ID)
+//   If has_relic:
+//     uint32  relic_id (GW2 item ID)
+//   For each weapon slot set in gear_mask (bits 6-9):
+//     uint32  sigil_id (0 if none)
+//     uint16  weapon_type_id (see WeaponTypeId enum)
+
+static const int AE2_SLOT_Helm        = 0;
+static const int AE2_SLOT_Shoulders   = 1;
+static const int AE2_SLOT_Coat        = 2;
+static const int AE2_SLOT_Gloves      = 3;
+static const int AE2_SLOT_Leggings    = 4;
+static const int AE2_SLOT_Boots       = 5;
+static const int AE2_SLOT_WeaponA1    = 6;
+static const int AE2_SLOT_WeaponA2    = 7;
+static const int AE2_SLOT_WeaponB1    = 8;
+static const int AE2_SLOT_WeaponB2    = 9;
+static const int AE2_SLOT_Back        = 10;
+static const int AE2_SLOT_Accessory1  = 11;
+static const int AE2_SLOT_Accessory2  = 12;
+static const int AE2_SLOT_Amulet      = 13;
+static const int AE2_SLOT_Ring1       = 14;
+static const int AE2_SLOT_Ring2       = 15;
+
+static int AE2SlotIndex(const std::string& slot) {
+    if (slot == "Helm")        return AE2_SLOT_Helm;
+    if (slot == "Shoulders")   return AE2_SLOT_Shoulders;
+    if (slot == "Coat")        return AE2_SLOT_Coat;
+    if (slot == "Gloves")      return AE2_SLOT_Gloves;
+    if (slot == "Leggings")    return AE2_SLOT_Leggings;
+    if (slot == "Boots")       return AE2_SLOT_Boots;
+    if (slot == "WeaponA1")    return AE2_SLOT_WeaponA1;
+    if (slot == "WeaponA2")    return AE2_SLOT_WeaponA2;
+    if (slot == "WeaponB1")    return AE2_SLOT_WeaponB1;
+    if (slot == "WeaponB2")    return AE2_SLOT_WeaponB2;
+    if (slot == "Backpack")    return AE2_SLOT_Back;
+    if (slot == "Accessory1")  return AE2_SLOT_Accessory1;
+    if (slot == "Accessory2")  return AE2_SLOT_Accessory2;
+    if (slot == "Amulet")      return AE2_SLOT_Amulet;
+    if (slot == "Ring1")       return AE2_SLOT_Ring1;
+    if (slot == "Ring2")       return AE2_SLOT_Ring2;
+    return -1;
+}
+
+static const char* AE2SlotName(int idx) {
+    static const char* names[] = {
+        "Helm", "Shoulders", "Coat", "Gloves", "Leggings", "Boots",
+        "WeaponA1", "WeaponA2", "WeaponB1", "WeaponB2",
+        "Backpack", "Accessory1", "Accessory2", "Amulet", "Ring1", "Ring2"
+    };
+    if (idx >= 0 && idx < 16) return names[idx];
+    return "";
+}
+
+static uint16_t WeaponTypeToId(const std::string& wtype) {
+    if (wtype == "Axe")        return 5;
+    if (wtype == "Longbow")    return 35;
+    if (wtype == "Dagger")     return 47;
+    if (wtype == "Focus")      return 49;
+    if (wtype == "Greatsword") return 50;
+    if (wtype == "Hammer")     return 51;
+    if (wtype == "Mace")       return 53;
+    if (wtype == "Pistol")     return 54;
+    if (wtype == "Rifle")      return 85;
+    if (wtype == "Scepter")    return 86;
+    if (wtype == "Shield")     return 87;
+    if (wtype == "Staff")      return 89;
+    if (wtype == "Sword")      return 90;
+    if (wtype == "Torch")      return 102;
+    if (wtype == "Warhorn")    return 103;
+    if (wtype == "Shortbow")   return 107;
+    if (wtype == "Spear")      return 265;
+    return 0;
+}
+
+static const char* WeaponTypeFromId(uint16_t id) {
+    switch (id) {
+        case 5:   return "Axe";
+        case 35:  return "Longbow";
+        case 47:  return "Dagger";
+        case 49:  return "Focus";
+        case 50:  return "Greatsword";
+        case 51:  return "Hammer";
+        case 53:  return "Mace";
+        case 54:  return "Pistol";
+        case 85:  return "Rifle";
+        case 86:  return "Scepter";
+        case 87:  return "Shield";
+        case 89:  return "Staff";
+        case 90:  return "Sword";
+        case 102: return "Torch";
+        case 103: return "Warhorn";
+        case 107: return "Shortbow";
+        case 265: return "Spear";
+        default:  return "";
+    }
+}
+
+static void PushU16LE(std::vector<uint8_t>& buf, uint16_t v) {
+    buf.push_back(v & 0xFF);
+    buf.push_back((v >> 8) & 0xFF);
+}
+
+static void PushU32LE(std::vector<uint8_t>& buf, uint32_t v) {
+    buf.push_back(v & 0xFF);
+    buf.push_back((v >> 8) & 0xFF);
+    buf.push_back((v >> 16) & 0xFF);
+    buf.push_back((v >> 24) & 0xFF);
+}
+
+static uint16_t ReadU16LE(const uint8_t* p) {
+    return (uint16_t)p[0] | ((uint16_t)p[1] << 8);
+}
+
+static uint32_t ReadU32LE(const uint8_t* p) {
+    return (uint32_t)p[0] | ((uint32_t)p[1] << 8)
+         | ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24);
+}
+
+static std::string ExportBuildToAE2(const AlterEgo::SavedBuild& build) {
+    std::vector<uint8_t> buf;
+
+    // Extract raw build link bytes from chat link
+    std::string payload;
+    if (!AlterEgo::ChatLink::ExtractPayload(build.chat_link, payload))
+        return "";
+    auto linkBytes = AlterEgo::ChatLink::Base64Decode(payload);
+    if (linkBytes.empty()) return "";
+
+    // Resolve relic ID from persistent name→ID cache
+    uint32_t relicId = build.relic_id;
+    if (relicId == 0 && !build.relic_name.empty())
+        relicId = AlterEgo::GW2API::FindItemIdByName(build.relic_name);
+
+    // Resolve rune/sigil IDs — try stored IDs first, then persistent name→ID cache
+    uint32_t runeId = build.rune_id;
+    if (runeId == 0 && !build.rune_name.empty())
+        runeId = AlterEgo::GW2API::FindItemIdByName(build.rune_name);
+
+    std::map<std::string, uint32_t> resolvedSigilIds;
+    for (const auto& [slot, gs] : build.gear) {
+        if (slot.find("Weapon") == 0) {
+            uint32_t sid = gs.sigil_id;
+            if (sid == 0 && !gs.sigil.empty())
+                sid = AlterEgo::GW2API::FindItemIdByName(gs.sigil);
+            resolvedSigilIds[slot] = sid;
+        }
+    }
+
+    // Determine flags
+    bool hasGear = !build.gear.empty();
+    bool hasRune = (runeId != 0);
+    bool hasRelic = (relicId != 0);
+    uint8_t gameMode = (uint8_t)build.game_mode;
+    if (gameMode > 5) gameMode = 0;
+
+    uint8_t flags = (gameMode & 0x07);
+    if (hasGear)  flags |= (1 << 3);
+    if (hasRune)  flags |= (1 << 4);
+    if (hasRelic) flags |= (1 << 5);
+
+    // Header
+    buf.push_back(2); // version
+    buf.push_back(flags);
+    buf.push_back((uint8_t)linkBytes.size());
+    buf.insert(buf.end(), linkBytes.begin(), linkBytes.end());
+
+    // Gear
+    if (hasGear) {
+        uint16_t gearMask = 0;
+        // First pass: determine which slots are present
+        for (const auto& [slot, gs] : build.gear) {
+            int idx = AE2SlotIndex(slot);
+            if (idx >= 0 && gs.stat_id != 0) gearMask |= (1 << idx);
+        }
+        PushU16LE(buf, gearMask);
+
+        // Second pass: write stat IDs in bit order
+        for (int i = 0; i < 16; i++) {
+            if (!(gearMask & (1 << i))) continue;
+            const char* slotName = AE2SlotName(i);
+            auto it = build.gear.find(slotName);
+            uint16_t statId = (it != build.gear.end()) ? (uint16_t)it->second.stat_id : 0;
+            PushU16LE(buf, statId);
+        }
+    }
+
+    // Rune
+    if (hasRune) PushU32LE(buf, runeId);
+
+    // Relic
+    if (hasRelic) PushU32LE(buf, relicId);
+
+    // Sigils + weapon types — for each weapon slot present in gear_mask
+    if (hasGear) {
+        for (int i = AE2_SLOT_WeaponA1; i <= AE2_SLOT_WeaponB2; i++) {
+            const char* slotName = AE2SlotName(i);
+            auto it = build.gear.find(slotName);
+            if (it != build.gear.end() && it->second.stat_id != 0) {
+                auto sigilIt = resolvedSigilIds.find(slotName);
+                uint32_t sigilId = (sigilIt != resolvedSigilIds.end()) ? sigilIt->second : 0;
+                PushU32LE(buf, sigilId);
+                PushU16LE(buf, WeaponTypeToId(it->second.weapon_type));
+            }
+        }
+    }
+
+    std::string b64 = AlterEgo::ChatLink::Base64Encode(buf.data(), buf.size());
+    return "AE2:" + b64;
+}
+
+static bool ImportBuildFromAE2(const std::string& ae2code, AlterEgo::SavedBuild& out, std::string& error) {
+    if (ae2code.size() < 5 || ae2code.substr(0, 4) != "AE2:") {
+        error = "Not an AE2 code.";
+        return false;
+    }
+
+    auto data = AlterEgo::ChatLink::Base64Decode(ae2code.substr(4));
+    if (data.size() < 4) { error = "AE2 code too short."; return false; }
+
+    size_t pos = 0;
+    uint8_t version = data[pos++];
+    if (version != 2) { error = "Unsupported AE2 version."; return false; }
+
+    uint8_t flags = data[pos++];
+    uint8_t gameMode = flags & 0x07;
+    bool hasGear  = (flags >> 3) & 1;
+    bool hasRune  = (flags >> 4) & 1;
+    bool hasRelic = (flags >> 5) & 1;
+
+    uint8_t linkLen = data[pos++];
+    if (pos + linkLen > data.size()) { error = "AE2 build link truncated."; return false; }
+
+    // Reconstruct chat link from raw bytes
+    std::vector<uint8_t> linkBytes(data.begin() + pos, data.begin() + pos + linkLen);
+    pos += linkLen;
+
+    std::string b64 = AlterEgo::ChatLink::Base64Encode(linkBytes.data(), linkBytes.size());
+    std::string chatLink = "[&" + b64 + "]";
+
+    // Decode build
+    AlterEgo::DecodedBuildLink decoded;
+    if (!AlterEgo::ChatLink::DecodeBuild(chatLink, decoded)) {
+        error = "Failed to decode build from AE2.";
+        return false;
+    }
+
+    std::string profession = ProfessionFromCode(decoded.profession);
+    if (profession == "Unknown") { error = "Unknown profession in AE2."; return false; }
+
+    // Ensure palette data is available
+    if (!AlterEgo::GW2API::HasPaletteData(profession)) {
+        AlterEgo::GW2API::FetchProfessionPaletteAsync(profession);
+        error = "Loading " + profession + " skill data... try again in a moment.";
+        return false;
+    }
+
+    // Use DecodeBuildLink to populate the SavedBuild
+    AlterEgo::GameMode mode = (AlterEgo::GameMode)gameMode;
+    std::string buildName = profession; // placeholder, caller should set
+    if (!DecodeBuildLink(chatLink, buildName, mode, out)) {
+        error = "Failed to decode AE2 build data.";
+        return false;
+    }
+
+    // Parse gear
+    if (hasGear) {
+        if (pos + 2 > data.size()) { error = "AE2 gear data truncated."; return false; }
+        uint16_t gearMask = ReadU16LE(&data[pos]); pos += 2;
+
+        int slotCount = 0;
+        for (int i = 0; i < 16; i++) {
+            if (gearMask & (1 << i)) slotCount++;
+        }
+        if (pos + slotCount * 2 > data.size()) { error = "AE2 gear stats truncated."; return false; }
+
+        for (int i = 0; i < 16; i++) {
+            if (!(gearMask & (1 << i))) continue;
+            uint16_t statId = ReadU16LE(&data[pos]); pos += 2;
+
+            AlterEgo::BuildGearSlot gs;
+            gs.slot = AE2SlotName(i);
+            gs.stat_id = statId;
+
+            // Resolve stat name from cache
+            const auto* statInfo = AlterEgo::GW2API::GetItemStatInfo(statId);
+            if (statInfo) gs.stat_name = statInfo->name;
+
+            out.gear[gs.slot] = gs;
+        }
+
+        // Read rune
+        if (hasRune) {
+            if (pos + 4 > data.size()) { error = "AE2 rune data truncated."; return false; }
+            out.rune_id = ReadU32LE(&data[pos]); pos += 4;
+            // Resolve rune name from item cache
+            const auto* runeInfo = AlterEgo::GW2API::GetItemInfo(out.rune_id);
+            if (runeInfo) out.rune_name = runeInfo->name;
+        }
+
+        // Read relic
+        if (hasRelic) {
+            if (pos + 4 > data.size()) { error = "AE2 relic data truncated."; return false; }
+            out.relic_id = ReadU32LE(&data[pos]); pos += 4;
+            const auto* relicInfo = AlterEgo::GW2API::GetItemInfo(out.relic_id);
+            if (relicInfo) out.relic_name = relicInfo->name;
+        }
+
+        // Read sigils + weapon types for weapon slots
+        for (int i = AE2_SLOT_WeaponA1; i <= AE2_SLOT_WeaponB2; i++) {
+            if (!(gearMask & (1 << i))) continue;
+            if (pos + 6 > data.size()) break; // 4 (sigil) + 2 (weapon type)
+            uint32_t sigilId = ReadU32LE(&data[pos]); pos += 4;
+            uint16_t weaponTypeId = ReadU16LE(&data[pos]); pos += 2;
+            const char* slotName = AE2SlotName(i);
+            auto it = out.gear.find(slotName);
+            if (it != out.gear.end()) {
+                it->second.sigil_id = sigilId;
+                const char* wt = WeaponTypeFromId(weaponTypeId);
+                if (wt[0]) it->second.weapon_type = wt;
+            }
+        }
+
+        // Fetch item details for rune/relic/sigils synchronously so names are available
+        std::vector<uint32_t> fetchIds;
+        if (out.rune_id != 0) fetchIds.push_back(out.rune_id);
+        if (out.relic_id != 0) fetchIds.push_back(out.relic_id);
+        for (const auto& [slot, gs] : out.gear) {
+            if (gs.sigil_id != 0) fetchIds.push_back(gs.sigil_id);
+        }
+        if (!fetchIds.empty()) AlterEgo::GW2API::FetchItemDetails(fetchIds);
+
+        // Now resolve names from the cache (after sync fetch) and populate name→ID cache
+        if (out.rune_id != 0 && out.rune_name.empty()) {
+            const auto* runeInfo = AlterEgo::GW2API::GetItemInfo(out.rune_id);
+            if (runeInfo) out.rune_name = runeInfo->name;
+        }
+        if (out.rune_id != 0 && !out.rune_name.empty())
+            AlterEgo::GW2API::CacheItemNameId(out.rune_name, out.rune_id);
+        if (out.relic_id != 0 && out.relic_name.empty()) {
+            const auto* relicInfo = AlterEgo::GW2API::GetItemInfo(out.relic_id);
+            if (relicInfo) out.relic_name = relicInfo->name;
+        }
+        if (out.relic_id != 0 && !out.relic_name.empty())
+            AlterEgo::GW2API::CacheItemNameId(out.relic_name, out.relic_id);
+        for (auto& [slot, gs] : out.gear) {
+            if (gs.sigil_id != 0 && gs.sigil.empty()) {
+                const auto* sigilInfo = AlterEgo::GW2API::GetItemInfo(gs.sigil_id);
+                if (sigilInfo) gs.sigil = sigilInfo->name;
+            }
+            if (gs.sigil_id != 0 && !gs.sigil.empty())
+                AlterEgo::GW2API::CacheItemNameId(gs.sigil, gs.sigil_id);
+        }
+        // Set rune name on armor gear slots
+        if (!out.rune_name.empty()) {
+            const char* armorSlots[] = {"Helm","Shoulders","Coat","Gloves","Leggings","Boots"};
+            for (const char* s : armorSlots) {
+                auto ait = out.gear.find(s);
+                if (ait != out.gear.end()) {
+                    ait->second.rune = out.rune_name;
+                    ait->second.rune_id = out.rune_id;
+                }
+            }
+        }
+    } else {
+        // No gear — still parse rune/relic if flags set
+        if (hasRune && pos + 4 <= data.size()) {
+            out.rune_id = ReadU32LE(&data[pos]); pos += 4;
+        }
+        if (hasRelic && pos + 4 <= data.size()) {
+            out.relic_id = ReadU32LE(&data[pos]); pos += 4;
+        }
+    }
+
+    return true;
+}
+
 static AlterEgo::GameMode GameModeFromLabel(const std::string& label) {
     if (label == "PvE")     return AlterEgo::GameMode::PvE;
     if (label == "WvW")     return AlterEgo::GameMode::WvW;
@@ -2319,9 +2835,14 @@ static AlterEgo::GameMode GameModeFromLabel(const std::string& label) {
     return AlterEgo::GameMode::Other;
 }
 
-// Returns true if input is a shared build template (JSON or AE1: base64)
+// Returns true if input is a shared build template (AE2, AE1, or JSON)
 // On success, populates 'out' with the imported build
 static bool ImportSharedBuild(const std::string& input, AlterEgo::SavedBuild& out, std::string& error) {
+    // Try AE2 compact binary format first
+    if (input.size() > 4 && input.substr(0, 4) == "AE2:") {
+        return ImportBuildFromAE2(input, out, error);
+    }
+
     std::string jsonStr;
 
     // Detect format
@@ -2488,6 +3009,337 @@ static void FetchDetailsForSavedBuild(const AlterEgo::SavedBuild& build) {
     if (!skill_ids.empty()) AlterEgo::GW2API::FetchSkillDetailsAsync(skill_ids);
 }
 
+// =========================================================================
+// Chat Build Detection — event handler + toast notification
+// =========================================================================
+
+static const char* ChatChannelName(ChatMessageType type) {
+    switch (type) {
+        case ChatMsg_Party:         return "Party";
+        case ChatMsg_Squad:         return "Squad";
+        case ChatMsg_Whisper:       return "Whisper";
+        case ChatMsg_Local:         return "Local";
+        case ChatMsg_Map:           return "Map";
+        case ChatMsg_Guild:         return "Guild";
+        case ChatMsg_TeamPvP:       return "PvP";
+        case ChatMsg_TeamWvW:       return "WvW";
+        default:                    return "Chat";
+    }
+}
+
+static void OnEvChatMessage(void* eventArgs) {
+    if (!eventArgs || !g_ChatBuildDetection) return;
+
+    EvChatMessage* msg = (EvChatMessage*)eventArgs;
+
+    // Only process message types that have ChatGenericMessage with Content
+    if (msg->Type != ChatMsg_Party && msg->Type != ChatMsg_Squad &&
+        msg->Type != ChatMsg_Whisper && msg->Type != ChatMsg_Local &&
+        msg->Type != ChatMsg_Map && msg->Type != ChatMsg_Guild &&
+        msg->Type != ChatMsg_TeamPvP && msg->Type != ChatMsg_TeamWvW)
+        return;
+
+    // Skip our own outgoing whispers
+    if (msg->Type == ChatMsg_Whisper && (msg->Flags & ChatFlag_Whisper_IsFromMe))
+        return;
+
+    // All GenericMessage types share the same union offset
+    ChatGenericMessage* gm = &msg->Whisper;
+    if (!gm->Content) return;
+
+    std::string content(gm->Content);
+    std::string sender = gm->CharacterName ? std::string(gm->CharacterName) : "Unknown";
+
+    // --- Priority 1: Detect AE2: compact build codes (includes gear) ---
+    {
+        size_t ae2pos = content.find("AE2:");
+        if (ae2pos != std::string::npos) {
+            // Extract the AE2 code (runs until whitespace or end of string)
+            size_t ae2end = content.find_first_of(" \t\n\r", ae2pos);
+            std::string ae2code = (ae2end != std::string::npos)
+                ? content.substr(ae2pos, ae2end - ae2pos)
+                : content.substr(ae2pos);
+
+            // Quick-decode to extract profession info for the toast
+            auto ae2data = AlterEgo::ChatLink::Base64Decode(ae2code.substr(4));
+            if (ae2data.size() >= 4 && ae2data[0] == 2) {
+                uint8_t ae2flags = ae2data[1];
+                bool ae2hasGear = (ae2flags >> 3) & 1;
+                uint8_t linkLen = ae2data[2];
+                if (3 + linkLen <= ae2data.size()) {
+                    std::vector<uint8_t> linkBytes(ae2data.begin() + 3, ae2data.begin() + 3 + linkLen);
+                    std::string b64 = AlterEgo::ChatLink::Base64Encode(linkBytes.data(), linkBytes.size());
+                    std::string chatLink = "[&" + b64 + "]";
+
+                    AlterEgo::DecodedBuildLink decoded;
+                    if (AlterEgo::ChatLink::DecodeBuild(chatLink, decoded)) {
+                        std::string profession = ProfessionFromCode(decoded.profession);
+                        if (profession != "Unknown") {
+                            std::string specName;
+                            for (int i = 2; i >= 0; i--) {
+                                if (decoded.specs[i].spec_id != 0) {
+                                    const auto* si = AlterEgo::GW2API::GetSpecInfo(decoded.specs[i].spec_id);
+                                    if (si && si->elite) specName = si->name;
+                                    break;
+                                }
+                            }
+
+                            {
+                                std::lock_guard<std::mutex> lock(g_BuildToastMutex);
+                                g_BuildToast.active = true;
+                                g_BuildToast.sender = sender;
+                                g_BuildToast.chat_link = chatLink;
+                                g_BuildToast.ae2_code = ae2code;
+                                g_BuildToast.profession = profession;
+                                g_BuildToast.spec_name = specName;
+                                g_BuildToast.channel = ChatChannelName(msg->Type);
+                                g_BuildToast.has_gear = ae2hasGear;
+                                g_ToastNeedsFocus = true;
+                            }
+
+                            // Pre-fetch palette data so import is instant
+                            if (!AlterEgo::GW2API::HasPaletteData(profession)) {
+                                AlterEgo::GW2API::FetchProfessionPaletteAsync(profession);
+                            }
+
+                            if (APIDefs) {
+                                std::string log = "AE2 build detected in " + std::string(ChatChannelName(msg->Type))
+                                    + " from " + sender + ": " + profession;
+                                if (!specName.empty()) log += " (" + specName + ")";
+                                if (ae2hasGear) log += " [with gear]";
+                                APIDefs->Log(LOGL_DEBUG, "AlterEgo", log.c_str());
+                            }
+                            return; // AE2 found, done
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // --- Priority 2: Detect native GW2 build chat links [&...] ---
+    {
+        size_t pos = 0;
+        while ((pos = content.find("[&", pos)) != std::string::npos) {
+            size_t end = content.find(']', pos);
+            if (end == std::string::npos) break;
+
+            std::string link = content.substr(pos, end - pos + 1);
+            pos = end + 1;
+
+            auto linkType = AlterEgo::ChatLink::DetectType(link);
+            if (linkType != AlterEgo::LINK_BUILD) continue;
+
+            AlterEgo::DecodedBuildLink decoded;
+            if (!AlterEgo::ChatLink::DecodeBuild(link, decoded)) continue;
+
+            std::string profession = ProfessionFromCode(decoded.profession);
+            if (profession == "Unknown") continue;
+
+            std::string specName;
+            for (int i = 2; i >= 0; i--) {
+                if (decoded.specs[i].spec_id != 0) {
+                    const auto* si = AlterEgo::GW2API::GetSpecInfo(decoded.specs[i].spec_id);
+                    if (si && si->elite) specName = si->name;
+                    break;
+                }
+            }
+
+            {
+                std::lock_guard<std::mutex> lock(g_BuildToastMutex);
+                g_BuildToast.active = true;
+                g_BuildToast.sender = sender;
+                g_BuildToast.chat_link = link;
+                g_BuildToast.ae2_code.clear();
+                g_BuildToast.profession = profession;
+                g_BuildToast.spec_name = specName;
+                g_BuildToast.channel = ChatChannelName(msg->Type);
+                g_BuildToast.has_gear = false;
+                g_ToastNeedsFocus = true;
+            }
+
+            // Pre-fetch palette data so import is instant
+            if (!AlterEgo::GW2API::HasPaletteData(profession)) {
+                AlterEgo::GW2API::FetchProfessionPaletteAsync(profession);
+            }
+
+            if (APIDefs) {
+                std::string log = "Build link detected in " + std::string(ChatChannelName(msg->Type))
+                                + " from " + sender + ": " + profession;
+                if (!specName.empty()) log += " (" + specName + ")";
+                APIDefs->Log(LOGL_DEBUG, "AlterEgo", log.c_str());
+            }
+
+            break;
+        }
+    }
+}
+
+static void RenderBuildToast() {
+    std::lock_guard<std::mutex> lock(g_BuildToastMutex);
+    if (!g_BuildToast.active) return;
+
+    PushGW2Theme();
+
+    const float toastWidth = 380.0f;
+    const float toastMinHeight = 140.0f;
+
+    // Position: use saved position, or auto-center horizontally
+    ImVec2 displaySize = ImGui::GetIO().DisplaySize;
+    float posX = (g_ToastPosX < 0) ? (displaySize.x - toastWidth) * 0.5f : g_ToastPosX;
+    float posY = g_ToastPosY;
+
+    if (!g_ToastPosInitialized) {
+        ImGui::SetNextWindowPos(ImVec2(posX, posY), ImGuiCond_Always);
+        g_ToastPosInitialized = true;
+    } else {
+        ImGui::SetNextWindowPos(ImVec2(posX, posY), ImGuiCond_Appearing);
+    }
+    ImGui::SetNextWindowSize(ImVec2(toastWidth, 0), ImGuiCond_Always);
+    ImGui::SetNextWindowBgAlpha(0.96f);
+    if (g_ToastNeedsFocus) {
+        ImGui::SetNextWindowFocus();
+        g_ToastNeedsFocus = false;
+    }
+
+    ImGuiWindowFlags flags = ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoResize
+        | ImGuiWindowFlags_NoScrollbar
+        | ImGuiWindowFlags_NoNav | ImGuiWindowFlags_AlwaysAutoResize
+        | ImGuiWindowFlags_NoSavedSettings;
+
+    // Gold highlight border for attention
+    ImGui::PushStyleColor(ImGuiCol_Border, ImVec4(0.90f, 0.75f, 0.25f, 0.90f));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 2.0f);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(14, 12));
+
+    bool open = true;
+    if (ImGui::Begin("Build Detected##AE_Toast", &open, flags)) {
+        // Track position for drag-to-reposition
+        ImVec2 wp = ImGui::GetWindowPos();
+        if (wp.x != posX || wp.y != posY) {
+            g_ToastPosX = wp.x;
+            g_ToastPosY = wp.y;
+        }
+
+        // Header — gold accent bar
+        ImDrawList* dl = ImGui::GetWindowDrawList();
+        ImVec2 winPos = ImGui::GetWindowPos();
+        ImVec2 winSize = ImGui::GetWindowSize();
+        dl->AddRectFilled(
+            ImVec2(winPos.x + 1, winPos.y + 1),
+            ImVec2(winPos.x + winSize.x - 1, winPos.y + 5),
+            IM_COL32(230, 190, 65, 220));
+
+        ImGui::Spacing();
+
+        // Title line
+        ImGui::TextColored(ImVec4(0.90f, 0.75f, 0.25f, 1.0f), "BUILD SHARED");
+        ImGui::SameLine();
+        ImGui::TextColored(ImVec4(0.5f, 0.47f, 0.40f, 1.0f), "via %s", g_BuildToast.channel.c_str());
+
+        ImGui::Spacing();
+        ImGui::Separator();
+        ImGui::Spacing();
+
+        // Sender + profession info
+        ImGui::Text("From:");
+        ImGui::SameLine();
+        ImGui::TextColored(ImVec4(0.4f, 0.8f, 1.0f, 1.0f), "%s", g_BuildToast.sender.c_str());
+
+        ImGui::Text("Build:");
+        ImGui::SameLine();
+        if (!g_BuildToast.spec_name.empty()) {
+            ImGui::TextColored(ImVec4(0.9f, 0.87f, 0.78f, 1.0f), "%s (%s)",
+                g_BuildToast.spec_name.c_str(), g_BuildToast.profession.c_str());
+        } else {
+            ImGui::TextColored(ImVec4(0.9f, 0.87f, 0.78f, 1.0f), "%s",
+                g_BuildToast.profession.c_str());
+        }
+
+        if (g_BuildToast.has_gear) {
+            ImGui::TextColored(ImVec4(0.35f, 0.82f, 0.35f, 1.0f), "Includes gear, runes & sigils");
+        } else {
+            ImGui::TextColored(ImVec4(0.5f, 0.47f, 0.40f, 1.0f), "Traits & skills only");
+        }
+
+        ImGui::Spacing();
+        ImGui::Spacing();
+
+        // Action buttons — large and prominent
+        float buttonWidth = (toastWidth - 28 - 8) * 0.5f; // half width minus padding and gap
+        ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.18f, 0.45f, 0.18f, 0.90f));
+        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.25f, 0.60f, 0.25f, 0.95f));
+        ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.30f, 0.70f, 0.30f, 1.00f));
+        if (ImGui::Button("Import to Library", ImVec2(buttonWidth, 32))) {
+            std::string buildName = g_BuildToast.spec_name.empty()
+                ? g_BuildToast.profession
+                : g_BuildToast.spec_name;
+            buildName += " (" + g_BuildToast.sender + ")";
+
+            AlterEgo::SavedBuild sb;
+            bool imported = false;
+
+            if (!g_BuildToast.ae2_code.empty()) {
+                // AE2 import — includes gear data
+                std::string ae2err;
+                if (ImportBuildFromAE2(g_BuildToast.ae2_code, sb, ae2err)) {
+                    sb.name = buildName;
+                    AlterEgo::GW2API::AddSavedBuild(std::move(sb));
+                    imported = true;
+                    if (APIDefs) APIDefs->GUI_SendAlert("Full build imported from chat!");
+                } else if (ae2err.find("Loading") != std::string::npos) {
+                    // Palette data still loading — don't dismiss, let user retry
+                    if (APIDefs) APIDefs->GUI_SendAlert("Loading skill data... click Import again.");
+                } else {
+                    if (APIDefs) {
+                        std::string alertMsg = "AE2 import failed: " + ae2err;
+                        APIDefs->GUI_SendAlert(alertMsg.c_str());
+                    }
+                }
+            } else {
+                // Plain chat link — traits & skills only
+                std::string profession = g_BuildToast.profession;
+                if (!profession.empty() && !AlterEgo::GW2API::HasPaletteData(profession)) {
+                    AlterEgo::GW2API::FetchProfessionPaletteAsync(profession);
+                    if (APIDefs) APIDefs->GUI_SendAlert("Loading skill data... click Import again.");
+                } else if (DecodeBuildLink(g_BuildToast.chat_link, buildName, AlterEgo::GameMode::PvE, sb)) {
+                    AlterEgo::GW2API::AddSavedBuild(std::move(sb));
+                    imported = true;
+                    if (APIDefs) APIDefs->GUI_SendAlert("Build imported from chat!");
+                } else {
+                    if (APIDefs) APIDefs->GUI_SendAlert("Failed to import build. Try again.");
+                }
+            }
+
+            if (imported) g_BuildToast.active = false;
+        }
+        ImGui::PopStyleColor(3);
+
+        ImGui::SameLine();
+
+        ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.22f, 0.20f, 0.12f, 0.80f));
+        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.35f, 0.30f, 0.14f, 0.90f));
+        ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.45f, 0.38f, 0.16f, 1.00f));
+        if (ImGui::Button("Dismiss", ImVec2(buttonWidth, 32))) {
+            g_BuildToast.active = false;
+        }
+        ImGui::PopStyleColor(3);
+
+        ImGui::Spacing();
+    }
+    ImGui::End();
+
+    // X button also dismisses
+    if (!open) {
+        g_BuildToast.active = false;
+    }
+
+    ImGui::PopStyleVar(2);
+    ImGui::PopStyleColor(1);
+
+    PopGW2Theme();
+}
+
 // Render a skill icon with tooltip
 static void RenderSkillIcon(uint32_t skill_id, float size) {
     if (skill_id == 0) {
@@ -2542,197 +3394,205 @@ static const char* FriendlyAttrName(const std::string& attr) {
     return attr.c_str();
 }
 
-// Curated rune list (name + summary)
-struct RuneEntry { const char* name; const char* bonus; };
+// Curated rune list (name + item_id + summary). IDs from GW2 API.
+struct RuneEntry { const char* name; uint32_t item_id; const char* bonus; };
 static const RuneEntry RUNE_LIST[] = {
-    {"Superior Rune of the Scholar", "+Power, +Ferocity, +10% dmg >90% HP"},
-    {"Superior Rune of the Eagle", "+Power, +Precision, +Ferocity, +10% dmg >80% HP"},
-    {"Superior Rune of Strength", "+Power, +Ferocity, +5% dmg on might"},
-    {"Superior Rune of the Dragonhunter", "+Power, +Ferocity, +7% vs burning foes"},
-    {"Superior Rune of the Berserker", "+Power, +Ferocity, +5% crit dmg"},
-    {"Superior Rune of the Thief", "+Power, +Precision, +10% dmg from stealth"},
-    {"Superior Rune of the Firebrand", "+Condi Dmg, +Expertise, +7% burning dmg"},
-    {"Superior Rune of Balthazar", "+Condi Dmg, +Burning duration"},
-    {"Superior Rune of the Trapper", "+Condi Dmg, +Expertise, +10% condi dur"},
-    {"Superior Rune of the Afflicted", "+Condi Dmg, +Expertise"},
-    {"Superior Rune of Tormenting", "+Condi Dmg, +Expertise, torment on hit"},
-    {"Superior Rune of the Tempest", "+Ferocity, +Precision, stun on crit"},
-    {"Superior Rune of Surging", "+Power, +Ferocity, swiftness on swap"},
-    {"Superior Rune of the Pack", "+Power, +Precision, might/fury/swiftness"},
-    {"Superior Rune of Vampirism", "+Power, +Ferocity, lifesteal"},
-    {"Superior Rune of the Monk", "+Healing, +Outgoing Heal, +Boon Duration"},
-    {"Superior Rune of the Water", "+Healing, +Boon Duration"},
-    {"Superior Rune of Durability", "+Toughness, +Vitality, +Boon Duration"},
-    {"Superior Rune of the Defender", "+Toughness, +Vitality"},
-    {"Superior Rune of the Traveler", "+All stats, +25% movement"},
-    {"Superior Rune of the Rebirth", "+Healing, +Boon Duration, auto-rez"},
-    {"Superior Rune of the Nightmare", "+Condi Dmg, +Condi Duration"},
-    {"Superior Rune of Thorns", "+Condi Dmg, +Expertise, +bleeding"},
-    {"Superior Rune of Permeating Wrath", "+Power, +Precision, +burning AoE"},
-    {"Superior Rune of the Citadel", "+Power, +Ferocity, +might on kill"},
-    {"Superior Rune of Fireworks", "+Power, +Boon Duration"},
-    {"Superior Rune of the Grove", "+Condi Dmg, +Healing"},
-    {"Superior Rune of Sanctuary", "+Vitality, +Toughness, barrier on heal"},
-    {"Superior Rune of Snowfall", "+Power, +Precision, superspeed"},
-    {"Superior Rune of the Sunless", "+Condi Dmg, +Expertise, +torment"},
-    {"Superior Rune of Resistance", "+Vitality, +Toughness, Resistance"},
-    {"Superior Rune of the Weaver", "+Power, +Condi Dmg, +Ferocity"},
-    {"Superior Rune of Scavenging", "+MF, +Power, +Precision"},
-    {"Superior Rune of Antitoxin", "+Vitality, +Healing, condi cleanse"},
-    {"Superior Rune of Aristocracy", "+Power, +Precision, +might dur"},
-    {"Superior Rune of Rage", "+Power, +Ferocity, fury on crit"},
+    {"Superior Rune of the Scholar",      91595, "+Power, +Ferocity, +10% dmg >90% HP"},
+    {"Superior Rune of the Eagle",        91433, "+Power, +Precision, +Ferocity, +10% dmg >80% HP"},
+    {"Superior Rune of Strength",         91423, "+Power, +Ferocity, +5% dmg on might"},
+    {"Superior Rune of the Dragonhunter", 91432, "+Power, +Ferocity, +7% vs burning foes"},
+    {"Superior Rune of the Berserker",    91397, "+Power, +Ferocity, +5% crit dmg"},
+    {"Superior Rune of the Thief",        91579, "+Power, +Precision, +10% dmg from stealth"},
+    {"Superior Rune of the Firebrand",    91538, "+Condi Dmg, +Expertise, +7% burning dmg"},
+    {"Superior Rune of Balthazar",        91513, "+Condi Dmg, +Burning duration"},
+    {"Superior Rune of the Trapper",      91508, "+Condi Dmg, +Expertise, +10% condi dur"},
+    {"Superior Rune of the Afflicted",    91460, "+Condi Dmg, +Expertise"},
+    {"Superior Rune of Tormenting",       91516, "+Condi Dmg, +Expertise, torment on hit"},
+    {"Superior Rune of the Tempest",      91583, "+Ferocity, +Precision, stun on crit"},
+    {"Superior Rune of Surging",          91591, "+Power, +Ferocity, swiftness on swap"},
+    {"Superior Rune of the Pack",         91592, "+Power, +Precision, might/fury/swiftness"},
+    {"Superior Rune of Vampirism",        91545, "+Power, +Ferocity, lifesteal"},
+    {"Superior Rune of the Monk",         91501, "+Healing, +Outgoing Heal, +Boon Duration"},
+    {"Superior Rune of the Water",        91518, "+Healing, +Boon Duration"},
+    {"Superior Rune of Durability",       91444, "+Toughness, +Vitality, +Boon Duration"},
+    {"Superior Rune of the Defender",     91404, "+Toughness, +Vitality"},
+    {"Superior Rune of the Traveler",     91485, "+All stats, +25% movement"},
+    {"Superior Rune of the Rebirth",      91627, "+Healing, +Boon Duration, auto-rez"},
+    {"Superior Rune of the Nightmare",    91410, "+Condi Dmg, +Condi Duration"},
+    {"Superior Rune of Thorns",           91381, "+Condi Dmg, +Expertise, +bleeding"},
+    {"Superior Rune of the Citadel",      91588, "+Power, +Ferocity, +might on kill"},
+    {"Superior Rune of Fireworks",        91482, "+Power, +Boon Duration"},
+    {"Superior Rune of the Grove",        91475, "+Condi Dmg, +Healing"},
+    {"Superior Rune of Sanctuary",        91605, "+Vitality, +Toughness, barrier on heal"},
+    {"Superior Rune of Snowfall",         91512, "+Power, +Precision, superspeed"},
+    {"Superior Rune of the Sunless",      91515, "+Condi Dmg, +Expertise, +torment"},
+    {"Superior Rune of Resistance",       91411, "+Vitality, +Toughness, Resistance"},
+    {"Superior Rune of the Weaver",       91451, "+Power, +Condi Dmg, +Ferocity"},
+    {"Superior Rune of Scavenging",       91553, "+MF, +Power, +Precision"},
+    {"Superior Rune of Antitoxin",        91641, "+Vitality, +Healing, condi cleanse"},
+    {"Superior Rune of the Aristocracy",  91602, "+Power, +Precision, +might dur"},
+    {"Superior Rune of Rage",             91503, "+Power, +Ferocity, fury on crit"},
 };
 static const int RUNE_COUNT = sizeof(RUNE_LIST) / sizeof(RUNE_LIST[0]);
 
-// Curated sigil list
-struct SigilEntry { const char* name; const char* bonus; };
+// Curated sigil list (name + item_id + summary). IDs from GW2 API.
+struct SigilEntry { const char* name; uint32_t item_id; const char* bonus; };
 static const SigilEntry SIGIL_LIST[] = {
-    {"Superior Sigil of Force", "+5% damage"},
-    {"Superior Sigil of Impact", "+3% stun duration"},
-    {"Superior Sigil of Accuracy", "+7% crit chance"},
-    {"Superior Sigil of the Night", "+10% dmg at night"},
-    {"Superior Sigil of Slaying (Undead)", "+10% vs undead"},
-    {"Superior Sigil of Slaying (Demon)", "+10% vs demons"},
-    {"Superior Sigil of Air", "Lightning strike on crit"},
-    {"Superior Sigil of Fire", "AoE fire on crit"},
-    {"Superior Sigil of Earth", "Bleed on crit"},
-    {"Superior Sigil of Geomancy", "Bleed AoE on swap"},
-    {"Superior Sigil of Doom", "Poison on swap"},
-    {"Superior Sigil of Torment", "Torment on crit"},
-    {"Superior Sigil of Malice", "+10% condition duration"},
-    {"Superior Sigil of Smoldering", "+20% burning duration"},
-    {"Superior Sigil of Venom", "+20% poison duration"},
-    {"Superior Sigil of Agony", "+20% torment duration"},
-    {"Superior Sigil of Bursting", "+5% condition damage"},
-    {"Superior Sigil of Concentration", "+10% boon duration"},
-    {"Superior Sigil of Transference", "+10% outgoing heal"},
-    {"Superior Sigil of Renewal", "Heal on kill"},
-    {"Superior Sigil of Blood", "Lifesteal on crit"},
-    {"Superior Sigil of Strength", "Might on crit"},
-    {"Superior Sigil of Severance", "Quickness on cc"},
-    {"Superior Sigil of Energy", "Endurance on swap"},
-    {"Superior Sigil of Paralyzation", "+30% stun duration"},
-    {"Superior Sigil of Absorption", "Steal boon on hit"},
-    {"Superior Sigil of Cleansing", "Condi cleanse on swap"},
-    {"Superior Sigil of Draining", "Steal HP on swap"},
-    {"Superior Sigil of Exploitation", "+3% dmg to <50% HP"},
-    {"Superior Sigil of Demons", "+10% vs demons"},
-    {"Superior Sigil of Serpent Slaying", "+10% vs destroyers"},
-    {"Superior Sigil of Courage", "Might on swap"},
+    {"Superior Sigil of Force",           91439, "+5% damage"},
+    {"Superior Sigil of Impact",          91405, "+3% stun duration"},
+    {"Superior Sigil of Accuracy",        91607, "+7% crit chance"},
+    {"Superior Sigil of the Night",       91389, "+10% dmg at night"},
+    {"Superior Sigil of Undead Slaying",  91524, "+10% vs undead"},
+    {"Superior Sigil of Demon Slaying",   91431, "+10% vs demons"},
+    {"Superior Sigil of Air",             91520, "Lightning strike on crit"},
+    {"Superior Sigil of Fire",            91559, "AoE fire on crit"},
+    {"Superior Sigil of Earth",           91531, "Bleed on crit"},
+    {"Superior Sigil of Geomancy",        91552, "Bleed AoE on swap"},
+    {"Superior Sigil of Doom",            91480, "Poison on swap"},
+    {"Superior Sigil of Torment",         91412, "Torment on crit"},
+    {"Superior Sigil of Malice",          91478, "+10% condition duration"},
+    {"Superior Sigil of Smoldering",      91488, "+20% burning duration"},
+    {"Superior Sigil of Venom",           91532, "+20% poison duration"},
+    {"Superior Sigil of Agony",           91534, "+20% torment duration"},
+    {"Superior Sigil of Bursting",        91416, "+5% condition damage"},
+    {"Superior Sigil of Concentration",   91473, "+10% boon duration"},
+    {"Superior Sigil of Transference",    91448, "+10% outgoing heal"},
+    {"Superior Sigil of Renewal",         91400, "Heal on kill"},
+    {"Superior Sigil of Blood",           91604, "Lifesteal on crit"},
+    {"Superior Sigil of Strength",        91561, "Might on crit"},
+    {"Superior Sigil of Severance",       91499, "Quickness on cc"},
+    {"Superior Sigil of Energy",          91441, "Endurance on swap"},
+    {"Superior Sigil of Paralyzation",    91398, "+30% stun duration"},
+    {"Superior Sigil of Absorption",      91589, "Steal boon on hit"},
+    {"Superior Sigil of Cleansing",       91548, "Condi cleanse on swap"},
+    {"Superior Sigil of Draining",        91544, "Steal HP on swap"},
+    {"Superior Sigil of Demons",          91388, "+10% vs demons"},
+    {"Superior Sigil of Serpent Slaying", 91456, "+10% vs destroyers"},
 };
 static const int SIGIL_COUNT = sizeof(SIGIL_LIST) / sizeof(SIGIL_LIST[0]);
 
-// Curated relic list
-struct RelicEntry { const char* name; const char* bonus; };
+// Curated relic list with exotic item IDs from GW2 API
+struct RelicEntry { const char* name; uint32_t item_id; const char* bonus; };
 static const RelicEntry RELIC_LIST[] = {
-    {"Relic of the Scholar", "+5% dmg >75% HP"},
-    {"Relic of the Eagle", "+10% dmg >80% HP"},
-    {"Relic of Fireworks", "Strike dmg on weapon skill"},
-    {"Relic of the Thief", "Weapon skill CDR, strike dmg"},
-    {"Relic of Cerus", "Elite skill +dmg, boon/condi"},
-    {"Relic of Isgarren", "+strike/condi dur after evade"},
-    {"Relic of the Brawler", "Strike dmg, protection, resolution"},
-    {"Relic of the Claw", "Strike dmg on disable"},
-    {"Relic of the Deadeye", "Strike dmg, cantrip bonus"},
-    {"Relic of the Dragonhunter", "Trap dmg + condi dur"},
-    {"Relic of Mount Balrior", "Elite skill +strike dmg"},
-    {"Relic of Peitha", "Torment/strike on shadowstep"},
-    {"Relic of Lyhr", "Heal + strike dmg"},
-    {"Relic of Fire", "Fire aura on heal skill"},
-    {"Relic of Dagda", "Elite skill condi transfer"},
-    {"Relic of the Fractal", "Bleed, burn, torment"},
-    {"Relic of Akeem", "Confusion + torment on disable"},
-    {"Relic of the Aristocracy", "Condi dur, weakness, vuln"},
-    {"Relic of the Afflicted", "Poison + bleed"},
-    {"Relic of the Nightmare", "Elite: fear + poison"},
-    {"Relic of the Krait", "Elite: conditions"},
-    {"Relic of the Sorcerer", "Vuln on cripple/chill/immob"},
-    {"Relic of the Mirage", "Torment on evade"},
-    {"Relic of Thorns", "Condition dmg, poison"},
-    {"Relic of the Blightbringer", "Poison + condi"},
-    {"Relic of Nourys", "Boon strip + dmg/heal"},
-    {"Relic of the Scourge", "Barrier + condi dur"},
-    {"Relic of the Demon Queen", "Poison on disable"},
-    {"Relic of Mosyn", "Condition on evade"},
-    {"Relic of the Biomancer", "Heal + bleed/poison"},
-    {"Relic of the First Revenant", "Condi dmg + resistance"},
-    {"Relic of Durability", "Protection/regen/resolution on heal"},
-    {"Relic of the Monk", "Healing + boon"},
-    {"Relic of the Flock", "Heal on healing skill"},
-    {"Relic of Castora", "Heal based on HP"},
-    {"Relic of the Water", "Condi cleanse on heal skill"},
-    {"Relic of the Defender", "Heal on block"},
-    {"Relic of Vampirism", "Lifesteal + heal on kill"},
-    {"Relic of Dwayna", "Regen"},
-    {"Relic of the Centaur", "Stability on heal skill"},
-    {"Relic of Mercy", "Revive speed + heal"},
-    {"Relic of Nayos", "Condi + heal"},
-    {"Relic of Karakosa", "Heal on blast finisher"},
-    {"Relic of the Nautical Beast", "Heal + water field"},
-    {"Relic of the Living City", "Titan Potential on field/disable/evade"},
-    {"Relic of Leadership", "Condi cleanse + boon"},
-    {"Relic of the Herald", "Concentration + boon"},
-    {"Relic of the Firebrand", "Mantra + boon dur"},
-    {"Relic of Rivers", "Alacrity + regen on dodge"},
-    {"Relic of the Chronomancer", "Quickness on well"},
-    {"Relic of the Pack", "Superspeed/might/fury on elite"},
-    {"Relic of Altruism", "Might + fury on heal skill"},
-    {"Relic of the Cavalier", "Aegis/quickness/swiftness on engage"},
-    {"Relic of the Twin Generals", "Might + weakness on heal"},
-    {"Relic of Mabon", "Might + Mabon's Strength"},
-    {"Relic of the Midnight King", "Might + fury on disable"},
-    {"Relic of Speed", "Movement speed + swiftness"},
-    {"Relic of the Wayfinder", "Movement speed + burst speed"},
-    {"Relic of Febe", "Heal skill + swiftness"},
-    {"Relic of the Adventurer", "Endurance on heal skill"},
-    {"Relic of Evasion", "Vigor + evade bonus"},
-    {"Relic of Fog", "Dodge: glancing blows"},
-    {"Relic of the Daredevil", "Dodge rolling bonuses"},
-    {"Relic of Geysers", "Endurance + vigor"},
-    {"Relic of Resistance", "Resistance on heal skill"},
-    {"Relic of Antitoxin", "Condi cleanse"},
-    {"Relic of the Trooper", "Condi cleanse on shout"},
-    {"Relic of the Astral Ward", "Signet + resistance"},
-    {"Relic of Reunification", "Frost/light aura on heal"},
-    {"Relic of Surging", "Shocking aura on elite"},
-    {"Relic of the Earth", "Protection + magnetic aura"},
-    {"Relic of the Warrior", "Weapon swap CDR"},
-    {"Relic of the Alliance", "Signet bonus"},
-    {"Relic of Shackles", "Immobilize"},
-    {"Relic of the Necromancer", "Fear"},
-    {"Relic of the Scoundrel", "Blind/weakness on crit"},
-    {"Relic of the Reaper", "Chill on shout"},
-    {"Relic of Atrocity", "Lifesteal"},
-    {"Relic of the Mist Stranger", "Siphon health"},
-    {"Relic of the Ogre", "Summon rock dog"},
-    {"Relic of the Lich", "Summon jagged horror"},
-    {"Relic of the Golemancer", "Summon golem"},
-    {"Relic of the Privateer", "Summon parrot"},
-    {"Relic of the Beehive", "Elite skill summon"},
-    {"Relic of Sorrow", "Elite: destroy projectiles"},
-    {"Relic of the Citadel", "Elite: stun"},
-    {"Relic of the Holosmith", "Elite skill bonus"},
-    {"Relic of the Ice", "Elite: chill"},
-    {"Relic of the Sunless", "Elite: poison/cripple"},
-    {"Relic of the Wizard's Tower", "Elite: reflect + pull"},
-    {"Relic of the Pirate Queen", "Quickness on disable"},
-    {"Relic of the Phenom", "Cantrip/meditation + protection"},
-    {"Relic of the Weaver", "Stance + strike dmg"},
-    {"Relic of Bava Nisos", "Stance bonus"},
-    {"Relic of the Zephyrite", "Protection + resolution"},
-    {"Relic of Bloodstone", "Bloodstone blast finisher"},
-    {"Relic of the Unseen Invasion", "Superspeed + stealth"},
-    {"Relic of Mistburn", "WvW combat bonus"},
-    {"Relic of the Forest Dweller", "Nature bonus"},
-    {"Relic of the Founding", "Barrier on combo field"},
-    {"Relic of the Mists Tide", "Condi on combo finisher"},
-    {"Relic of the Stormsinger", "Movement skill bonus"},
-    {"Relic of the Steamshrieker", "Burn on water combo"},
-    {"Relic of Vass", "Heal + elixir + poison"},
-    {"Relic of Zakiros", "Fury + crit dmg + healing"},
-    {"Relic of the Coral Heart", "Underwater bonus"},
+    {"Relic of the Eagle",          104241, "+10% dmg >80% HP"},
+    {"Relic of Fireworks",          100947, "Strike dmg on weapon skill"},
+    {"Relic of the Thief",          100976, "Weapon skill CDR, strike dmg"},
+    {"Relic of Cerus",              100074, "Elite skill +dmg, boon/condi"},
+    {"Relic of Isgarren",            99997, "+strike/condi dur after evade"},
+    {"Relic of the Brawler",        100527, "Strike dmg, protection, resolution"},
+    {"Relic of the Claw",           103574, "Strike dmg on disable"},
+    {"Relic of the Deadeye",        100924, "Strike dmg, cantrip bonus"},
+    {"Relic of the Dragonhunter",   100090, "Trap dmg + condi dur"},
+    {"Relic of Mount Balrior",      103872, "Elite skill +strike dmg"},
+    {"Relic of Peitha",             100177, "Torment/strike on shadowstep"},
+    {"Relic of Lyhr",               100461, "Heal + strike dmg"},
+    {"Relic of Fire",               104501, "Fire aura on heal skill"},
+    {"Relic of Dagda",              100942, "Elite skill condi transfer"},
+    {"Relic of the Fractal",        100153, "Bleed, burn, torment"},
+    {"Relic of Akeem",              100432, "Confusion + torment on disable"},
+    {"Relic of the Aristocracy",    100849, "Condi dur, weakness, vuln"},
+    {"Relic of the Afflicted",      100693, "Poison + bleed"},
+    {"Relic of the Nightmare",      100579, "Elite: fear + poison"},
+    {"Relic of the Krait",          100230, "Elite: conditions"},
+    {"Relic of the Sorcerer",       101863, "Vuln on cripple/chill/immob"},
+    {"Relic of the Mirage",         100158, "Torment on evade"},
+    {"Relic of Thorns",             104424, "Condition dmg, poison"},
+    {"Relic of the Blightbringer",  102199, "Poison + condi"},
+    {"Relic of Nourys",             101191, "Boon strip + dmg/heal"},
+    {"Relic of the Scourge",        100368, "Barrier + condi dur"},
+    {"Relic of the Demon Queen",    101166, "Poison on disable"},
+    {"Relic of Mosyn",              101801, "Condition on evade"},
+    {"Relic of the Biomancer",      106364, "Heal + bleed/poison"},
+    {"Relic of the First Revenant", 105585, "Condi dmg + resistance"},
+    {"Relic of Durability",         100562, "Protection/regen/resolution on heal"},
+    {"Relic of the Monk",           100031, "Healing + boon"},
+    {"Relic of the Flock",          100633, "Heal on healing skill"},
+    {"Relic of Castora",            105652, "Heal based on HP"},
+    {"Relic of the Water",          100659, "Condi cleanse on heal skill"},
+    {"Relic of the Defender",       100934, "Heal on block"},
+    {"Relic of Vampirism",          100676, "Lifesteal + heal on kill"},
+    {"Relic of Dwayna",             100442, "Regen"},
+    {"Relic of the Centaur",        100385, "Stability on heal skill"},
+    {"Relic of Mercy",              100429, "Revive speed + heal"},
+    {"Relic of Nayos",              101198, "Condi + heal"},
+    {"Relic of Karakosa",           101268, "Heal on blast finisher"},
+    {"Relic of the Nautical Beast", 106920, "Heal + water field"},
+    {"Relic of the Living City",    104938, "Titan Potential on field/disable/evade"},
+    {"Relic of Leadership",         100625, "Condi cleanse + boon"},
+    {"Relic of the Herald",         100219, "Concentration + boon"},
+    {"Relic of the Firebrand",      100453, "Mantra + boon dur"},
+    {"Relic of Rivers",             103015, "Alacrity + regen on dodge"},
+    {"Relic of the Chronomancer",   100450, "Quickness on well"},
+    {"Relic of the Pack",           100752, "Superspeed/might/fury on elite"},
+    {"Relic of Altruism",           104256, "Might + fury on heal skill"},
+    {"Relic of the Cavalier",       100542, "Aegis/quickness/swiftness on engage"},
+    {"Relic of the Twin Generals",  101767, "Might + weakness on heal"},
+    {"Relic of Mabon",              100115, "Might + Mabon's Strength"},
+    {"Relic of the Midnight King",  101139, "Might + fury on disable"},
+    {"Relic of Speed",              100148, "Movement speed + swiftness"},
+    {"Relic of the Wayfinder",      101943, "Movement speed + burst speed"},
+    {"Relic of Febe",               101116, "Heal skill + swiftness"},
+    {"Relic of the Adventurer",     100561, "Endurance on heal skill"},
+    {"Relic of Evasion",            100886, "Vigor + evade bonus"},
+    {"Relic of Fog",                107030, "Dodge: glancing blows"},
+    {"Relic of the Daredevil",      100345, "Dodge rolling bonuses"},
+    {"Relic of Geysers",            103763, "Endurance + vigor"},
+    {"Relic of Resistance",         100794, "Resistance on heal skill"},
+    {"Relic of Antitoxin",          100390, "Condi cleanse"},
+    {"Relic of the Trooper",        100411, "Condi cleanse on shout"},
+    {"Relic of the Astral Ward",    100388, "Signet + resistance"},
+    {"Relic of Reunification",      103984, "Frost/light aura on heal"},
+    {"Relic of Surging",            100063, "Shocking aura on elite"},
+    {"Relic of the Earth",          100435, "Protection + magnetic aura"},
+    {"Relic of the Warrior",        100299, "Weapon swap CDR"},
+    {"Relic of the Alliance",       107192, "Signet bonus"},
+    {"Relic of Shackles",           106916, "Immobilize"},
+    {"Relic of the Necromancer",    100580, "Fear"},
+    {"Relic of the Scoundrel",      106355, "Blind/weakness on crit"},
+    {"Relic of the Reaper",         100739, "Chill on shout"},
+    {"Relic of Atrocity",           102245, "Lifesteal"},
+    {"Relic of the Mist Stranger",  106206, "Siphon health"},
+    {"Relic of the Ogre",           100311, "Summon rock dog"},
+    {"Relic of the Lich",           100238, "Summon jagged horror"},
+    {"Relic of the Golemancer",     100403, "Summon golem"},
+    {"Relic of the Privateer",      100479, "Summon parrot"},
+    {"Relic of the Beehive",        103977, "Elite skill summon"},
+    {"Relic of Sorrow",             103424, "Elite: destroy projectiles"},
+    {"Relic of the Citadel",        100448, "Elite: stun"},
+    {"Relic of the Holosmith",      100908, "Elite skill bonus"},
+    {"Relic of the Ice",            100048, "Elite: chill"},
+    {"Relic of the Sunless",        100400, "Elite: poison/cripple"},
+    {"Relic of the Wizard's Tower", 100557, "Elite: reflect + pull"},
+    {"Relic of the Pirate Queen",   106221, "Quickness on disable"},
+    {"Relic of the Phenom",         104733, "Cantrip/meditation + protection"},
+    {"Relic of the Weaver",         100194, "Stance + strike dmg"},
+    {"Relic of Bava Nisos",         104848, "Stance bonus"},
+    {"Relic of the Zephyrite",      100893, "Protection + resolution"},
+    {"Relic of Bloodstone",         104800, "Bloodstone blast finisher"},
+    {"Relic of the Unseen Invasion",100694, "Superspeed + stealth"},
+    {"Relic of Mistburn",           104994, "WvW combat bonus"},
+    {"Relic of the Forest Dweller", 107124, "Nature bonus"},
+    {"Relic of the Founding",       101737, "Barrier on combo field"},
+    {"Relic of the Mists Tide",     103901, "Condi on combo finisher"},
+    {"Relic of the Stormsinger",    102595, "Movement skill bonus"},
+    {"Relic of the Steamshrieker",  104022, "Burn on water combo"},
+    {"Relic of Vass",               100775, "Heal + elixir + poison"},
+    {"Relic of Zakiros",            101955, "Fury + crit dmg + healing"},
+    {"Relic of the Coral Heart",    107061, "Underwater bonus"},
+    {"Relic of Agony",              104849, "Interrupt bonus"},
 };
 static const int RELIC_COUNT = sizeof(RELIC_LIST) / sizeof(RELIC_LIST[0]);
+
+// Seed the persistent name→ID cache from the curated rune/sigil/relic tables.
+// Called once on startup so that even fresh installs can resolve names instantly.
+static void SeedItemNameCache() {
+    for (int i = 0; i < RUNE_COUNT; i++)
+        AlterEgo::GW2API::CacheItemNameId(RUNE_LIST[i].name, RUNE_LIST[i].item_id);
+    for (int i = 0; i < SIGIL_COUNT; i++)
+        AlterEgo::GW2API::CacheItemNameId(SIGIL_LIST[i].name, SIGIL_LIST[i].item_id);
+    for (int i = 0; i < RELIC_COUNT; i++)
+        AlterEgo::GW2API::CacheItemNameId(RELIC_LIST[i].name, RELIC_LIST[i].item_id);
+}
 
 // Slot display name for gear panel
 static const char* GearSlotDisplayName(const std::string& slot) {
@@ -2848,7 +3708,8 @@ static void OpenGearDialog(const std::string& buildId, const std::string& slot,
     g_GearDialogSlot = slot;
     g_GearDialogBuildId = buildId;
     g_GearSelectedStatId = current.stat_id;
-    g_GearSelectorTab = 0;
+    bool isWeaponSlot = (slot.find("Weapon") == 0);
+    g_GearSelectorTab = isWeaponSlot ? 2 : 0;
     memset(g_GearStatSearch, 0, sizeof(g_GearStatSearch));
 }
 
@@ -2861,8 +3722,11 @@ static std::vector<const AlterEgo::ItemStatInfo*> GetSortedStatCombos(const char
         filterLower = filter;
         for (auto& c : filterLower) c = (char)tolower(c);
     }
+    std::set<std::string> seenNames;
     for (const auto& [id, info] : allStats) {
         if (info.name.empty() || info.attributes.empty()) continue;
+        // Deduplicate: GW2 API has multiple stat IDs with the same name (different tiers)
+        if (!seenNames.insert(info.name).second) continue;
         if (!filterLower.empty()) {
             std::string nameLower = info.name;
             for (auto& c : nameLower) c = (char)tolower(c);
@@ -3079,7 +3943,7 @@ static void RenderGearCustomizeDialog() {
                     }
                 }
             } else {
-                ImGui::GetWindowDrawList()->AddText(tp, IM_COL32(120, 120, 120, 200), "(click to select stat)");
+                ImGui::GetWindowDrawList()->AddText(tp, IM_COL32(120, 120, 120, 200), "Stat: (click to select)");
             }
             ImGui::SetCursorScreenPos(ImVec2(p.x, p.y + h + 4));
         }
@@ -3141,8 +4005,10 @@ static void RenderGearCustomizeDialog() {
                     auto& target = editBuild->gear[s];
                     target.slot = s;
                     target.rune = gs.rune;
+                    target.rune_id = gs.rune_id;
                 }
                 editBuild->rune_name = gs.rune;
+                editBuild->rune_id = gs.rune_id;
                 AlterEgo::GW2API::SaveBuildLibrary();
             }
         }
@@ -3199,6 +4065,7 @@ static void RenderGearCustomizeDialog() {
                 ImGui::SetCursorScreenPos(cs);
                 if (ImGui::InvisibleButton("##relsel", ImVec2(cw, ch))) {
                     editBuild->relic_name = RELIC_LIST[i].name;
+                    editBuild->relic_id = RELIC_LIST[i].item_id;
                     AlterEgo::GW2API::SaveBuildLibrary();
                 }
 
@@ -3288,6 +4155,10 @@ static void RenderGearCustomizeDialog() {
                     ImGui::SetCursorScreenPos(cs);
                     if (ImGui::InvisibleButton("##rsel", ImVec2(cw, ch))) {
                         gs.rune = RUNE_LIST[i].name;
+                        gs.rune_id = AlterEgo::GW2API::FindItemIdByName(RUNE_LIST[i].name);
+                        if (editBuild) {
+                            editBuild->rune_id = gs.rune_id;
+                        }
                         AlterEgo::GW2API::SaveBuildLibrary();
                     }
 
@@ -3324,6 +4195,7 @@ static void RenderGearCustomizeDialog() {
                     ImGui::SetCursorScreenPos(cs);
                     if (ImGui::InvisibleButton("##ssel", ImVec2(cw, ch))) {
                         gs.sigil = SIGIL_LIST[i].name;
+                        gs.sigil_id = AlterEgo::GW2API::FindItemIdByName(SIGIL_LIST[i].name);
                         AlterEgo::GW2API::SaveBuildLibrary();
                     }
 
@@ -3547,11 +4419,14 @@ static void RenderSaveToLibraryDialog() {
                             const auto* upInfo = AlterEgo::GW2API::GetItemInfo(eq.upgrades[ui]);
                             if (!upInfo) continue;
                             std::string upName = upInfo->name;
+                            AlterEgo::GW2API::CacheItemNameId(upName, eq.upgrades[ui]);
                             if (isArmor && ui == 0) {
                                 gs.rune = upName;
+                                gs.rune_id = eq.upgrades[ui];
                                 if (sharedRune.empty()) sharedRune = upName;
                             } else if (isWeapon) {
                                 gs.sigil = upName;
+                                gs.sigil_id = eq.upgrades[ui];
                             }
                         }
 
@@ -3565,13 +4440,29 @@ static void RenderSaveToLibraryDialog() {
                         sb.gear[eq.slot] = gs;
                     }
                     sb.rune_name = sharedRune;
+                    // Store shared rune ID from first armor piece
+                    for (const auto& eq2 : ch->equipment) {
+                        if (eq2.tab != g_SaveLibEquipTab) continue;
+                        bool isArmor2 = (eq2.slot == "Helm" || eq2.slot == "Shoulders" ||
+                                         eq2.slot == "Coat" || eq2.slot == "Gloves" ||
+                                         eq2.slot == "Leggings" || eq2.slot == "Boots");
+                        if (isArmor2 && !eq2.upgrades.empty() && eq2.upgrades[0] != 0) {
+                            sb.rune_id = eq2.upgrades[0];
+                            break;
+                        }
+                    }
 
-                    // Check for relic
+                    // Check for relic — resolve name from API, but store exotic relic ID
                     for (const auto& eq : ch->equipment) {
                         if (eq.tab != g_SaveLibEquipTab) continue;
                         if (eq.slot == "Relic" && eq.id != 0) {
                             const auto* relicInfo = AlterEgo::GW2API::GetItemInfo(eq.id);
-                            if (relicInfo) sb.relic_name = relicInfo->name;
+                            if (relicInfo) {
+                                sb.relic_name = relicInfo->name;
+                                // Use exotic relic ID from name cache (legendary relic has a shared ID)
+                                sb.relic_id = AlterEgo::GW2API::FindItemIdByName(relicInfo->name);
+                            }
+                            if (sb.relic_id == 0) sb.relic_id = eq.id; // fallback
                             break;
                         }
                     }
@@ -4150,53 +5041,6 @@ static void RenderSavedBuildPreview(const AlterEgo::SavedBuild& build) {
     // Gear section (clickable slots to customize stats/runes/sigils)
     RenderBuildGearPanel(const_cast<AlterEgo::SavedBuild&>(build));
 
-    ImGui::Spacing();
-    ImGui::Separator();
-
-    // Action buttons
-    if (ImGui::Button("Copy Chat Link")) {
-        CopyToClipboard(build.chat_link);
-        if (APIDefs) APIDefs->GUI_SendAlert("Build link copied to clipboard!");
-    }
-    ImGui::SameLine();
-    if (ImGui::Button("Share")) {
-        ImGui::OpenPopup("Share Build##popup");
-    }
-    if (ImGui::BeginPopup("Share Build##popup")) {
-        if (ImGui::Selectable("Copy as compact code")) {
-            CopyToClipboard(ExportBuildToBase64(build));
-            if (APIDefs) APIDefs->GUI_SendAlert("Shared build copied to clipboard!");
-        }
-        if (ImGui::Selectable("Copy as JSON")) {
-            CopyToClipboard(ExportBuildToJson(build).dump(2));
-            if (APIDefs) APIDefs->GUI_SendAlert("Shared build JSON copied to clipboard!");
-        }
-        ImGui::EndPopup();
-    }
-    ImGui::SameLine();
-    ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.6f, 0.15f, 0.15f, 1.0f));
-    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.8f, 0.2f, 0.2f, 1.0f));
-    if (ImGui::Button("Delete")) {
-        ImGui::OpenPopup("Delete Build?");
-    }
-    ImGui::PopStyleColor(2);
-
-    if (ImGui::BeginPopupModal("Delete Build?", nullptr,
-            ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoMove)) {
-        ImGui::Text("Delete \"%s\"?", build.name.c_str());
-        ImGui::Spacing();
-        if (ImGui::Button("Delete", ImVec2(80, 0))) {
-            AlterEgo::GW2API::RemoveSavedBuild(build.id);
-            g_LibSelectedIdx = -1;
-            ImGui::CloseCurrentPopup();
-        }
-        ImGui::SameLine();
-        if (ImGui::Button("Cancel", ImVec2(80, 0))) {
-            ImGui::CloseCurrentPopup();
-        }
-        ImGui::EndPopup();
-    }
-
     if (!build.notes.empty()) {
         ImGui::Spacing();
         ImGui::TextColored(ImVec4(0.6f, 0.6f, 0.6f, 1.0f), "Notes: %s", build.notes.c_str());
@@ -4323,9 +5167,10 @@ static void RenderBuildLibrary() {
     ImGui::InputTextWithHint("##lib_search", "Search...", g_LibSearchBuf, sizeof(g_LibSearchBuf));
 
     // Left panel: build list, Right panel: preview
-    float listWidth = 220.0f;
+    float libAvailW = ImGui::GetContentRegionAvail().x;
+    g_LibListWidth = (g_LibListWidth < 120.0f) ? 120.0f : (g_LibListWidth > libAvailW - 200.0f) ? libAvailW - 200.0f : g_LibListWidth;
 
-    ImGui::BeginChild("LibList", ImVec2(listWidth, 0), true);
+    ImGui::BeginChild("LibList", ImVec2(g_LibListWidth, 0), true);
     {
         struct LibItemRect { float yMin, yMax; int buildIdx; };
         std::vector<LibItemRect> libItemRects;
@@ -4426,6 +5271,32 @@ static void RenderBuildLibrary() {
                 ImGui::EndDragDropSource();
             }
 
+            // Right-click context menu
+            if (ImGui::BeginPopupContextItem()) {
+                if (ImGui::Selectable("Copy build-only chat link")) {
+                    CopyToClipboard(b.chat_link);
+                    if (APIDefs) APIDefs->GUI_SendAlert("Build link copied to clipboard!");
+                }
+                if (ImGui::Selectable("Copy entire build + equipment code")) {
+                    std::string ae2 = ExportBuildToAE2(b);
+                    if (!ae2.empty()) {
+                        CopyToClipboard(ae2);
+                        char info[196];
+                        snprintf(info, sizeof(info), "Build code copied to clipboard (%d chars). Paste in GW2 chat to share!", (int)ae2.size());
+                        if (APIDefs) APIDefs->GUI_SendAlert(info);
+                    } else {
+                        if (APIDefs) APIDefs->GUI_SendAlert("Failed to generate build code. Build may be missing a chat link.");
+                    }
+                }
+                ImGui::Separator();
+                ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.3f, 0.3f, 1.0f));
+                if (ImGui::Selectable("Delete this build")) {
+                    g_LibCtxDeleteIdx = i;
+                }
+                ImGui::PopStyleColor();
+                ImGui::EndPopup();
+            }
+
             ImGui::SameLine(8);
             ImGui::BeginGroup();
             ImGui::Text("%s", b.name.c_str());
@@ -4474,8 +5345,65 @@ static void RenderBuildLibrary() {
             g_LibDragIdx = -1;
         }
     }
+
+    // Deferred delete confirmation from context menu
+    if (g_LibCtxDeleteIdx >= 0 && g_LibCtxDeleteIdx < (int)builds.size()) {
+        ImGui::OpenPopup("Delete Build?##ctx");
+    }
+    if (ImGui::BeginPopupModal("Delete Build?##ctx", nullptr,
+            ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoMove)) {
+        if (g_LibCtxDeleteIdx >= 0 && g_LibCtxDeleteIdx < (int)builds.size()) {
+            ImGui::Text("Delete \"%s\"?", builds[g_LibCtxDeleteIdx].name.c_str());
+        }
+        ImGui::Spacing();
+        if (ImGui::Button("Delete", ImVec2(80, 0))) {
+            if (g_LibCtxDeleteIdx >= 0 && g_LibCtxDeleteIdx < (int)builds.size()) {
+                AlterEgo::GW2API::RemoveSavedBuild(builds[g_LibCtxDeleteIdx].id);
+                if (g_LibSelectedIdx == g_LibCtxDeleteIdx) g_LibSelectedIdx = -1;
+                else if (g_LibSelectedIdx > g_LibCtxDeleteIdx) g_LibSelectedIdx--;
+            }
+            g_LibCtxDeleteIdx = -1;
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Cancel", ImVec2(80, 0))) {
+            g_LibCtxDeleteIdx = -1;
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::EndPopup();
+    }
+
     ImGui::EndChild();
 
+    // Draggable vertical splitter
+    ImGui::SameLine();
+    {
+        float splitterW = 6.0f;
+        float h = ImGui::GetContentRegionAvail().y;
+        ImVec2 pos = ImGui::GetCursorScreenPos();
+        ImGui::InvisibleButton("##liblist_splitter", ImVec2(splitterW, h));
+        bool hovered = ImGui::IsItemHovered();
+        bool active = ImGui::IsItemActive();
+        if (hovered || active)
+            ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeEW);
+        if (active) {
+            float delta = ImGui::GetIO().MouseDelta.x;
+            if (delta != 0.0f) {
+                g_LibListWidth += delta;
+                g_LibListWidth = (g_LibListWidth < 120.0f) ? 120.0f : (g_LibListWidth > libAvailW - 200.0f) ? libAvailW - 200.0f : g_LibListWidth;
+            }
+        }
+        if (ImGui::IsItemDeactivated()) {
+            SaveSettings();
+        }
+        ImU32 lineCol = (hovered || active)
+            ? IM_COL32(180, 160, 80, 180)
+            : IM_COL32(80, 75, 60, 100);
+        float cx = pos.x + splitterW * 0.5f;
+        ImGui::GetWindowDrawList()->AddLine(
+            ImVec2(cx, pos.y + 4), ImVec2(cx, pos.y + h - 4),
+            lineCol, 2.0f);
+    }
     ImGui::SameLine();
 
     // Right panel: preview
@@ -4535,16 +5463,19 @@ static void RenderBuildLibrary() {
 // --- GW2-Themed UI Style ---
 
 static ImGuiStyle g_GW2Style;
-static ImGuiStyle g_BackupStyle;
+static std::vector<ImGuiStyle> g_StyleStack;
 static bool g_GW2StyleBuilt = false;
 
 static void PushGW2Theme() {
-    g_BackupStyle = ImGui::GetStyle();
+    g_StyleStack.push_back(ImGui::GetStyle());
     ImGui::GetStyle() = g_GW2Style;
 }
 
 static void PopGW2Theme() {
-    ImGui::GetStyle() = g_BackupStyle;
+    if (!g_StyleStack.empty()) {
+        ImGui::GetStyle() = g_StyleStack.back();
+        g_StyleStack.pop_back();
+    }
 }
 
 static void BuildGW2Theme() {
@@ -4676,12 +5607,17 @@ void AddonLoad(AddonAPI_t* aApi) {
     // Load cached character data and build library from disk
     AlterEgo::GW2API::LoadCharacterData();
     AlterEgo::GW2API::LoadBuildLibrary();
+    AlterEgo::GW2API::LoadItemNameCache();
+    SeedItemNameCache();
     AlterEgo::GW2API::FetchAllItemStatsAsync();
     LoadCharSortConfig();
     RebuildCharDisplayOrder();
 
     // Subscribe to MumbleLink identity for current character indicator
     APIDefs->Events_Subscribe("EV_MUMBLE_IDENTITY_UPDATED", OnMumbleIdentityUpdated);
+
+    // Subscribe to Events: Chat for build link detection
+    APIDefs->Events_Subscribe(EV_CHAT_MESSAGE, OnEvChatMessage);
 
     // Subscribe to H&S events
     APIDefs->Events_Subscribe(EV_HOARD_PONG, AlterEgo::GW2API::OnHoardPong);
@@ -4765,6 +5701,9 @@ void AddonUnload() {
     // Unsubscribe MumbleLink identity
     APIDefs->Events_Unsubscribe("EV_MUMBLE_IDENTITY_UPDATED", OnMumbleIdentityUpdated);
 
+    // Unsubscribe chat events
+    APIDefs->Events_Unsubscribe(EV_CHAT_MESSAGE, OnEvChatMessage);
+
     // Unsubscribe H&S events
     APIDefs->Events_Unsubscribe(EV_HOARD_PONG, AlterEgo::GW2API::OnHoardPong);
     APIDefs->Events_Unsubscribe(EV_HOARD_DATA_UPDATED, AlterEgo::GW2API::OnHoardDataUpdated);
@@ -4788,6 +5727,7 @@ void AddonUnload() {
 
     SaveSession();
     SaveSettings();
+    AlterEgo::GW2API::SaveItemNameCache();
     APIDefs = nullptr;
 }
 
@@ -5101,6 +6041,26 @@ static void FetchClears() {
                 wingEntries.push_back(std::move(e));
             }
         }
+
+        // Sort wings into canonical W1-W8 order by achievement ID
+        static const std::unordered_map<uint32_t, int> wingOrder = {
+            {9128, 1}, // Spirit Vale
+            {9147, 2}, // Salvation Pass
+            {9182, 3}, // Stronghold of the Faithful
+            {9144, 4}, // Bastion of the Penitent
+            {9111, 5}, // Hall of Chains
+            {9120, 6}, // Mythwright Gambit
+            {9156, 7}, // Key of Ahdashim
+            {9181, 8}, // Mount Balrior
+        };
+        std::sort(wingEntries.begin(), wingEntries.end(),
+            [](const ClearEntry& a, const ClearEntry& b) {
+                auto ai = wingOrder.find(a.id);
+                auto bi = wingOrder.find(b.id);
+                int ao = (ai != wingOrder.end()) ? ai->second : 99;
+                int bo = (bi != wingOrder.end()) ? bi->second : 99;
+                return ao < bo;
+            });
 
         {
             std::lock_guard<std::mutex> lock(g_ClearsMutex);
@@ -5910,6 +6870,62 @@ static void RenderSectionHeader(const char* label, ImVec4 color, const char* suf
     ImGui::SetCursorScreenPos(ImVec2(pos.x, pos.y + h + 2.0f));
 }
 
+// Map verbose API encounter text to readable short names
+static std::string ShortenEncounterName(const std::string& text) {
+    static const std::unordered_map<std::string, std::string> nameMap = {
+        // W1 — Spirit Vale
+        {"Defeat the Vale Guardian.",                                      "Vale Guardian"},
+        {"Traverse the Spirit Woods.",                                     "Spirit Woods"},
+        {"Destroy Gorseval.",                                              "Gorseval"},
+        {"Cull the bandits to lure out the bandit leader.",                "Sabetha"},
+        {"Defeat Sabetha the Saboteur.",                                   "Sabetha"},
+        // W2 — Salvation Pass
+        {"Defeat Slothasor.",                                              "Sloth"},
+        {"Protect the caged prisoners.",                                   "Trio"},
+        {"Cull the bandits in the ruins.",                                 "Trio"},
+        {"Defeat Inquisitor Matthias Gabrel.",                             "Matthias"},
+        // W3 — Stronghold of the Faithful
+        {"Escort Glenna to the stronghold's courtyard.",                   "Escort"},
+        {"Defeat McLeod and breach the stronghold.",                       "Escort"},
+        {"Destroy the Keep Construct.",                                    "Keep Construct"},
+        {"Traverse the Twisted Castle.",                                   "Twisted Castle"},
+        {"Defeat Xera.",                                                   "Xera"},
+        // W4 — Bastion of the Penitent
+        {"Defeat Cairn the Indomitable.",                                  "Cairn"},
+        {"Defeat the Mursaat Overseer.",                                   "Mursaat"},
+        {"Defeat Samarog.",                                                "Samarog"},
+        {"Free the prisoner from his bonds.",                              "Deimos"},
+        // W5 — Hall of Chains
+        {"Defeat the Soulless Horror.",                                    "Desmina"},
+        {"Traverse the River of Souls.",                                   "River"},
+        {"Restore the Statue of Ice.",                                     "Broken King"},
+        {"Restore the Statue of Death and Resurrection.",                  "Eater"},
+        {"Restore the Statue of Darkness.",                                "Eyes"},
+        {"Defeat Dhuum.",                                                  "Dhuum"},
+        // W6 — Mythwright Gambit
+        {"Destroy the conjured amalgamate.",                               "Conjured Amalgamate"},
+        {"Make your way through the sorting and appraisal rooms.",         "Sorting"},
+        {"Defeat the twin largos.",                                        "Twin Largos"},
+        {"Clear a path through Qadim's minions to the Mythwright Cauldron.", "Qadim's Minions"},
+        {"Defeat Qadim.",                                                  "Qadim"},
+        // W7 — Key of Ahdashim
+        {"Get Glenna and the key to Ahdashim's front gate.",               "Gate"},
+        {"Defeat Cardinal Adina.",                                         "Adina"},
+        {"Defeat Cardinal Sabir.",                                         "Sabir"},
+        {"Defeat Qadim the Peerless.",                                     "Qadim the Peerless"},
+        // W8 — Mount Balrior
+        {"Cleanse the camp of titanspawn.",                                "Camp"},
+        {"Defeat the sentient conduit.",                                   "Conduit"},
+        {"Defeat the blighted beast and his empowering allies.",           "Greer"},
+        {"Defeat Decima.",                                                 "Decima"},
+        {"Defeat Greer.",                                                  "Greer"},
+        {"Defeat Ura.",                                                    "Ura"},
+    };
+    auto it = nameMap.find(text);
+    if (it != nameMap.end()) return it->second;
+    return text; // fallback to original
+}
+
 // Helper: render a done/not-done/unknown indicator
 static void RenderClearStatus(bool fetched, bool done, const char* label) {
     if (!fetched)
@@ -5923,20 +6939,22 @@ static void RenderClearStatus(bool fetched, bool done, const char* label) {
 static void RenderClears() {
     auto now = std::chrono::system_clock::now();
 
-    // Compute reset times
+    // Compute reset times (add 60s buffer so we don't refetch before the API has updated)
     auto dailyReset = CalcLastDailyReset(now);
     auto weeklyReset = CalcLastWeeklyReset(now);
+    auto dailyResetBuffered = dailyReset + std::chrono::seconds(60);
+    auto weeklyResetBuffered = weeklyReset + std::chrono::seconds(60);
 
     // Detect resets — clear stale data and auto re-fetch achievement lists
     bool resetTriggered = false;
-    if (g_LastDailyReset != std::chrono::system_clock::time_point{} && dailyReset > g_LastDailyReset) {
+    if (g_LastDailyReset != std::chrono::system_clock::time_point{} && dailyReset > g_LastDailyReset && now >= dailyResetBuffered) {
         std::lock_guard<std::mutex> lock(g_ClearsMutex);
         g_DailyFractals.clear();
         g_DailyBounties.clear();
         g_ClearsFetched = false;
         resetTriggered = true;
     }
-    if (g_LastWeeklyReset != std::chrono::system_clock::time_point{} && weeklyReset > g_LastWeeklyReset) {
+    if (g_LastWeeklyReset != std::chrono::system_clock::time_point{} && weeklyReset > g_LastWeeklyReset && now >= weeklyResetBuffered) {
         std::lock_guard<std::mutex> lock(g_ClearsMutex);
         g_WeeklyWings.clear();
         g_WeeklyStrikes = ClearEntry{};
@@ -6110,10 +7128,19 @@ static void RenderClears() {
                 ImGui::TableNextRow();
                 ImGui::TableNextColumn();
 
-                // Strip "Weekly " prefix
+                // Strip "Weekly " prefix and add W# prefix
                 std::string wingName = wing.name;
                 if (wingName.find("Weekly ") == 0)
                     wingName = wingName.substr(7);
+                {
+                    static const std::unordered_map<uint32_t, int> wingNum = {
+                        {9128, 1}, {9147, 2}, {9182, 3}, {9144, 4},
+                        {9111, 5}, {9120, 6}, {9156, 7}, {9181, 8},
+                    };
+                    auto it = wingNum.find(wing.id);
+                    if (it != wingNum.end())
+                        wingName = "W" + std::to_string(it->second) + ": " + wingName;
+                }
 
                 bool allDone = g_ClearsFetched && wing.done;
                 if (allDone)
@@ -6125,7 +7152,8 @@ static void RenderClears() {
                 for (size_t i = 0; i < wing.bitNames.size(); i++) {
                     bool bitDone = (i < wing.bitDone.size()) ? wing.bitDone[i] : false;
                     if (i > 0) ImGui::SameLine();
-                    RenderClearStatus(g_ClearsFetched, bitDone, wing.bitNames[i].c_str());
+                    std::string shortName = ShortenEncounterName(wing.bitNames[i]);
+                    RenderClearStatus(g_ClearsFetched, bitDone, shortName.c_str());
                     if (i + 1 < wing.bitNames.size()) {
                         ImGui::SameLine();
                         ImGui::TextColored(ImVec4(0.3f, 0.3f, 0.3f, 1.0f), "|");
@@ -6272,6 +7300,9 @@ void AddonRender() {
     // Render gear customize dialog (separate window, always checked)
     RenderGearCustomizeDialog();
     RenderSaveToLibraryDialog();
+
+    // Render chat build detection toast (always visible, even when main window is hidden)
+    RenderBuildToast();
 
     if (!g_WindowVisible) { PopGW2Theme(); return; }
 
@@ -6550,9 +7581,11 @@ void AddonRender() {
                 }
 
                 // Character list (left) + Detail panel (right)
-                float listWidth = 200.0f;
+                // Clamp width to reasonable bounds
+                float availW = ImGui::GetContentRegionAvail().x;
+                g_CharListWidth = (g_CharListWidth < 120.0f) ? 120.0f : (g_CharListWidth > availW - 200.0f) ? availW - 200.0f : g_CharListWidth;
 
-                ImGui::BeginChild("CharList", ImVec2(listWidth, 0), true);
+                ImGui::BeginChild("CharList", ImVec2(g_CharListWidth, 0), true);
 
                 // Sort mode selector + direction toggle (inside the list child)
                 {
@@ -6991,6 +8024,36 @@ void AddonRender() {
 
                 ImGui::EndChild();
 
+                // Draggable vertical splitter
+                ImGui::SameLine();
+                {
+                    float splitterW = 6.0f;
+                    float h = ImGui::GetContentRegionAvail().y;
+                    ImVec2 pos = ImGui::GetCursorScreenPos();
+                    ImGui::InvisibleButton("##charlist_splitter", ImVec2(splitterW, h));
+                    bool hovered = ImGui::IsItemHovered();
+                    bool active = ImGui::IsItemActive();
+                    if (hovered || active)
+                        ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeEW);
+                    if (active) {
+                        float delta = ImGui::GetIO().MouseDelta.x;
+                        if (delta != 0.0f) {
+                            g_CharListWidth += delta;
+                            g_CharListWidth = (g_CharListWidth < 120.0f) ? 120.0f : (g_CharListWidth > availW - 200.0f) ? availW - 200.0f : g_CharListWidth;
+                        }
+                    }
+                    if (ImGui::IsItemDeactivated()) {
+                        SaveSettings();
+                    }
+                    // Visual: draw a subtle line
+                    ImU32 lineCol = (hovered || active)
+                        ? IM_COL32(180, 160, 80, 180)
+                        : IM_COL32(80, 75, 60, 100);
+                    float cx = pos.x + splitterW * 0.5f;
+                    ImGui::GetWindowDrawList()->AddLine(
+                        ImVec2(cx, pos.y + 4), ImVec2(cx, pos.y + h - 4),
+                        lineCol, 2.0f);
+                }
                 ImGui::SameLine();
 
                 // Detail panel — resolve through display order
@@ -7181,6 +8244,25 @@ void AddonOptions() {
             APIDefs->QuickAccess_Remove(QA_ID);
         }
         SaveSettings();
+    }
+    ImGui::Spacing();
+    ImGui::Separator();
+    ImGui::Text("Chat Build Detection:");
+    ImGui::TextColored(ImVec4(0.5f, 0.5f, 0.5f, 1.0f), "Requires 'Events: Chat' addon from the Nexus library.");
+    if (ImGui::Checkbox("Detect build links in chat", &g_ChatBuildDetection)) {
+        SaveSettings();
+    }
+    if (g_ChatBuildDetection) {
+        ImGui::Indent(16.0f);
+        ImGui::TextColored(ImVec4(0.6f, 0.6f, 0.6f, 1.0f),
+            "Drag the toast notification to reposition it.");
+        if (ImGui::Button("Reset Toast Position")) {
+            g_ToastPosX = -1.0f;
+            g_ToastPosY = 100.0f;
+            g_ToastPosInitialized = false;
+            SaveSettings();
+        }
+        ImGui::Unindent(16.0f);
     }
     ImGui::Spacing();
     ImGui::Separator();

@@ -57,7 +57,9 @@ namespace AlterEgo {
         uint32_t stat_id = 0;       // /v2/itemstats ID
         std::string stat_name;      // "Berserker's", etc.
         std::string rune;           // Rune name (armor only)
+        uint32_t rune_id = 0;       // Rune item ID (for compact encoding)
         std::string sigil;          // Sigil name (weapon only)
+        uint32_t sigil_id = 0;      // Sigil item ID (for compact encoding)
         std::string infusion;       // Infusion name
         std::string weapon_type;    // "Axe", "Sword", etc. (weapon slots only)
     };
@@ -250,7 +252,9 @@ namespace AlterEgo {
         // Gear (user-entered)
         std::map<std::string, BuildGearSlot> gear; // slot name -> gear data
         std::string rune_name;      // Shared rune for all armor pieces
+        uint32_t rune_id = 0;       // Shared rune item ID
         std::string relic_name;     // Relic name
+        uint32_t relic_id = 0;      // Relic item ID
     };
 
     // Response event names for H&S queries
@@ -310,6 +314,10 @@ namespace AlterEgo {
 
         // Item/Skin/Spec/Trait/Skill/Color caches (public endpoints, fetched directly)
         static const ItemInfo* GetItemInfo(uint32_t item_id);
+        static uint32_t FindItemIdByName(const std::string& name); // searches item cache + name cache
+        static void CacheItemNameId(const std::string& name, uint32_t id); // add to persistent name→ID cache
+        static bool LoadItemNameCache();
+        static bool SaveItemNameCache();
         static const SkinInfo* GetSkinInfo(uint32_t skin_id);
         static const SpecializationInfo* GetSpecInfo(uint32_t spec_id);
         static const TraitInfo* GetTraitInfo(uint32_t trait_id);
@@ -398,6 +406,10 @@ namespace AlterEgo {
 
         // Build library
         static std::vector<SavedBuild> s_saved_builds;
+
+        // Persistent name→ID cache (survives restarts, grows organically)
+        static std::unordered_map<std::string, uint32_t> s_item_name_id_cache;
+        static bool s_item_name_cache_dirty;
 
         // Palette ID mapping: profession -> (palette_id -> skill_id)
         static std::unordered_map<std::string, std::unordered_map<uint16_t, uint32_t>> s_palette_to_skill;
