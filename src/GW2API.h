@@ -136,6 +136,7 @@ namespace AlterEgo {
         std::string type;
         std::string rarity;
         int dye_slot_count = -1; // Number of dye channels (-1 = unknown)
+        std::vector<std::string> dye_slot_materials; // Per-channel material: "cloth", "leather", "metal"
     };
 
     // Cached specialization info from /v2/specializations (public, no auth)
@@ -185,7 +186,10 @@ namespace AlterEgo {
     struct DyeColor {
         int id = 0;
         std::string name;
-        int r = 0, g = 0, b = 0;   // Base RGB
+        int r = 0, g = 0, b = 0;           // Base RGB (fallback)
+        int cloth_r = 0, cloth_g = 0, cloth_b = 0;
+        int leather_r = 0, leather_g = 0, leather_b = 0;
+        int metal_r = 0, metal_g = 0, metal_b = 0;
     };
 
     // A character on the account
@@ -308,6 +312,7 @@ namespace AlterEgo {
         // Skin unlock status (from H&S cache)
         static bool IsSkinUnlocked(uint32_t skin_id);  // true if unlocked, false if unknown/locked
         static bool HasSkinUnlockData(uint32_t skin_id); // true if we've queried this skin
+        static void MarkSkinUnlocked(uint32_t skin_id);  // mark a skin as unlocked (e.g. from Events: Alerts)
 
         // Item location (from H&S cache)
         static const ItemLocationResult* GetItemLocation(uint32_t item_id);

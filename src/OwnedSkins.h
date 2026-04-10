@@ -37,6 +37,9 @@ namespace Skinventory {
         // Check if a specific skin is owned (returns false if unknown/not yet queried)
         static bool IsOwned(uint32_t skin_id);
 
+        // Mark a skin as owned at runtime (e.g. from Events: Alerts unlock notification)
+        static void MarkOwned(uint32_t skin_id);
+
         // Has H&S responded with data?
         static bool HasData();
 
@@ -55,6 +58,9 @@ namespace Skinventory {
         // Get counts
         static size_t GetOwnedCount();
         static size_t GetQueriedCount();
+
+        // Generation counter — increments on every ownership change (for cache invalidation)
+        static uint64_t GetGeneration();
 
     private:
         static void OnPong(void* eventArgs);
@@ -75,6 +81,8 @@ namespace Skinventory {
         static std::atomic<bool> s_querying;
         static std::atomic<bool> s_data_updated;
         static std::string s_status_message;
+        static std::atomic<uint64_t> s_generation;
+        static std::unordered_set<uint32_t> s_locally_marked; // skins marked via alerts, protected from API overwrites
 
         // Batch query state
         static std::vector<uint32_t> s_pending_ids;

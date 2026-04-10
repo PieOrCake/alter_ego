@@ -54,6 +54,15 @@ If an LLM creating software upsets you, then perhaps this repo isn't for you. Mo
   - Weekly Raids (per-wing, per-encounter tracking)
   - Auto-refreshes at daily/weekly reset times and every 10 minutes
   - Data cached to disk for instant display on addon load
+- **Achievements** — Browse and track GW2 achievements
+  - Full achievement group and category tree with search across 8000+ achievements
+  - Pin up to 20 achievements for tracking
+  - Expandable sub-objectives (bits) with completion status
+  - Floating Achievement Tracker popout window — always visible, independent of main window
+  - Skin-type bits link to Skinventory browser; sub-achievement bits navigate to parent
+  - Waypoint chat codes with click-to-copy
+  - Real-time completion detection via Events: Alerts integration
+  - Progress bars and completion indicators
 - **Chat Link Support** — Full import/export of GW2 chat links and build codes
   - Item links (with skin, upgrades, infusions)
   - Build template links
@@ -88,6 +97,7 @@ Portraits are displayed as a semi-transparent overlay with a vignette edge fade.
 - [Raidcore Nexus](https://raidcore.gg/Nexus) (API v6)
 - [Hoard & Seek](https://github.com/PieOrCake/hoard_and_seek) addon (provides character data via GW2 API)
 - [Events: Chat](https://raidcore.gg/Nexus) addon (optional — enables chat build detection)
+- [Events: Alerts](https://raidcore.gg/Nexus) addon (optional — enables real-time skin unlock and achievement completion detection)
 
 ## Installation
 

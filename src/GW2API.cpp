@@ -282,6 +282,11 @@ namespace AlterEgo {
         return s_skin_unlocks.find(skin_id) != s_skin_unlocks.end();
     }
 
+    void GW2API::MarkSkinUnlocked(uint32_t skin_id) {
+        std::lock_guard<std::mutex> lock(s_mutex);
+        s_skin_unlocks[skin_id] = true;
+    }
+
     const ItemLocationResult* GW2API::GetItemLocation(uint32_t item_id) {
         std::lock_guard<std::mutex> lock(s_mutex);
         auto it = s_item_locations.find(item_id);
@@ -1491,14 +1496,20 @@ namespace AlterEgo {
                         info.icon_url = skin.value("icon", "");
                         info.type = skin.value("type", "");
                         info.rarity = skin.value("rarity", "");
-                        // Extract dye slot count from details.dye_slots.default
+                        // Extract dye slot count and per-channel material from details.dye_slots.default
                         // Null entries = unused channels, only count non-null
                         if (skin.contains("details") && skin["details"].contains("dye_slots") &&
                             skin["details"]["dye_slots"].contains("default") &&
                             skin["details"]["dye_slots"]["default"].is_array()) {
                             int count = 0;
                             for (const auto& ds : skin["details"]["dye_slots"]["default"]) {
-                                if (!ds.is_null()) count++;
+                                if (!ds.is_null()) {
+                                    count++;
+                                    info.dye_slot_materials.push_back(
+                                        ds.value("material", "cloth"));
+                                } else {
+                                    info.dye_slot_materials.push_back("");
+                                }
                             }
                             info.dye_slot_count = count;
                         }
@@ -1776,6 +1787,17 @@ namespace AlterEgo {
                             dc.g = color["base_rgb"][1].get<int>();
                             dc.b = color["base_rgb"][2].get<int>();
                         }
+                        auto parseMat = [&](const char* key, int& mr, int& mg, int& mb) {
+                            if (color.contains(key) && color[key].contains("rgb") &&
+                                color[key]["rgb"].is_array() && color[key]["rgb"].size() >= 3) {
+                                mr = color[key]["rgb"][0].get<int>();
+                                mg = color[key]["rgb"][1].get<int>();
+                                mb = color[key]["rgb"][2].get<int>();
+                            } else { mr = dc.r; mg = dc.g; mb = dc.b; }
+                        };
+                        parseMat("cloth", dc.cloth_r, dc.cloth_g, dc.cloth_b);
+                        parseMat("leather", dc.leather_r, dc.leather_g, dc.leather_b);
+                        parseMat("metal", dc.metal_r, dc.metal_g, dc.metal_b);
                         s_dye_cache[dc.id] = dc;
                     }
                 }

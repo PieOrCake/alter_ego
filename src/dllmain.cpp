@@ -30,7 +30,7 @@
 // Version constants
 #define V_MAJOR 0
 #define V_MINOR 9
-#define V_BUILD 2
+#define V_BUILD 3
 #define V_REVISION 0
 
 // Quick Access icon identifiers
@@ -38,35 +38,343 @@
 #define TEX_ICON "TEX_ALTER_EGO_ICON"
 #define TEX_ICON_HOVER "TEX_ALTER_EGO_ICON_HOVER"
 
-// Embedded 32x32 silhouette icon (normal - light gray)
+// --- Normal icon ---
 static const unsigned char ICON_NORMAL[] = {
     0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44, 0x52,
     0x00, 0x00, 0x00, 0x20, 0x00, 0x00, 0x00, 0x20, 0x08, 0x06, 0x00, 0x00, 0x00, 0x73, 0x7a, 0x7a,
-    0xf4, 0x00, 0x00, 0x00, 0x6a, 0x49, 0x44, 0x41, 0x54, 0x78, 0xda, 0xed, 0xd5, 0xb1, 0x0d, 0x00,
-    0x20, 0x0c, 0x04, 0xc1, 0xa3, 0x40, 0x42, 0x90, 0x10, 0xa1, 0x50, 0x52, 0x44, 0x89, 0x48, 0x88,
-    0x6c, 0x6f, 0x87, 0xeb, 0xaf, 0x78, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    0x00, 0x00, 0x00, 0x60, 0xb7, 0x07, 0x39, 0xa0, 0x00, 0x01, 0xd0, 0x5e, 0xa0, 0xb4, 0x00, 0x00,
-    0x00, 0x00, 0x49, 0x45, 0x4e, 0x44, 0xae, 0x42, 0x60, 0x82,
+    0xf4, 0x00, 0x00, 0x09, 0xdc, 0x49, 0x44, 0x41, 0x54, 0x78, 0x9c, 0xed, 0x56, 0x69, 0x8c, 0x1b,
+    0xe5, 0x19, 0x7e, 0xe6, 0xf0, 0xcc, 0x78, 0x6c, 0x8f, 0xd7, 0xf6, 0xc6, 0xde, 0xcb, 0x7b, 0x78,
+    0x37, 0xbb, 0x21, 0xc9, 0x66, 0x13, 0x9a, 0x04, 0x9a, 0x08, 0x12, 0x8a, 0x20, 0xb4, 0x3f, 0x08,
+    0x2a, 0xbd, 0x54, 0x51, 0x89, 0x4a, 0xf4, 0x07, 0x95, 0x68, 0x7f, 0xb4, 0x52, 0x25, 0x04, 0x7f,
+    0x4a, 0xa9, 0x2a, 0x95, 0x42, 0x4f, 0xf5, 0x12, 0x55, 0x1b, 0xa4, 0x14, 0x44, 0x2f, 0x09, 0x11,
+    0x71, 0x25, 0x85, 0xb0, 0x09, 0x39, 0x76, 0x43, 0x9c, 0xcd, 0xee, 0x66, 0x2f, 0x7b, 0xd7, 0x5e,
+    0x7b, 0x7d, 0x8c, 0xaf, 0xb1, 0xc7, 0xf6, 0xdc, 0xd5, 0x0c, 0x02, 0xe5, 0x28, 0xc9, 0xaf, 0xfe,
+    0xeb, 0x2b, 0x59, 0xfe, 0x66, 0xfc, 0xf9, 0x7b, 0x9f, 0xef, 0x7d, 0xdf, 0xe7, 0x79, 0x5f, 0xe0,
+    0xff, 0x76, 0x9d, 0xbd, 0xfc, 0xe2, 0xf3, 0xfd, 0xf8, 0x1f, 0xd8, 0xa1, 0x03, 0x7b, 0xc9, 0xbf,
+    0xfe, 0xf1, 0xb9, 0xae, 0xeb, 0xdf, 0x13, 0x57, 0x3f, 0xbc, 0x76, 0xf4, 0xf7, 0xcf, 0x78, 0x04,
+    0xe1, 0x3b, 0xf9, 0xcc, 0xfa, 0x8e, 0x40, 0xe7, 0x26, 0x2a, 0x3a, 0xba, 0xad, 0x51, 0xc8, 0xa4,
+    0xfc, 0x55, 0x31, 0xb7, 0xa5, 0xd9, 0x6c, 0x7a, 0x85, 0x8e, 0xd0, 0xe5, 0xad, 0xb7, 0xdf, 0xb9,
+    0x38, 0x3c, 0xb2, 0x55, 0xb9, 0xfe, 0xa0, 0xb2, 0x98, 0x27, 0x2f, 0x5f, 0x9a, 0x0e, 0xd4, 0xf2,
+    0x99, 0x5e, 0x86, 0x65, 0x98, 0x60, 0x24, 0x9a, 0x1a, 0xde, 0xb2, 0xbd, 0x14, 0x0c, 0x85, 0x8d,
+    0x5f, 0x3d, 0xf7, 0x14, 0x11, 0xee, 0x08, 0xfc, 0xc4, 0xed, 0xe6, 0x0f, 0x37, 0xa4, 0xca, 0x97,
+    0xbf, 0xfe, 0xf8, 0x93, 0x33, 0x37, 0x00, 0x18, 0xea, 0xf3, 0x13, 0xbf, 0xfe, 0xd9, 0x0b, 0xa5,
+    0xce, 0xae, 0xee, 0xc0, 0xd4, 0x07, 0x93, 0x6f, 0xf6, 0x0d, 0xf4, 0x8f, 0x55, 0x45, 0x71, 0x80,
+    0xe7, 0x3d, 0x84, 0x8b, 0x65, 0xa0, 0xeb, 0x3a, 0xe4, 0x7a, 0x1d, 0x14, 0x45, 0xa9, 0x14, 0x49,
+    0x9e, 0x26, 0x68, 0xfa, 0x48, 0xb1, 0xa9, 0xbf, 0x34, 0xda, 0xdf, 0x3b, 0xde, 0x96, 0xeb, 0xdf,
+    0x35, 0x74, 0xf5, 0x7e, 0x82, 0x20, 0x22, 0xa6, 0x69, 0x91, 0x84, 0x65, 0x02, 0x04, 0x69, 0x91,
+    0x24, 0xa1, 0xd5, 0x2a, 0x95, 0x8b, 0xfe, 0x60, 0x48, 0x6f, 0xd6, 0xa5, 0x7d, 0x04, 0x45, 0xc1,
+    0xed, 0xf1, 0x3d, 0xf5, 0xd0, 0x23, 0x8f, 0x3f, 0xfb, 0xb1, 0x5f, 0xfa, 0xe3, 0x45, 0x34, 0xd4,
+    0x45, 0xd7, 0x2a, 0x25, 0xaf, 0xaf, 0xc3, 0x8f, 0x6a, 0x4d, 0x3a, 0xd4, 0xa5, 0x5b, 0x60, 0xdd,
+    0x3c, 0x92, 0x2b, 0xcb, 0xe8, 0x08, 0x75, 0x82, 0x65, 0x59, 0x28, 0xad, 0x36, 0x4c, 0xcb, 0x64,
+    0x78, 0xaf, 0xf7, 0xa0, 0x5c, 0x29, 0x1d, 0x14, 0x7c, 0x81, 0x1f, 0x18, 0x6a, 0x6b, 0xd8, 0x30,
+    0x74, 0xba, 0xdd, 0x56, 0x40, 0x53, 0x14, 0x6a, 0xd5, 0x1a, 0x74, 0x5d, 0x03, 0xcb, 0xd0, 0x84,
+    0x47, 0xe8, 0x60, 0x34, 0xcd, 0xd8, 0x3b, 0x1b, 0x8f, 0xc3, 0x27, 0x08, 0xe8, 0xe9, 0xef, 0x07,
+    0xef, 0xf1, 0x85, 0xae, 0x8e, 0x1c, 0xf9, 0xf1, 0xe2, 0x64, 0x7c, 0x41, 0xf3, 0xf8, 0x84, 0xb8,
+    0x54, 0xab, 0x61, 0xc7, 0x8e, 0x71, 0x18, 0x9a, 0x0a, 0x7b, 0x5d, 0x97, 0x9b, 0x38, 0x3f, 0xf5,
+    0x21, 0x08, 0x10, 0x68, 0x6b, 0x3a, 0x5a, 0xad, 0x16, 0x9a, 0xb2, 0x0c, 0x59, 0x6e, 0x21, 0xbb,
+    0x9e, 0x1e, 0x33, 0x41, 0xd0, 0xba, 0x61, 0xc2, 0xc5, 0xb0, 0xb0, 0xbf, 0x6b, 0x52, 0x0d, 0xf9,
+    0x62, 0x09, 0xeb, 0xd9, 0x22, 0x0c, 0xc3, 0x44, 0x5b, 0x51, 0x90, 0xcd, 0x17, 0x01, 0x92, 0x44,
+    0xbb, 0xa5, 0x20, 0x97, 0x5d, 0x9f, 0xfa, 0xaf, 0x00, 0xa6, 0x4e, 0xbf, 0xf5, 0xa3, 0x68, 0x6c,
+    0x64, 0xb7, 0xcf, 0x1f, 0x80, 0x69, 0x5a, 0xa8, 0x55, 0x44, 0x9c, 0x39, 0x73, 0x0e, 0x99, 0x8d,
+    0x02, 0xb6, 0x6e, 0x1e, 0x80, 0x24, 0x55, 0xd1, 0x90, 0x65, 0xac, 0xa5, 0x33, 0x20, 0x49, 0x02,
+    0xaa, 0xa2, 0x40, 0x14, 0x45, 0xb0, 0x6e, 0x37, 0x84, 0x40, 0x10, 0xf5, 0x86, 0x8c, 0xb5, 0x54,
+    0x1a, 0x04, 0x49, 0xa1, 0x52, 0xad, 0x81, 0x64, 0x58, 0x14, 0x8b, 0x22, 0x3e, 0x8c, 0xcf, 0x40,
+    0x10, 0x3c, 0xf0, 0xf9, 0x7c, 0xa0, 0x49, 0x20, 0x1c, 0x89, 0xbc, 0xf8, 0xfa, 0x3f, 0x8e, 0xdc,
+    0x7b, 0x4d, 0x0a, 0x5e, 0xf9, 0xcb, 0xef, 0xb8, 0x86, 0x54, 0xff, 0xb6, 0xd2, 0x6a, 0xa1, 0x54,
+    0x2a, 0xc1, 0xc5, 0x30, 0x58, 0x4e, 0xac, 0xc1, 0xd4, 0x34, 0x30, 0x1c, 0x87, 0xb6, 0x6a, 0x40,
+    0x33, 0x64, 0xb4, 0x65, 0x19, 0xa1, 0xce, 0x4d, 0x48, 0x26, 0x56, 0x51, 0xab, 0x49, 0x28, 0x88,
+    0x25, 0x34, 0x1b, 0x0d, 0x48, 0x75, 0x19, 0xb9, 0x5c, 0x0e, 0x8d, 0x6a, 0x05, 0x4a, 0xbb, 0x8d,
+    0xc1, 0xa1, 0x11, 0xe8, 0x5a, 0x1b, 0x27, 0x26, 0xcf, 0xa2, 0x58, 0x10, 0xa1, 0xb4, 0x15, 0x70,
+    0xac, 0x1b, 0x20, 0x29, 0xf4, 0xb4, 0x54, 0x2e, 0xda, 0x1f, 0x7d, 0x02, 0xc0, 0xf1, 0x4f, 0x00,
+    0xf4, 0x44, 0xfb, 0xfa, 0x72, 0xeb, 0xa9, 0x40, 0xb5, 0x54, 0x42, 0x43, 0x6e, 0x82, 0xa4, 0x48,
+    0x4c, 0x4c, 0xec, 0x00, 0x26, 0x26, 0x50, 0x16, 0x45, 0x3b, 0xd4, 0x10, 0xcb, 0x55, 0xa7, 0x66,
+    0x49, 0x9a, 0x46, 0x6c, 0x30, 0x8a, 0xb5, 0xb5, 0x14, 0x16, 0xd6, 0x72, 0x48, 0x25, 0x93, 0xd0,
+    0x54, 0x15, 0x52, 0xa5, 0x0c, 0x5d, 0x51, 0xb0, 0x63, 0xf7, 0x5e, 0xa7, 0xb2, 0xdf, 0x3d, 0x71,
+    0x02, 0x9a, 0xa2, 0xe0, 0xfe, 0x03, 0x77, 0xc0, 0xb2, 0x2c, 0x27, 0x2d, 0x91, 0xae, 0x30, 0xc4,
+    0x42, 0x1e, 0x3e, 0x0f, 0x17, 0xbb, 0x26, 0x05, 0xcf, 0xff, 0xf8, 0x99, 0x15, 0x58, 0x98, 0xec,
+    0x8b, 0x8d, 0xa0, 0x5c, 0x95, 0x90, 0xcd, 0x64, 0x31, 0x7b, 0xe9, 0x12, 0x96, 0x17, 0xae, 0x20,
+    0xb5, 0xb6, 0x86, 0x85, 0xe5, 0x55, 0xc4, 0xe7, 0x13, 0x88, 0xcf, 0x2d, 0x23, 0xbb, 0x91, 0x43,
+    0xb5, 0x52, 0x01, 0x2f, 0x74, 0x40, 0xd1, 0x4c, 0xac, 0xa7, 0xd3, 0x70, 0xd1, 0x04, 0x46, 0x46,
+    0x47, 0x31, 0xba, 0x7d, 0x1c, 0x1c, 0xc7, 0x61, 0x7e, 0x6e, 0x1e, 0x89, 0x54, 0x16, 0xba, 0xaa,
+    0x42, 0x2c, 0x96, 0x20, 0xcb, 0x4d, 0xc8, 0x4d, 0x19, 0x52, 0x4d, 0x42, 0x70, 0x53, 0x04, 0x86,
+    0x45, 0xfc, 0xed, 0x1a, 0x00, 0xff, 0x7c, 0xe7, 0xac, 0x35, 0x36, 0x3e, 0x71, 0xaa, 0x27, 0xda,
+    0x8f, 0x07, 0x1f, 0x7e, 0xd8, 0x39, 0x0c, 0x94, 0x0b, 0x45, 0xa9, 0x89, 0x53, 0xd3, 0x97, 0x91,
+    0xc8, 0x16, 0x21, 0x2b, 0x2a, 0xdc, 0x82, 0x17, 0x39, 0xb1, 0x8a, 0xc4, 0x6a, 0x1a, 0xed, 0x66,
+    0x13, 0x16, 0x2c, 0xc4, 0xe7, 0x16, 0xc1, 0xf0, 0x3e, 0x74, 0xf7, 0xf5, 0x63, 0x7e, 0x7e, 0x01,
+    0x1b, 0xd9, 0x2c, 0xce, 0x9c, 0xbb, 0x80, 0x56, 0x4b, 0x81, 0xdc, 0x6a, 0x23, 0xb5, 0x51, 0xc0,
+    0xc2, 0x72, 0x02, 0xdd, 0x5d, 0xdd, 0xd8, 0x7f, 0xe0, 0x00, 0xb6, 0xef, 0xdc, 0x89, 0x91, 0x6d,
+    0xdb, 0x4b, 0x37, 0x14, 0xa1, 0xae, 0x6b, 0x87, 0x0c, 0xc3, 0x00, 0x49, 0x92, 0xf0, 0xb8, 0x59,
+    0x90, 0x84, 0x85, 0xc4, 0x4a, 0x02, 0x07, 0xf7, 0x7d, 0xc6, 0x79, 0xe7, 0x17, 0xbc, 0x60, 0x0c,
+    0x15, 0x24, 0x41, 0x20, 0x2f, 0x56, 0x90, 0x4c, 0x6f, 0x80, 0x20, 0x08, 0xa4, 0x73, 0x65, 0xf0,
+    0x5e, 0x01, 0x89, 0xc5, 0x05, 0x9c, 0x9f, 0x8e, 0xe3, 0xec, 0xd4, 0x05, 0x34, 0x5a, 0x6d, 0xa8,
+    0x86, 0x09, 0xdd, 0xb4, 0xec, 0xe2, 0x47, 0x4b, 0xd1, 0xa1, 0x29, 0x6d, 0x50, 0x34, 0xed, 0x7c,
+    0xd4, 0x56, 0xf3, 0xee, 0x1b, 0x74, 0x20, 0xb5, 0xbc, 0xc4, 0x64, 0xd2, 0x69, 0xd0, 0x14, 0x81,
+    0x54, 0x2a, 0x85, 0x52, 0xbe, 0x88, 0x2d, 0x43, 0xfd, 0x10, 0x8b, 0x22, 0x04, 0xce, 0x05, 0x59,
+    0x51, 0x90, 0x6e, 0x29, 0xd8, 0xb3, 0x7d, 0x14, 0xf1, 0x2b, 0x09, 0xe7, 0xf6, 0x36, 0xcd, 0x6c,
+    0x7a, 0xae, 0x2d, 0x2f, 0x39, 0xec, 0x18, 0xbb, 0x6d, 0x0c, 0x95, 0x62, 0x01, 0x2c, 0x4d, 0x83,
+    0x80, 0x0e, 0x17, 0x49, 0xa0, 0xc3, 0xe7, 0x85, 0x97, 0xe3, 0x50, 0xc8, 0x17, 0xb1, 0x70, 0xe9,
+    0x22, 0xe4, 0x4a, 0x09, 0x9a, 0x81, 0xd6, 0x0d, 0x11, 0x90, 0xa5, 0x5a, 0xf2, 0xbd, 0xe3, 0xc7,
+    0x61, 0x11, 0x24, 0xe6, 0xe6, 0x16, 0xc1, 0x7a, 0xbd, 0x18, 0xde, 0x1c, 0xc3, 0x8e, 0x5d, 0x3b,
+    0x11, 0xe9, 0xe9, 0x81, 0x65, 0x9a, 0xce, 0x81, 0x8b, 0x2b, 0xab, 0x18, 0xe9, 0x09, 0xa0, 0xd3,
+    0xcb, 0x3b, 0x11, 0xb0, 0xb9, 0x9f, 0xcb, 0xe7, 0xc1, 0xb9, 0xdd, 0x18, 0x8b, 0x0d, 0x3a, 0xb4,
+    0x6d, 0x6b, 0x1a, 0x5c, 0x34, 0x05, 0xbf, 0xdf, 0x87, 0x0e, 0xbf, 0x80, 0x48, 0x64, 0x13, 0xca,
+    0xb5, 0x3a, 0xe6, 0xe7, 0xae, 0xe0, 0xe4, 0xfb, 0xa7, 0x91, 0xcd, 0xa4, 0x17, 0xae, 0x91, 0xe2,
+    0x0b, 0x1f, 0xbc, 0x1d, 0x59, 0x4f, 0x2e, 0x27, 0x15, 0xdd, 0x74, 0x7b, 0x78, 0x37, 0x28, 0xd6,
+    0x03, 0xaf, 0xd7, 0x83, 0x4b, 0xe7, 0x4e, 0xa3, 0x5c, 0xad, 0xe3, 0xb5, 0x37, 0xfe, 0x0d, 0x4d,
+    0x37, 0xa0, 0xa8, 0x2a, 0xb6, 0x0c, 0x75, 0x83, 0xe7, 0x58, 0xe4, 0xf2, 0x65, 0xe4, 0x2b, 0x0d,
+    0x80, 0x24, 0x30, 0xd2, 0x13, 0xc2, 0xee, 0x3d, 0xb7, 0xe3, 0xdc, 0x99, 0x73, 0x58, 0xda, 0x28,
+    0xc3, 0xe7, 0x66, 0x41, 0x11, 0x04, 0x28, 0x8a, 0xc6, 0xde, 0x5d, 0x5b, 0x31, 0x14, 0x1b, 0x44,
+    0xef, 0xd0, 0x08, 0x72, 0xa9, 0x24, 0xdc, 0x5e, 0x1f, 0x18, 0x9a, 0x5c, 0x4d, 0xac, 0x66, 0x47,
+    0x9f, 0x7c, 0xf6, 0x05, 0xcd, 0x89, 0x40, 0xa3, 0x5a, 0x7e, 0x54, 0xaa, 0x56, 0xdd, 0xbd, 0x83,
+    0x31, 0x0c, 0xdf, 0x36, 0x81, 0x70, 0x24, 0x8c, 0x4c, 0x72, 0x09, 0x33, 0xf1, 0x19, 0xbc, 0xf7,
+    0xfe, 0x07, 0x08, 0x05, 0x04, 0x50, 0xb6, 0xf8, 0xd8, 0x35, 0xc2, 0xf0, 0x20, 0x49, 0x1a, 0xba,
+    0x61, 0x80, 0x65, 0x28, 0x08, 0x6e, 0x17, 0xea, 0x8d, 0x26, 0x96, 0x97, 0x93, 0x30, 0x2d, 0x0b,
+    0x25, 0xa9, 0x65, 0xf7, 0x01, 0x28, 0xba, 0x89, 0xae, 0x48, 0x08, 0x17, 0x67, 0x17, 0xb0, 0xba,
+    0xb2, 0x02, 0x86, 0xb4, 0xb0, 0xe7, 0xae, 0x83, 0xe8, 0xea, 0x8d, 0xa2, 0x98, 0xdf, 0x18, 0xbc,
+    0x73, 0xdf, 0x9e, 0xcf, 0x7d, 0x92, 0x02, 0x82, 0xa2, 0xbf, 0x49, 0x33, 0x2c, 0x2a, 0xc5, 0x22,
+    0x4c, 0x43, 0x43, 0x7a, 0x65, 0x01, 0x53, 0xa7, 0x26, 0xb1, 0xb8, 0x9a, 0x75, 0x44, 0xa8, 0x26,
+    0x35, 0x1c, 0x9d, 0x9f, 0x18, 0x1d, 0x44, 0x5f, 0x38, 0x84, 0xe5, 0xb5, 0x0c, 0x5a, 0xaa, 0x0e,
+    0xa9, 0xa5, 0x41, 0x6a, 0x6a, 0x68, 0xb4, 0x55, 0x2c, 0x25, 0x52, 0xe0, 0x39, 0x0e, 0xb1, 0xee,
+    0x4e, 0x58, 0x16, 0xc0, 0x31, 0x2e, 0x6c, 0x14, 0xca, 0x0e, 0x55, 0xe7, 0x16, 0x92, 0x58, 0x9c,
+    0xb9, 0x88, 0xb6, 0x5c, 0x87, 0xdc, 0xa8, 0x83, 0x20, 0x5d, 0xd0, 0x35, 0xfd, 0x11, 0xa7, 0x08,
+    0xff, 0xfc, 0xdb, 0xe7, 0x42, 0x93, 0x27, 0xde, 0x19, 0xae, 0xcb, 0x0a, 0x60, 0xa8, 0x08, 0x75,
+    0x86, 0x1c, 0x20, 0x95, 0x9a, 0xed, 0x94, 0x86, 0xcb, 0x45, 0xa2, 0xd5, 0x56, 0xc0, 0xba, 0x29,
+    0x8c, 0x8f, 0xc5, 0x70, 0xfc, 0xe4, 0x79, 0x7c, 0xc4, 0x16, 0x0a, 0xba, 0x69, 0x82, 0x05, 0xe9,
+    0xec, 0x33, 0x2c, 0x13, 0x1b, 0x62, 0x0d, 0xdb, 0x06, 0xbb, 0x21, 0x4a, 0x32, 0x8a, 0xd5, 0x06,
+    0x28, 0x92, 0x02, 0x45, 0x91, 0x20, 0x08, 0x12, 0xf5, 0x7a, 0x03, 0x52, 0x59, 0xc4, 0xc9, 0xb7,
+    0xdf, 0x02, 0xef, 0xf5, 0xa1, 0x5a, 0x2e, 0xef, 0x77, 0x22, 0xf0, 0xe8, 0xe3, 0xdf, 0x2f, 0xcd,
+    0x4c, 0x7f, 0xd8, 0x37, 0x3b, 0x73, 0xf9, 0xe9, 0xbe, 0xd1, 0xad, 0x8e, 0x96, 0x5b, 0x96, 0x89,
+    0x50, 0x30, 0x00, 0xaf, 0x9b, 0x01, 0xec, 0x7a, 0xb7, 0x4c, 0xe8, 0x9a, 0x81, 0x13, 0x93, 0xd3,
+    0xd0, 0x2c, 0x0b, 0xba, 0x09, 0xe8, 0x86, 0xe5, 0x30, 0xc0, 0x2e, 0x44, 0x3b, 0x35, 0x76, 0x30,
+    0x0d, 0x8b, 0xc0, 0x62, 0x2a, 0x87, 0xb2, 0x24, 0x7f, 0x54, 0xe1, 0x24, 0x01, 0x3f, 0xcf, 0xa2,
+    0x37, 0x12, 0x04, 0xef, 0xe1, 0x1d, 0x6d, 0x09, 0xf5, 0xf4, 0x6b, 0xb3, 0x33, 0xf3, 0x0f, 0x2e,
+    0xce, 0x5d, 0xb9, 0xe7, 0x93, 0x14, 0x1c, 0x7d, 0xfb, 0x4c, 0xfe, 0x8e, 0x3b, 0x76, 0x1d, 0x65,
+    0x29, 0x28, 0xb9, 0x8d, 0x0d, 0x10, 0x94, 0xcb, 0x39, 0x40, 0x33, 0x0c, 0x68, 0x9a, 0xe6, 0x14,
+    0x94, 0x9b, 0xa1, 0xc0, 0x30, 0xb4, 0x3d, 0x0f, 0x80, 0x75, 0xd9, 0xec, 0xb5, 0x40, 0x10, 0x00,
+    0x4d, 0x91, 0xa0, 0x48, 0x12, 0x8c, 0x8b, 0x02, 0x49, 0x11, 0x60, 0x19, 0x17, 0x18, 0xfb, 0xd6,
+    0xf6, 0x0e, 0xd3, 0x74, 0x6a, 0x87, 0xe3, 0x58, 0xb8, 0x5c, 0x0c, 0x24, 0xa9, 0x0e, 0xbf, 0x87,
+    0x59, 0x1a, 0x8c, 0x76, 0x1e, 0x3b, 0x72, 0xec, 0xfd, 0xb5, 0x6b, 0x68, 0x98, 0x5b, 0x5d, 0x4d,
+    0x87, 0x23, 0x91, 0x85, 0x4d, 0xe1, 0x30, 0x8a, 0x1b, 0x59, 0x14, 0xc4, 0x32, 0xda, 0x8a, 0xea,
+    0x6c, 0xf0, 0xf3, 0x2e, 0x27, 0x1a, 0xaa, 0x6e, 0x80, 0x26, 0x49, 0x87, 0x62, 0x2e, 0x9a, 0x84,
+    0x05, 0x38, 0x9d, 0xd3, 0x7e, 0xb6, 0x41, 0xd8, 0x82, 0x65, 0x7b, 0xf6, 0x7b, 0x58, 0xf8, 0x38,
+    0xda, 0xd1, 0x14, 0x45, 0xd5, 0x9c, 0xfe, 0x52, 0x2e, 0x95, 0xc1, 0xbb, 0x19, 0x84, 0xbb, 0x22,
+    0x47, 0x7e, 0xfe, 0xd2, 0xeb, 0xc6, 0x0d, 0x3a, 0xf0, 0xcb, 0x57, 0xde, 0xd4, 0x36, 0x8f, 0x6d,
+    0x4b, 0xd8, 0x6b, 0xc3, 0x02, 0x2a, 0x55, 0x09, 0x2e, 0x82, 0x40, 0xc8, 0xcb, 0x22, 0xe8, 0xe3,
+    0x51, 0x6b, 0xb6, 0x61, 0x9a, 0x00, 0x45, 0x00, 0x0c, 0x4d, 0xc1, 0xbe, 0xbe, 0xad, 0x8a, 0x36,
+    0x08, 0x92, 0x20, 0xc1, 0xba, 0x28, 0x27, 0x1a, 0x8a, 0x6a, 0x38, 0xb7, 0x0f, 0xfb, 0x3d, 0xce,
+    0x7f, 0x6d, 0x98, 0x92, 0x24, 0xa3, 0xd9, 0x6c, 0x81, 0xe5, 0x3c, 0xe8, 0x8f, 0x8d, 0x2d, 0x5d,
+    0x3d, 0x0f, 0xd0, 0x57, 0x3f, 0xa4, 0x56, 0xae, 0x78, 0x93, 0xc9, 0x04, 0x66, 0x67, 0xe6, 0xc0,
+    0x90, 0x04, 0x3a, 0x83, 0x1e, 0x7b, 0xb2, 0x41, 0xaa, 0x50, 0x83, 0x05, 0x12, 0x7e, 0x0f, 0x0d,
+    0x53, 0xd7, 0xe1, 0xc0, 0xb7, 0x2c, 0x98, 0xa6, 0xe9, 0x00, 0xa0, 0x69, 0x1b, 0x00, 0x0d, 0x58,
+    0x3a, 0x68, 0x86, 0x40, 0x45, 0x56, 0xc0, 0xb3, 0x34, 0x36, 0xf9, 0x79, 0x68, 0xaa, 0x8e, 0x46,
+    0x5b, 0x43, 0x7a, 0x3d, 0x8b, 0xf9, 0xf8, 0x05, 0x0c, 0xc6, 0x86, 0x3a, 0x3e, 0x15, 0xc0, 0xeb,
+    0xaf, 0xbe, 0xfc, 0x98, 0x6a, 0xe2, 0x89, 0x80, 0x97, 0x3d, 0xc4, 0x08, 0xec, 0x16, 0x4d, 0xd7,
+    0xe9, 0x74, 0x49, 0x82, 0x8b, 0x63, 0xb1, 0xb9, 0x7b, 0x13, 0x4a, 0xa5, 0x0a, 0xea, 0xcd, 0x36,
+    0x9a, 0x8a, 0x06, 0xd5, 0xae, 0x44, 0x9b, 0xc2, 0x84, 0x9d, 0x77, 0xda, 0x49, 0x83, 0x9d, 0x0e,
+    0x3b, 0xec, 0x3e, 0xaf, 0x1b, 0x85, 0x72, 0xdd, 0xa1, 0x62, 0x50, 0x70, 0x5b, 0x81, 0x0e, 0x4f,
+    0x59, 0x6e, 0x29, 0x6f, 0xc4, 0xcf, 0x4d, 0x9d, 0x97, 0xcb, 0xe5, 0xa3, 0x9f, 0x3a, 0x15, 0x5f,
+    0x6d, 0x8f, 0x1e, 0xbe, 0xd7, 0x5f, 0xa9, 0x49, 0xb3, 0xaa, 0x49, 0xf4, 0xde, 0x77, 0xcf, 0x67,
+    0x61, 0x28, 0x6d, 0x64, 0xd2, 0xeb, 0x90, 0x9b, 0x6d, 0x18, 0x96, 0x05, 0x9a, 0x65, 0x91, 0x17,
+    0xab, 0x08, 0x87, 0xfc, 0x70, 0xd1, 0x34, 0x5a, 0x4d, 0xbb, 0xe5, 0x2a, 0xe0, 0x18, 0x1a, 0x7d,
+    0x7d, 0x5d, 0x28, 0xd7, 0x64, 0xa4, 0x33, 0x39, 0xf4, 0x46, 0x02, 0x5f, 0x7b, 0xe8, 0x1b, 0xdf,
+    0x7a, 0xf5, 0x0b, 0x0f, 0x7e, 0xe5, 0x23, 0xc4, 0xd7, 0x19, 0x81, 0x9b, 0xd8, 0x97, 0xee, 0xdb,
+    0xf7, 0xaf, 0x89, 0x9d, 0xe3, 0x87, 0xed, 0x26, 0x23, 0x6e, 0x64, 0x51, 0x11, 0x45, 0x70, 0x5e,
+    0x1f, 0xfa, 0x87, 0x47, 0x41, 0xbb, 0x68, 0xe4, 0xb2, 0x59, 0xa7, 0x4b, 0x6a, 0x9a, 0x0e, 0x31,
+    0x9f, 0x77, 0x66, 0x07, 0x43, 0xd5, 0x10, 0x09, 0x07, 0xc1, 0x77, 0x84, 0x70, 0xf6, 0xec, 0xb4,
+    0x3c, 0x30, 0xd0, 0xdd, 0xf5, 0xd3, 0x3f, 0xbc, 0xda, 0xf8, 0x34, 0x1f, 0xf4, 0xcd, 0x00, 0x8c,
+    0x0d, 0x0f, 0xfc, 0x26, 0x36, 0x32, 0x72, 0xd8, 0x96, 0x5e, 0x8f, 0xe0, 0x87, 0xd7, 0x1f, 0x44,
+    0x6c, 0xcb, 0x76, 0x70, 0x3c, 0x07, 0xcb, 0x30, 0xc0, 0x71, 0x3c, 0x02, 0xc1, 0x20, 0x34, 0x5d,
+    0x47, 0xcf, 0x40, 0x0c, 0xe1, 0xde, 0x28, 0x32, 0xc9, 0x65, 0x27, 0x1d, 0x3e, 0xc1, 0x8b, 0xbe,
+    0x9e, 0xf0, 0x2f, 0x6e, 0xe6, 0xfc, 0x96, 0x00, 0x82, 0x5d, 0xe1, 0xf7, 0xbc, 0x82, 0xaf, 0xac,
+    0xa9, 0x6a, 0xb0, 0xa3, 0x33, 0x82, 0x70, 0x57, 0x0f, 0x7c, 0x82, 0x0f, 0xba, 0xda, 0x82, 0x45,
+    0x02, 0x5e, 0x0f, 0xef, 0x4c, 0x43, 0x76, 0xd3, 0x61, 0x18, 0x1f, 0x38, 0xf7, 0x66, 0x67, 0x7c,
+    0x97, 0xeb, 0x35, 0x7b, 0x9e, 0x50, 0x87, 0x06, 0xa2, 0xcf, 0xe3, 0x16, 0x46, 0xdc, 0x6a, 0xc3,
+    0xb1, 0xbf, 0xff, 0x69, 0x92, 0x61, 0xb8, 0xfd, 0x42, 0x47, 0x00, 0x2c, 0xeb, 0x82, 0xae, 0xb4,
+    0x9c, 0x39, 0x51, 0xcc, 0x17, 0x50, 0xad, 0x56, 0xc0, 0x72, 0x2c, 0xfc, 0xfe, 0x00, 0x82, 0x9d,
+    0x9d, 0xe0, 0x3c, 0x5e, 0xe8, 0x16, 0x50, 0xab, 0x54, 0x20, 0x57, 0xcb, 0xab, 0x5f, 0x7d, 0xec,
+    0x7b, 0x43, 0xb7, 0x3a, 0x9f, 0xbe, 0xd9, 0x8f, 0x77, 0xed, 0xde, 0x46, 0xf2, 0x1e, 0x21, 0x1a,
+    0x08, 0x75, 0xc2, 0xd4, 0x14, 0x14, 0x32, 0xeb, 0x88, 0x4f, 0x4f, 0x63, 0x79, 0x71, 0x09, 0x86,
+    0x69, 0x21, 0x99, 0x29, 0x38, 0x9a, 0x60, 0xe8, 0x06, 0x78, 0xce, 0x85, 0xfd, 0x77, 0xef, 0xc7,
+    0xce, 0xdb, 0x77, 0x39, 0x93, 0x33, 0x4d, 0x92, 0x36, 0x43, 0x6f, 0x69, 0x37, 0x8d, 0xc0, 0xe9,
+    0x77, 0x8f, 0x3d, 0xed, 0x13, 0x84, 0x1f, 0x2a, 0xcd, 0x06, 0x66, 0xa6, 0xce, 0xe2, 0xcc, 0xa9,
+    0xd3, 0xa8, 0x56, 0x24, 0xb4, 0x14, 0x05, 0x26, 0xe3, 0xc6, 0xde, 0x5d, 0xe3, 0xd8, 0xc8, 0x15,
+    0x30, 0x33, 0x7b, 0x05, 0x82, 0x9b, 0x71, 0x04, 0xac, 0x27, 0x1c, 0xc4, 0xbd, 0x0f, 0x3c, 0x80,
+    0xd1, 0xf1, 0x9d, 0xed, 0x5a, 0xbd, 0xb1, 0xf5, 0xbe, 0xcf, 0x7f, 0x31, 0x79, 0x33, 0x1f, 0xff,
+    0x01, 0xa2, 0xd8, 0xaf, 0xae, 0x47, 0x3e, 0xd0, 0xc1, 0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4e,
+    0x44, 0xae, 0x42, 0x60, 0x82,
 };
-static const unsigned int ICON_NORMAL_size = 154;
+static const unsigned int ICON_NORMAL_size = 2581;
 
-// Embedded 32x32 silhouette icon (hover - white)
+// --- Hover icon ---
 static const unsigned char ICON_HOVER[] = {
     0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44, 0x52,
     0x00, 0x00, 0x00, 0x20, 0x00, 0x00, 0x00, 0x20, 0x08, 0x06, 0x00, 0x00, 0x00, 0x73, 0x7a, 0x7a,
-    0xf4, 0x00, 0x00, 0x00, 0x6a, 0x49, 0x44, 0x41, 0x54, 0x78, 0xda, 0xed, 0xd5, 0xb1, 0x0d, 0x00,
-    0x20, 0x0c, 0x04, 0xc1, 0xa3, 0x40, 0x42, 0x90, 0x10, 0xa1, 0x50, 0x52, 0x44, 0x89, 0x48, 0x88,
-    0x6c, 0x6f, 0x87, 0xeb, 0xaf, 0x78, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    0x00, 0x00, 0x00, 0x60, 0xb7, 0x07, 0x39, 0xa0, 0x00, 0x01, 0xd0, 0x5e, 0xa0, 0xb4, 0x00, 0x00,
-    0x00, 0x00, 0x49, 0x45, 0x4e, 0x44, 0xae, 0x42, 0x60, 0x82,
+    0xf4, 0x00, 0x00, 0x0a, 0x23, 0x49, 0x44, 0x41, 0x54, 0x78, 0x9c, 0xed, 0x96, 0x59, 0x70, 0x5c,
+    0x77, 0x95, 0xc6, 0x7f, 0x77, 0xeb, 0xbe, 0xb7, 0x17, 0xf5, 0x26, 0xb7, 0x76, 0xc9, 0xd6, 0x62,
+    0x59, 0xb2, 0x22, 0x1b, 0x25, 0x24, 0x24, 0xb6, 0x13, 0x07, 0x92, 0x38, 0x24, 0x99, 0x49, 0x05,
+    0x8a, 0x02, 0x66, 0xa8, 0x14, 0xa1, 0x28, 0x96, 0x29, 0x02, 0x45, 0xd5, 0x54, 0x51, 0x53, 0x15,
+    0x5e, 0x86, 0xa5, 0xf2, 0x30, 0x33, 0x14, 0x54, 0xf1, 0x30, 0x0b, 0x05, 0x84, 0x21, 0x21, 0x81,
+    0x81, 0xc4, 0x54, 0xbc, 0x84, 0x38, 0x9b, 0x6c, 0xe3, 0xdd, 0x96, 0x2d, 0x45, 0x52, 0xcb, 0xda,
+    0xa5, 0x56, 0xab, 0xd5, 0x8b, 0x7a, 0xbd, 0xdd, 0x7d, 0xef, 0xed, 0x3b, 0xd5, 0x9d, 0x49, 0xca,
+    0x8e, 0x27, 0xce, 0x13, 0x6f, 0x9c, 0xa7, 0xff, 0xbf, 0xef, 0xed, 0x73, 0xce, 0x3d, 0xdf, 0xf9,
+    0xbe, 0x73, 0xe0, 0xaf, 0xf6, 0x3e, 0x8b, 0x9c, 0x3b, 0xd2, 0xc9, 0x5f, 0xc0, 0xbe, 0xf0, 0xd8,
+    0x03, 0xe2, 0xf4, 0xe9, 0x43, 0xcd, 0xef, 0xff, 0x5d, 0xb8, 0xf6, 0x12, 0x9b, 0x3c, 0xf9, 0xbd,
+    0x86, 0x60, 0xe8, 0x9b, 0xcb, 0xb3, 0x33, 0xc3, 0xe1, 0xd6, 0x76, 0xc9, 0xdf, 0xb5, 0x2b, 0x5f,
+    0xde, 0x5c, 0xf4, 0x6d, 0x44, 0x17, 0x77, 0xe4, 0x72, 0x39, 0x4f, 0xb0, 0xb1, 0x65, 0xbc, 0xa9,
+    0x67, 0x24, 0x22, 0x08, 0x42, 0xf9, 0xfd, 0x8e, 0x6c, 0xdb, 0x16, 0x2d, 0x3d, 0x19, 0x48, 0x2c,
+    0xcf, 0xb6, 0xa9, 0x9a, 0xea, 0xf0, 0x75, 0xf4, 0x2d, 0x81, 0x96, 0x14, 0x04, 0xc1, 0x7a, 0xfd,
+    0xd0, 0x2f, 0x85, 0xf6, 0xc6, 0xf0, 0xd3, 0x1e, 0x8f, 0xf7, 0xd1, 0xcd, 0x54, 0xfc, 0x33, 0x03,
+    0x7b, 0x3f, 0x75, 0xe5, 0x86, 0x04, 0x06, 0x7b, 0x43, 0xc2, 0x9b, 0x87, 0x5f, 0x49, 0x36, 0x76,
+    0x6d, 0x0d, 0xbc, 0x75, 0xe8, 0xe0, 0xd1, 0xbe, 0x81, 0xfe, 0xfe, 0x8d, 0x68, 0xb4, 0xcb, 0xeb,
+    0xf5, 0x09, 0x0e, 0x4d, 0xc5, 0x30, 0x2a, 0x64, 0xd3, 0x69, 0x64, 0x59, 0xae, 0xc8, 0xa2, 0x74,
+    0x52, 0x50, 0x94, 0x67, 0x56, 0x73, 0xc6, 0xaf, 0x3e, 0xd2, 0xdf, 0x73, 0x4b, 0x31, 0x9b, 0xfe,
+    0x96, 0x69, 0x94, 0x1e, 0x10, 0x04, 0xb1, 0xc9, 0xaa, 0x56, 0x45, 0xb1, 0x5a, 0x05, 0x51, 0xb4,
+    0x45, 0x51, 0x34, 0x92, 0xf1, 0xf8, 0xa5, 0x50, 0x53, 0xb3, 0x99, 0xdb, 0x4c, 0xdd, 0x25, 0x4a,
+    0x32, 0x6e, 0x5f, 0xe0, 0xa9, 0xf6, 0x9d, 0x7b, 0x7f, 0xf0, 0x6e, 0x5c, 0xf9, 0xdd, 0xc3, 0xf6,
+    0x96, 0x2e, 0x39, 0x11, 0x5f, 0xf3, 0x04, 0xb6, 0x84, 0xd8, 0x48, 0xa6, 0x0e, 0x74, 0x55, 0x6c,
+    0x34, 0xb7, 0x97, 0x89, 0xcb, 0x63, 0x6c, 0x69, 0x69, 0x45, 0xd3, 0x34, 0xf4, 0x7c, 0x11, 0xcb,
+    0xb6, 0x1c, 0x5e, 0x9f, 0x7f, 0x7f, 0x36, 0xbe, 0xb6, 0x3f, 0x18, 0x08, 0x7f, 0xc7, 0x2c, 0xe5,
+    0x7b, 0x4c, 0xd3, 0x90, 0x0b, 0x05, 0x1d, 0x45, 0x96, 0x49, 0x26, 0x92, 0x18, 0x95, 0x32, 0x9a,
+    0xaa, 0x08, 0x0d, 0xc1, 0x2d, 0x8e, 0x72, 0xc5, 0xbc, 0xfd, 0xd4, 0xe8, 0x28, 0x81, 0x50, 0x90,
+    0xee, 0xfe, 0x7e, 0xbc, 0x0d, 0x81, 0xd0, 0xb5, 0x95, 0x13, 0xdf, 0x3d, 0xbc, 0x38, 0x7a, 0xc1,
+    0xf0, 0x05, 0x82, 0x63, 0x35, 0x07, 0x7b, 0xf7, 0xee, 0xc1, 0xac, 0x94, 0x48, 0x25, 0x93, 0xa4,
+    0xb3, 0x39, 0xfe, 0xf4, 0xea, 0x1b, 0x08, 0x08, 0x14, 0xca, 0x06, 0xf9, 0x7c, 0x81, 0x5c, 0x36,
+    0x4b, 0x36, 0x5b, 0x60, 0xee, 0xea, 0x4c, 0xbf, 0x85, 0x28, 0x57, 0x4c, 0x0b, 0xa7, 0xaa, 0x61,
+    0x98, 0x55, 0x92, 0xc9, 0x04, 0x4b, 0xab, 0x6b, 0x5c, 0x9d, 0x5b, 0xc5, 0x34, 0xab, 0x14, 0x8b,
+    0x3a, 0xf3, 0x4b, 0xab, 0x20, 0x4a, 0x14, 0xf3, 0x3a, 0x8b, 0x73, 0x33, 0xe7, 0xfe, 0xdf, 0x04,
+    0x6c, 0x3b, 0xf3, 0xfd, 0x96, 0x81, 0x5d, 0xb7, 0x05, 0x1a, 0xc3, 0x54, 0xad, 0x2a, 0xc9, 0x78,
+    0x94, 0xc3, 0x87, 0x5f, 0x61, 0x76, 0x7e, 0x99, 0xdb, 0x77, 0x0f, 0x90, 0x4a, 0x25, 0xc8, 0x64,
+    0xb3, 0x4c, 0x45, 0x66, 0x91, 0x24, 0x81, 0x92, 0x5e, 0x24, 0x1a, 0x8d, 0xe2, 0xf2, 0xb8, 0x09,
+    0x85, 0x9b, 0x49, 0x67, 0xb2, 0x4c, 0x4d, 0x47, 0x10, 0x24, 0x99, 0xf8, 0x46, 0x12, 0x51, 0xd5,
+    0x58, 0x5d, 0x8d, 0xf2, 0xc6, 0xe8, 0x09, 0x82, 0xa1, 0x06, 0x02, 0x81, 0x00, 0x8a, 0x08, 0x1d,
+    0x9d, 0x9d, 0x3f, 0xdb, 0x58, 0xba, 0xfc, 0x89, 0xeb, 0x20, 0x98, 0x19, 0x3b, 0xa1, 0x56, 0x36,
+    0xd3, 0xff, 0xa0, 0xe7, 0x0b, 0xac, 0xad, 0xad, 0xe1, 0x54, 0x55, 0xc6, 0xc6, 0xa7, 0xb0, 0x2a,
+    0x65, 0x54, 0x97, 0x9b, 0x62, 0xd9, 0xa4, 0x62, 0x66, 0x28, 0x64, 0xb3, 0xb4, 0xb4, 0xb6, 0x31,
+    0x71, 0xe5, 0x6d, 0x12, 0xc9, 0x14, 0x2b, 0xd1, 0x18, 0xb9, 0x4c, 0x86, 0x64, 0x3a, 0xc3, 0xe2,
+    0xc2, 0x22, 0x9b, 0x89, 0x38, 0x7a, 0xa1, 0xc0, 0xc0, 0xce, 0x5d, 0x18, 0x95, 0x22, 0x2f, 0x1c,
+    0x3c, 0xc2, 0xea, 0x4a, 0x14, 0xbd, 0xa8, 0xe3, 0xd2, 0x3c, 0x20, 0xca, 0x74, 0x17, 0x4a, 0xea,
+    0xf6, 0xfe, 0xed, 0x4f, 0x02, 0xc7, 0xde, 0x4b, 0xa0, 0xbb, 0xaf, 0xb7, 0x7d, 0xf1, 0x6a, 0x24,
+    0xb0, 0xb1, 0xb6, 0xc6, 0x66, 0x36, 0x87, 0x24, 0x8b, 0xec, 0xdb, 0xb7, 0x17, 0xf6, 0xed, 0x63,
+    0x3d, 0x1a, 0x65, 0x6e, 0x26, 0x42, 0x74, 0x3d, 0x51, 0xef, 0x59, 0x49, 0x51, 0x18, 0x1a, 0xdc,
+    0xce, 0xe4, 0xd4, 0x34, 0xe7, 0xa7, 0x16, 0x98, 0x9e, 0x98, 0xa0, 0x5c, 0x2a, 0x91, 0x8a, 0xc7,
+    0xa8, 0xe8, 0x3a, 0x7b, 0xef, 0x3b, 0x50, 0xef, 0xec, 0xff, 0x79, 0xe1, 0x85, 0xfa, 0xfd, 0xef,
+    0x1f, 0x7b, 0x10, 0xdb, 0xae, 0xb2, 0xb4, 0xb2, 0x46, 0xe7, 0xd6, 0x0e, 0xa2, 0xcb, 0xcb, 0x04,
+    0x1a, 0xdc, 0xdd, 0xd7, 0x41, 0xf0, 0x8d, 0x2f, 0x3d, 0x3e, 0x8b, 0xcd, 0xf1, 0xde, 0x5b, 0x76,
+    0xb1, 0xbe, 0x91, 0x62, 0x6e, 0x76, 0x9e, 0x53, 0xc7, 0x8f, 0x73, 0xf9, 0xfc, 0x39, 0xa6, 0x27,
+    0xa7, 0x38, 0x7f, 0x79, 0x92, 0xd1, 0xb3, 0x57, 0x18, 0x3d, 0x3d, 0xc6, 0xdc, 0xc2, 0x22, 0x1b,
+    0xf1, 0x38, 0x0d, 0xc1, 0x2d, 0xe8, 0xe5, 0x2a, 0x33, 0x91, 0x08, 0x4e, 0x45, 0x60, 0x78, 0x64,
+    0x84, 0x91, 0x3b, 0xf7, 0xe0, 0x72, 0xb9, 0x38, 0x7b, 0xfa, 0x0c, 0xe3, 0xd3, 0x73, 0x18, 0xa5,
+    0x12, 0xd1, 0xd5, 0x35, 0x32, 0xd9, 0x1c, 0xd9, 0x5c, 0x96, 0x54, 0x22, 0x49, 0x53, 0x5b, 0x07,
+    0xa6, 0x2d, 0xfc, 0xee, 0x06, 0x1a, 0xda, 0xb6, 0xfd, 0x34, 0xf0, 0x1d, 0xd0, 0x39, 0xf3, 0xda,
+    0x51, 0xde, 0xbe, 0x72, 0x85, 0x54, 0xae, 0xc0, 0xeb, 0x6f, 0x9c, 0x24, 0x57, 0xd4, 0xa9, 0x18,
+    0x26, 0xad, 0xad, 0x61, 0x72, 0xe9, 0x4d, 0x86, 0x7a, 0x3b, 0x51, 0x14, 0x85, 0xa3, 0x7f, 0x1e,
+    0xe3, 0x96, 0xde, 0x76, 0xbe, 0xfe, 0xd5, 0x27, 0xe8, 0xeb, 0x1f, 0xe4, 0xb9, 0x5f, 0x3f, 0xcb,
+    0xc0, 0x8e, 0x7e, 0xfe, 0xfd, 0x3f, 0x7f, 0x49, 0x2e, 0x5f, 0x44, 0x71, 0xc8, 0xb4, 0x84, 0x43,
+    0xd8, 0x96, 0xc1, 0xc7, 0xee, 0xf8, 0x28, 0x0f, 0x3c, 0xfc, 0x10, 0x1d, 0xdd, 0x7d, 0xe0, 0x74,
+    0x7c, 0x43, 0x10, 0x7c, 0x3f, 0xbd, 0xae, 0x09, 0xa1, 0x72, 0x00, 0x2c, 0x40, 0xa2, 0xc1, 0xa3,
+    0x21, 0x09, 0x55, 0xc6, 0x2f, 0x8f, 0xf3, 0xe9, 0x47, 0x3e, 0x8e, 0x24, 0x8a, 0x84, 0x82, 0x3e,
+    0x54, 0xb3, 0x84, 0x28, 0x08, 0x2c, 0x45, 0xe3, 0x4c, 0xcc, 0x2c, 0x20, 0x08, 0x22, 0x91, 0xc5,
+    0x18, 0x5e, 0x7f, 0x90, 0xf1, 0x8b, 0xe7, 0x79, 0xf5, 0xb5, 0x51, 0x8e, 0x1c, 0x7b, 0x9d, 0xcd,
+    0x7c, 0x91, 0x92, 0x69, 0x61, 0x58, 0x55, 0x24, 0x11, 0xf2, 0xba, 0x41, 0x59, 0x2f, 0x22, 0x2b,
+    0x0e, 0x50, 0x14, 0xaa, 0x85, 0xdc, 0xdd, 0x37, 0xe8, 0xc0, 0xea, 0xd4, 0x25, 0xc7, 0xec, 0x4c,
+    0x04, 0x45, 0x16, 0x99, 0x9e, 0x9e, 0x26, 0xb6, 0xb4, 0xc2, 0x6d, 0x3b, 0xfb, 0x89, 0xae, 0x44,
+    0x09, 0xba, 0x9d, 0x64, 0x75, 0x9d, 0x48, 0x5e, 0xe7, 0xfe, 0x3b, 0x3f, 0xc2, 0xe8, 0xb9, 0x71,
+    0xaa, 0xd8, 0x98, 0xa6, 0x55, 0xa7, 0xe7, 0xd4, 0xd8, 0xa5, 0x3a, 0x3b, 0x46, 0x3e, 0x7a, 0x2b,
+    0xf1, 0xd5, 0x65, 0x5c, 0x0e, 0x85, 0x12, 0xe0, 0x94, 0x44, 0x1a, 0x03, 0x7e, 0x7c, 0x6e, 0x37,
+    0xcb, 0x4b, 0xab, 0x9c, 0x3f, 0xfe, 0x26, 0xbd, 0xf1, 0x35, 0x2a, 0x26, 0xfa, 0x0d, 0x34, 0xcc,
+    0xa6, 0x92, 0xf3, 0xbf, 0x7f, 0xfe, 0x79, 0x6c, 0x41, 0xe4, 0xcc, 0xe9, 0x0b, 0x68, 0x3e, 0x3f,
+    0xc3, 0xbb, 0x87, 0xd8, 0xbb, 0xff, 0x6e, 0x3a, 0xbb, 0xb7, 0xd5, 0xa9, 0xe9, 0x90, 0x04, 0x2e,
+    0x5c, 0x99, 0x64, 0xb8, 0x3b, 0x4c, 0xab, 0xdf, 0x8b, 0x20, 0x0a, 0x18, 0xa6, 0xc5, 0xe2, 0xd2,
+    0x12, 0x2e, 0x8f, 0x87, 0x5b, 0x87, 0x06, 0x98, 0x9d, 0x5f, 0xa1, 0x50, 0xae, 0xe0, 0x70, 0xc8,
+    0x84, 0x42, 0x01, 0xb6, 0x34, 0x06, 0xe9, 0xec, 0x6c, 0x63, 0x3d, 0x91, 0xe6, 0xec, 0x99, 0x73,
+    0xbc, 0xf8, 0xd2, 0xcb, 0xcc, 0xcd, 0x46, 0xa6, 0xaf, 0xeb, 0x01, 0xdb, 0xce, 0x35, 0xc5, 0xa6,
+    0xc6, 0xe6, 0x75, 0xc3, 0xd2, 0x1a, 0xbc, 0x1e, 0x64, 0xad, 0x01, 0x9f, 0xbf, 0x81, 0x13, 0xaf,
+    0xbc, 0x4c, 0x6c, 0x23, 0xcd, 0x7f, 0x3d, 0xf3, 0xbb, 0x7a, 0x0f, 0xe8, 0xa5, 0x12, 0xb7, 0xed,
+    0xdc, 0x86, 0xd7, 0xad, 0xb1, 0xb8, 0x14, 0x63, 0x29, 0x9e, 0x01, 0x51, 0x60, 0xb8, 0xbb, 0x85,
+    0xfb, 0xee, 0xbf, 0x97, 0x57, 0x0e, 0x1f, 0xe5, 0xd2, 0xc2, 0x3a, 0x01, 0xb7, 0x86, 0x2c, 0x0a,
+    0x48, 0x92, 0x83, 0x03, 0xfb, 0x6f, 0x67, 0xe7, 0xd0, 0x20, 0x3d, 0x3b, 0x77, 0xb1, 0x30, 0x3d,
+    0x81, 0xc7, 0x1f, 0x40, 0x55, 0xc4, 0x85, 0xf1, 0xb7, 0xe7, 0xb6, 0x7f, 0xea, 0x89, 0x6f, 0x1a,
+    0xf5, 0x0a, 0x58, 0xa9, 0xd8, 0x17, 0x53, 0x89, 0x0d, 0x6d, 0xdb, 0xe0, 0x10, 0xa1, 0xad, 0x23,
+    0xf8, 0x9a, 0x3a, 0x98, 0x9d, 0xb8, 0xc4, 0x89, 0xb7, 0x4e, 0xf2, 0x87, 0x97, 0x0e, 0xd1, 0x12,
+    0x0e, 0x22, 0xd7, 0xc4, 0xc7, 0x34, 0x11, 0x55, 0x2f, 0xa2, 0xa8, 0x50, 0x31, 0x4d, 0x34, 0xa7,
+    0x4c, 0xd0, 0xe3, 0x60, 0x73, 0x33, 0xc7, 0xd8, 0xd8, 0x04, 0x96, 0x6d, 0xb3, 0x96, 0xcc, 0xbf,
+    0xa3, 0x7a, 0x95, 0x2a, 0x5b, 0x3b, 0x9b, 0x79, 0xf3, 0xd4, 0x05, 0xde, 0xbe, 0x72, 0x19, 0xa7,
+    0x54, 0xe5, 0xce, 0x87, 0x3f, 0x4d, 0x57, 0x4f, 0x1f, 0xab, 0x4b, 0x0b, 0x5b, 0x1f, 0x7c, 0xe4,
+    0xfe, 0x8f, 0xbf, 0x07, 0x81, 0x20, 0x2b, 0x4f, 0x28, 0x4e, 0x8d, 0xc4, 0xca, 0xea, 0x3b, 0x53,
+    0x31, 0x72, 0x9e, 0x63, 0x7f, 0x3c, 0xc8, 0xc5, 0xc9, 0x39, 0x0a, 0x25, 0x93, 0x64, 0x6a, 0xb3,
+    0xae, 0xf3, 0xfb, 0x46, 0x06, 0xe9, 0xeb, 0x68, 0xe6, 0xf2, 0xd4, 0x2c, 0x85, 0x92, 0x41, 0xaa,
+    0x50, 0x26, 0x95, 0xab, 0xb0, 0x59, 0x2c, 0x71, 0x69, 0x7c, 0x1a, 0xaf, 0xcb, 0xcd, 0xd0, 0xb6,
+    0x56, 0x6a, 0xb3, 0xc8, 0xad, 0x3a, 0x98, 0x5f, 0x59, 0x47, 0xaf, 0x58, 0x9c, 0x3e, 0x3f, 0xc1,
+    0xc5, 0x13, 0x6f, 0x41, 0x31, 0x4d, 0x76, 0x33, 0x8d, 0x20, 0x39, 0x30, 0xca, 0xc6, 0x17, 0xea,
+    0x4d, 0x78, 0xe9, 0xf8, 0xa1, 0xd0, 0xc1, 0xdf, 0xfe, 0xa6, 0x27, 0x9d, 0xd1, 0xc1, 0x2c, 0xf1,
+    0xc4, 0xb7, 0xff, 0x91, 0xf8, 0xca, 0x2a, 0xf1, 0x64, 0x06, 0x45, 0x56, 0x70, 0x38, 0x54, 0x0a,
+    0x45, 0x9d, 0x06, 0x55, 0x62, 0xcf, 0xc8, 0x10, 0xbf, 0x79, 0xf1, 0x4f, 0x98, 0xb5, 0x4a, 0x48,
+    0x32, 0x15, 0xcb, 0x42, 0x53, 0xa4, 0xfa, 0x7b, 0xa6, 0x6d, 0xb1, 0x10, 0x4d, 0xf0, 0xb1, 0x81,
+    0x6d, 0x44, 0x53, 0x19, 0x56, 0x37, 0x32, 0xc8, 0xa2, 0x8c, 0x2c, 0x8b, 0x88, 0x82, 0x44, 0x3a,
+    0xbd, 0xc9, 0xe6, 0x7a, 0x94, 0x3f, 0x3c, 0xf7, 0x6b, 0xbc, 0xbe, 0x00, 0x1b, 0xb1, 0xf5, 0x3d,
+    0xf5, 0x0a, 0xec, 0xde, 0xfb, 0x50, 0xf2, 0xc4, 0xb1, 0x37, 0xda, 0x4f, 0x9d, 0xfc, 0xf3, 0x77,
+    0xfb, 0x46, 0xee, 0x00, 0x49, 0xc6, 0xb6, 0x2d, 0x5a, 0x9a, 0xc2, 0xf8, 0x3d, 0x2a, 0x50, 0xa5,
+    0x6a, 0x5b, 0x18, 0x65, 0x8b, 0x17, 0x0e, 0xbe, 0x46, 0xc5, 0xb6, 0xa9, 0x58, 0xd4, 0x07, 0x8f,
+    0x88, 0x88, 0x20, 0xbc, 0x03, 0x4d, 0x8d, 0xbe, 0xa6, 0x2d, 0x70, 0x71, 0x7a, 0x81, 0xf5, 0x54,
+    0xb6, 0x5e, 0xc9, 0xda, 0xcc, 0x08, 0x79, 0x5d, 0xf4, 0x74, 0x36, 0xe1, 0xf5, 0x79, 0x41, 0x76,
+    0xd2, 0xb2, 0xad, 0xdf, 0x38, 0x7d, 0xf2, 0xec, 0xdf, 0x5e, 0x3c, 0x73, 0xee, 0xde, 0xf7, 0x20,
+    0xf8, 0x97, 0xe7, 0x8e, 0xac, 0x3f, 0x78, 0xe0, 0x9e, 0x67, 0x35, 0x99, 0xf2, 0xda, 0xfc, 0x3c,
+    0x82, 0xec, 0xac, 0x3b, 0x28, 0x9b, 0x26, 0x95, 0x4a, 0x05, 0x59, 0x10, 0x70, 0xab, 0x12, 0xaa,
+    0xaa, 0x20, 0x4b, 0x32, 0x2e, 0xa7, 0x52, 0x6b, 0x5d, 0x04, 0x01, 0x14, 0x59, 0x42, 0x96, 0x24,
+    0x54, 0x87, 0x8c, 0x28, 0x8b, 0x68, 0xaa, 0x13, 0x55, 0x96, 0xea, 0xdd, 0x5d, 0x63, 0x4e, 0xad,
+    0x77, 0x5c, 0x6e, 0x17, 0x4e, 0x87, 0x4a, 0x32, 0x95, 0xa6, 0xd1, 0xa7, 0xce, 0x0c, 0xf4, 0xb5,
+    0x1e, 0xfa, 0xe1, 0x2f, 0x5e, 0x5a, 0xbc, 0x8e, 0x86, 0x8b, 0x93, 0x93, 0xcb, 0xed, 0x1d, 0x9d,
+    0xd3, 0x2d, 0x1d, 0x1d, 0xac, 0xce, 0xcf, 0xb1, 0x1c, 0x5d, 0xa7, 0xa8, 0x97, 0x90, 0x80, 0x46,
+    0xaf, 0xb3, 0x5e, 0x8d, 0x92, 0x61, 0xa2, 0x48, 0x22, 0x0e, 0x45, 0xc6, 0xa9, 0x48, 0xd8, 0xff,
+    0x17, 0xc4, 0xa9, 0xc8, 0xf5, 0x24, 0x6a, 0x82, 0x55, 0xf3, 0x18, 0x6a, 0xd0, 0x08, 0xb8, 0x15,
+    0x1c, 0xb2, 0x80, 0x5e, 0x2a, 0x93, 0xc9, 0xe4, 0x88, 0xc5, 0xd6, 0xf1, 0xba, 0x9d, 0xb4, 0x77,
+    0x75, 0x3e, 0xf3, 0xad, 0xa7, 0x7f, 0x6e, 0xdd, 0xa0, 0x03, 0xdf, 0xfe, 0xd1, 0x7f, 0x1b, 0x4d,
+    0x3d, 0xb7, 0xce, 0xd5, 0xce, 0xa6, 0x4d, 0x7d, 0xa4, 0x3a, 0x04, 0x81, 0x66, 0xbf, 0x46, 0x53,
+    0xc0, 0x4b, 0x22, 0x57, 0xc4, 0xb2, 0x40, 0x16, 0x40, 0x55, 0x64, 0x6a, 0x9f, 0x2f, 0x8a, 0x02,
+    0xd5, 0x9a, 0x13, 0x41, 0x44, 0x73, 0xd4, 0x7a, 0x41, 0x42, 0x2f, 0x99, 0xf5, 0xaf, 0xef, 0x08,
+    0x35, 0xd4, 0xff, 0x5b, 0x4b, 0x33, 0x99, 0xca, 0x90, 0xcb, 0xe5, 0x71, 0xb9, 0x7d, 0xf4, 0x0e,
+    0xdd, 0x3a, 0x73, 0xed, 0x3e, 0x20, 0x5f, 0x7b, 0xc9, 0x2e, 0x8f, 0x79, 0x26, 0x26, 0xae, 0x70,
+    0xea, 0xe4, 0x69, 0x54, 0x49, 0xa4, 0xb5, 0xc9, 0x57, 0xdb, 0x6c, 0x98, 0x5e, 0x4e, 0x60, 0x23,
+    0xd2, 0xe8, 0xd3, 0xb0, 0x0c, 0x83, 0x1a, 0xe2, 0xd8, 0x36, 0x55, 0xcb, 0xc2, 0x46, 0xc1, 0xa1,
+    0x48, 0x68, 0x4e, 0x07, 0xd8, 0x15, 0x14, 0x55, 0x21, 0x9e, 0xd5, 0xf1, 0x6a, 0x0a, 0xed, 0x21,
+    0x2f, 0xe5, 0xb2, 0xc1, 0x66, 0xa1, 0x4c, 0x64, 0x66, 0x8e, 0x33, 0xa3, 0xaf, 0x33, 0x38, 0xb4,
+    0xd3, 0xff, 0x81, 0x09, 0xfc, 0xfc, 0xc7, 0xff, 0xfa, 0xe5, 0x52, 0x95, 0x27, 0xc3, 0x3e, 0xed,
+    0x80, 0x1a, 0xd4, 0x76, 0x94, 0x0d, 0x43, 0x8e, 0xac, 0xa5, 0x70, 0xb8, 0x5d, 0xec, 0xde, 0xda,
+    0xc6, 0x5a, 0x2c, 0x4e, 0x3a, 0x57, 0x20, 0xa7, 0x57, 0x28, 0x19, 0xef, 0x54, 0x51, 0x10, 0x6b,
+    0xb8, 0x2b, 0x75, 0x18, 0x6a, 0x70, 0xd4, 0xa4, 0x3c, 0xe0, 0x77, 0xb3, 0x1c, 0x4b, 0xd7, 0xa9,
+    0xd8, 0x14, 0x74, 0xdb, 0xe1, 0xc6, 0x86, 0x54, 0xb6, 0xa0, 0x1f, 0x19, 0x3d, 0xfa, 0xea, 0xd9,
+    0x6c, 0x2c, 0xf6, 0xec, 0x07, 0x6e, 0xc5, 0xd7, 0xda, 0x53, 0x5f, 0xf9, 0xac, 0x2f, 0x9e, 0x4c,
+    0x4e, 0x94, 0x2c, 0xb1, 0xed, 0xef, 0x3e, 0xf3, 0x10, 0xa6, 0x5e, 0x60, 0x36, 0x72, 0x95, 0x6c,
+    0xae, 0x88, 0x69, 0x57, 0x51, 0x34, 0x8d, 0xa5, 0x68, 0x82, 0x8e, 0xe6, 0x10, 0x0e, 0x45, 0xa1,
+    0x90, 0xcf, 0x91, 0xc9, 0xe9, 0xb8, 0x9d, 0x0a, 0xbd, 0x7d, 0x5b, 0x59, 0x4f, 0x64, 0x88, 0xcc,
+    0x2e, 0xd2, 0xd3, 0x19, 0xfe, 0xdc, 0xd7, 0xfe, 0xe9, 0x7b, 0xbf, 0x6d, 0x6c, 0xe9, 0xad, 0xa1,
+    0x75, 0x83, 0xc9, 0x7c, 0x80, 0x7d, 0xff, 0x3f, 0x9e, 0xcf, 0x3c, 0xf9, 0xf9, 0x87, 0xcf, 0xdd,
+    0x77, 0xcf, 0x5d, 0x6d, 0xbd, 0x3b, 0x76, 0xb0, 0x36, 0x3f, 0x47, 0x5b, 0x7b, 0x1b, 0xdb, 0xfd,
+    0x01, 0xfa, 0x87, 0x47, 0x50, 0x1c, 0x0a, 0x8b, 0x73, 0x73, 0x84, 0x82, 0xfe, 0x3a, 0x53, 0xa2,
+    0x4b, 0xcb, 0x4c, 0x4f, 0x4d, 0x62, 0x96, 0x2a, 0x78, 0x54, 0x07, 0x2d, 0xbb, 0x87, 0x89, 0xad,
+    0x27, 0x0a, 0x8d, 0xe1, 0x2d, 0x2f, 0x7f, 0x50, 0xf0, 0x9b, 0x26, 0x50, 0xb3, 0x91, 0xe1, 0x1d,
+    0x3f, 0x1d, 0x1a, 0xde, 0xf5, 0xa8, 0x24, 0x29, 0x34, 0x84, 0x1a, 0xf1, 0x35, 0x36, 0x33, 0x74,
+    0xdb, 0x9d, 0x08, 0x6e, 0x17, 0x54, 0x4d, 0x5c, 0x2e, 0x2f, 0xc1, 0xe6, 0x26, 0xaa, 0x86, 0x41,
+    0xf7, 0x8e, 0x5b, 0x68, 0xef, 0xe9, 0x63, 0x76, 0x62, 0xac, 0x0e, 0x47, 0x20, 0xe4, 0xa3, 0xaf,
+    0xbb, 0xfd, 0xc7, 0x5f, 0x7b, 0xea, 0x27, 0xf9, 0x9b, 0xc5, 0x90, 0x6f, 0xf6, 0xb0, 0xb9, 0xab,
+    0xe3, 0x4d, 0x7f, 0x28, 0x90, 0x2a, 0x97, 0x4a, 0xc1, 0x2d, 0xad, 0x9d, 0xb4, 0x74, 0x6d, 0x03,
+    0x67, 0x00, 0x28, 0xd4, 0xf9, 0xe3, 0xaf, 0x89, 0x8b, 0x22, 0x20, 0xca, 0x0a, 0x1e, 0xa7, 0x9f,
+    0x41, 0xcf, 0xee, 0xfa, 0xfa, 0x9e, 0x4d, 0x27, 0x91, 0x44, 0xbb, 0xb2, 0x73, 0xc7, 0xf6, 0x7f,
+    0xe3, 0x43, 0x4c, 0xf8, 0xb0, 0x17, 0x12, 0x0b, 0xe7, 0x8f, 0xab, 0xaa, 0x6b, 0x8f, 0x7b, 0x4b,
+    0x18, 0x44, 0x27, 0x54, 0xf3, 0xe4, 0xa3, 0x51, 0xa2, 0x4b, 0x2b, 0x6c, 0x6c, 0xc4, 0xd1, 0xdc,
+    0x1a, 0xa1, 0x50, 0x98, 0xe6, 0xd6, 0x56, 0x9c, 0x0d, 0x3e, 0xaa, 0x36, 0x24, 0xe2, 0x71, 0xb2,
+    0x1b, 0xeb, 0x0b, 0x7d, 0xb7, 0x7f, 0x72, 0xdb, 0x87, 0xf9, 0x97, 0x6f, 0xf6, 0xf0, 0xd1, 0x4f,
+    0xdc, 0x21, 0x7a, 0x7d, 0xc1, 0x0e, 0x87, 0xbf, 0x95, 0xda, 0xaa, 0x96, 0x5f, 0xb9, 0xca, 0xe8,
+    0x6b, 0xc7, 0x18, 0xbb, 0x70, 0x09, 0xb3, 0x6a, 0x33, 0x31, 0xbb, 0x5c, 0xd7, 0x04, 0xd3, 0x30,
+    0xf1, 0xba, 0x9c, 0xfc, 0xcd, 0x63, 0x8f, 0x70, 0xf7, 0xbd, 0xfb, 0x09, 0xb7, 0xb6, 0xe1, 0x90,
+    0xa4, 0x9a, 0x4e, 0x7d, 0xa8, 0xdd, 0xb4, 0x02, 0x76, 0x39, 0xf1, 0x5d, 0x1c, 0xc1, 0x7f, 0xc6,
+    0xce, 0x70, 0xf1, 0xd8, 0x11, 0x0e, 0xff, 0xf1, 0x65, 0x12, 0xf1, 0x14, 0x79, 0x5d, 0xc7, 0x52,
+    0xdd, 0x1c, 0xb8, 0x67, 0x0f, 0xf3, 0x8b, 0xcb, 0x9c, 0x3c, 0x75, 0x8e, 0xa0, 0x47, 0xad, 0x0b,
+    0x58, 0x77, 0x7b, 0x13, 0x9f, 0x7d, 0xfc, 0x71, 0x06, 0xef, 0xba, 0xbb, 0x94, 0x4f, 0x67, 0x06,
+    0xbd, 0xa1, 0xce, 0xf9, 0x9b, 0xc5, 0xf8, 0x5f, 0xd2, 0x62, 0x90, 0xdf, 0x28, 0x49, 0x14, 0x96,
+    0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4e, 0x44, 0xae, 0x42, 0x60, 0x82,
 };
-static const unsigned int ICON_HOVER_size = 154;
+static const unsigned int ICON_HOVER_size = 2652;
 
 // Global variables
 HMODULE hSelf;
@@ -104,6 +412,7 @@ static bool g_SkinShowOwned = true;
 static bool g_SkinShowUnowned = true;
 static bool g_SkinRefreshOwned = false;
 static bool g_SkinInitialized = false;
+static bool g_SwitchToSkinventory = false; // set by achievements tab to navigate to Skinventory
 
 // Portrait cache (for character screenshots in equipment panel)
 struct PortraitEntry {
@@ -132,6 +441,7 @@ static bool g_SkinShopListDirty = true;
 // Clears tracker state
 #define EV_AE_CLEARS_ACH_RESPONSE "EV_ALTER_EGO_CLEARS_ACH_RESP"
 static void OnClearsAchResponse(void* eventArgs);
+static void SendClearsAchQuery();
 
 // Achievement categories: 88 = Daily Fractals, 475 = Daily Raid Bounties, 477 = Weekly Raids
 static const uint32_t CAT_DAILY_FRACTALS = 88;
@@ -165,6 +475,119 @@ static std::chrono::system_clock::time_point g_LastDailyReset{};
 static std::chrono::system_clock::time_point g_LastWeeklyReset{};
 static std::chrono::steady_clock::time_point g_LastClearsCompletionQuery{};
 
+// =========================================================================
+// Achievement Tracker
+// =========================================================================
+#define EV_AE_ACH_PROGRESS_RESPONSE "EV_ALTER_EGO_ACH_PROGRESS_RESP"
+static void OnAchProgressResponse(void* eventArgs);
+
+struct AchGroupDef {
+    std::string id;            // UUID string
+    std::string name;
+    std::string description;
+    int order = 0;
+    std::vector<uint32_t> categories; // category IDs in this group
+};
+
+struct AchCategoryDef {
+    uint32_t id = 0;
+    std::string name;
+    std::string description;
+    int order = 0;
+    std::string icon_url;
+    std::vector<uint32_t> achievements; // achievement IDs in this category
+};
+
+struct AchBitDef {
+    std::string type;    // "Text", "Item", "Minipet", "Skin"
+    uint32_t item_id = 0; // optional: item/skin/mini ID
+    std::string text;    // display text or hint
+};
+
+struct AchDef {
+    uint32_t id = 0;
+    std::string name;
+    std::string description;
+    std::string requirement;
+    std::string icon_url;
+    std::string type;                    // "Default" or "ItemSet"
+    std::vector<std::string> flags;      // "Repeatable", "Hidden", "Daily", etc.
+    int max_count = 0;                   // from tiers.back().count
+    int total_ap = 0;                    // sum of all tier points
+    std::vector<AchBitDef> bits;
+    std::vector<uint32_t> prerequisites;
+};
+
+struct AchProgress {
+    uint32_t id = 0;
+    int current = 0;
+    int max = 0;
+    bool done = false;
+    int repeated = 0;
+    bool unlocked = true;                // absent in API = unlocked
+    std::set<uint32_t> completed_bits;   // indices of completed bits
+};
+
+// Achievement tracker state
+static std::vector<AchGroupDef> g_AchGroups;
+static std::unordered_map<uint32_t, AchCategoryDef> g_AchCategories;
+static std::unordered_map<uint32_t, AchDef> g_AchDefs;           // cached definitions
+static std::unordered_map<uint32_t, AchProgress> g_AchProgress;  // account progress
+static std::vector<uint32_t> g_AchPinned;                        // pinned achievement IDs
+static std::unordered_map<uint32_t, std::string> g_AchNameIndex; // id -> name (for search)
+static std::unordered_map<uint32_t, uint32_t> g_AchIdToCategory; // ach id -> category id
+
+static std::recursive_mutex g_AchMutex;
+static bool g_AchGroupsFetched = false;
+static bool g_AchGroupsFetching = false;
+static bool g_AchNameIndexReady = false;
+static bool g_AchNameIndexFetching = false;
+static std::string g_AchStatusMsg;
+
+#define ACH_NAME_INDEX_URL "https://raw.githubusercontent.com/PieOrCake/alter_ego/main/data/achievement_names.json"
+#define ACH_WAYPOINTS_URL "https://raw.githubusercontent.com/PieOrCake/alter_ego/main/data/achievement_waypoints.json"
+
+// Waypoint data: achId -> (bitIndex -> chatCode), bitIndex -1 = achievement-level waypoint
+static std::unordered_map<uint32_t, std::unordered_map<int, std::string>> g_AchWaypoints;
+static bool g_AchWaypointsReady = false;
+static bool g_AchWaypointsFetching = false;
+
+// UI state
+static std::string g_AchSelectedGroupId;   // currently selected group UUID
+static uint32_t g_AchSelectedCatId = 0;    // currently selected category ID
+static bool g_AchCatFetching = false;      // fetching defs for selected category
+static bool g_AchProgressFetching = false; // fetching account progress
+static uint64_t g_AchProgressGen = 0;      // incremented when progress updates, triggers popout cache rebuild
+static char g_AchSearchBuf[128] = "";
+static bool g_AchPopoutVisible = false;    // popout tracker window visibility
+static std::unordered_map<uint32_t, bool> g_AchExpandedInPopout; // expanded state per pinned ach
+static bool g_AchShowCompletedSteps = false; // popout: show completed bits/steps
+static std::unordered_set<uint32_t> g_AchExpandedInList; // expanded state per achievement in main list
+static float g_AchTreeWidth = 220.0f;      // resizable left tree panel width
+static float g_AchPinnedHeight = 200.0f;   // resizable pinned section height
+static float g_AchTreeScrollY = 0.0f;      // saved scroll position of left tree panel
+static float g_AchListScrollY = 0.0f;      // saved scroll position of right list panel
+static bool g_AchRestoreScroll = false;     // flag to restore scroll positions on next frame
+static uint32_t g_AchNavigateToId = 0;     // pending navigation: jump to this achievement ID
+static bool g_AchPinnedBootQueried = false; // flag: have we queried pinned progress after H&S became available?
+static bool g_ClearsBootQueried = false;   // flag: have we queried clears completion after H&S became available?
+
+// Persistence & caching
+static std::chrono::steady_clock::time_point g_LastAchProgressQuery{};
+static void SaveAchTrackerState();
+static void LoadAchTrackerState();
+static void SaveAchGroupCache();
+static void LoadAchGroupCache();
+static void SaveAchDefCache();
+static void LoadAchDefCache();
+static void FetchAchGroups();
+static void FetchAchCategoryDefs(uint32_t catId);
+static void SendAchProgressQuery(const std::vector<uint32_t>& ids);
+static void FetchPinnedAchDefs();
+static void SaveAchWaypoints();
+static void LoadAchWaypoints();
+static void FetchAchWaypoints();
+
 // Character search
 static char g_CharSearchBuf[128] = "";
 
@@ -182,6 +605,12 @@ struct MumbleIdentity {
     unsigned UISize;
 };
 static std::string g_CurrentCharName; // currently logged-in character name from MumbleLink
+
+// Local login timestamps (character name -> unix epoch)
+static std::unordered_map<std::string, int64_t> g_LoginTimestamps;
+static bool g_LoginTimestampsDirty = false;
+static void SaveLoginTimestamps();
+static void LoadLoginTimestamps();
 
 // Build Library UI state
 static float g_LibListWidth = 220.0f; // Resizable build list column width
@@ -265,6 +694,68 @@ typedef struct {
     };
 } EvChatMessage;
 
+// =========================================================================
+// Events: Alerts integration — real-time skin unlock detection
+// Struct definitions from jsantorek/GW2-Alerts (used by "Events: Alerts" addon)
+// =========================================================================
+#define EV_ALERT_UNLOCKED_SKIN "EV_ALERT:UnlockedSkin"
+
+struct AlertUnlockPayload {
+    unsigned int ID;
+};
+
+static void OnEvAlertSkinUnlocked(void* eventArgs) {
+    if (!eventArgs) return;
+    auto* payload = (AlertUnlockPayload*)eventArgs;
+    if (payload->ID != 0) {
+        AlterEgo::GW2API::MarkSkinUnlocked(payload->ID);
+        Skinventory::OwnedSkins::MarkOwned(payload->ID);
+        g_SkinShopListDirty = true;
+    }
+}
+
+#define EV_ALERT_ACHIEVEMENT_COMPLETED "EV_ALERT:AchievementCompleted"
+
+// When H&S becomes available, query pinned achievement progress + clears completion
+static void OnHoardPongForAch(void* eventArgs) {
+    if (!eventArgs) return;
+    auto* pong = (HoardPongPayload*)eventArgs;
+    if (pong->api_version != HOARD_API_VERSION) return;
+
+    // Query pinned achievement progress (once per session)
+    if (!g_AchPinnedBootQueried) {
+        g_AchPinnedBootQueried = true;
+        std::lock_guard<std::recursive_mutex> lock(g_AchMutex);
+        if (!g_AchPinned.empty()) {
+            SendAchProgressQuery(g_AchPinned);
+        }
+    }
+
+    // Query clears completion (once per session, only if we have cached defs)
+    if (!g_ClearsBootQueried && g_ClearsFetched && !g_ClearsFetching) {
+        g_ClearsBootQueried = true;
+        SendClearsAchQuery();
+    }
+}
+
+static void OnEvAlertAchievementCompleted(void* eventArgs) {
+    if (!eventArgs) return;
+    auto* payload = (AlertUnlockPayload*)eventArgs;
+    if (payload->ID != 0) {
+        std::lock_guard<std::recursive_mutex> lock(g_AchMutex);
+        auto it = g_AchProgress.find(payload->ID);
+        if (it != g_AchProgress.end()) {
+            it->second.done = true;
+        } else {
+            AchProgress p;
+            p.id = payload->ID;
+            p.done = true;
+            g_AchProgress[payload->ID] = std::move(p);
+        }
+        g_AchProgressGen++;
+    }
+}
+
 // Build toast notification state
 struct BuildToast {
     bool active = false;
@@ -283,6 +774,7 @@ static float g_ToastPosX = -1.0f;        // -1 = auto-center
 static float g_ToastPosY = 100.0f;
 static bool g_ToastPosInitialized = false;
 static bool g_ToastNeedsFocus = false;
+static bool g_ChatAddonConnected = false; // true once we receive any EV_CHAT:Message
 
 static void OnEvChatMessage(void* eventArgs);
 static void PushGW2Theme();
@@ -655,7 +1147,6 @@ static void SaveSession() {
     std::string path = dir + "/session.json";
 
     nlohmann::json j;
-    j["window_visible"] = g_WindowVisible;
     j["main_tab"] = g_MainTab;
 
     // Characters tab state — save by name for stability across sort/order changes
@@ -695,7 +1186,7 @@ static void LoadSession() {
     try {
         auto j = nlohmann::json::parse(file);
 
-        if (j.contains("window_visible")) g_WindowVisible = j["window_visible"].get<bool>();
+        // g_WindowVisible intentionally not restored — always start closed
         if (j.contains("main_tab")) g_MainTab = j["main_tab"].get<int>();
 
         // Defer character selection — store name, resolve after chars load
@@ -865,6 +1356,755 @@ static void LoadClearsCache() {
             FetchClears();
         }
     } catch (...) {}
+}
+
+// =========================================================================
+// Achievement Tracker — Persistence
+// =========================================================================
+
+static void SaveAchTrackerState() {
+    std::string dir = AlterEgo::GW2API::GetDataDirectory();
+    std::filesystem::create_directories(dir);
+    std::string path = dir + "/ach_tracked.json";
+
+    nlohmann::json j;
+    {
+        std::lock_guard<std::recursive_mutex> lock(g_AchMutex);
+        j["pinned"] = g_AchPinned;
+        j["popout_visible"] = g_AchPopoutVisible;
+        j["show_completed_steps"] = g_AchShowCompletedSteps;
+        j["selected_group"] = g_AchSelectedGroupId;
+        j["selected_category"] = g_AchSelectedCatId;
+        j["tree_width"] = g_AchTreeWidth;
+        j["pinned_height"] = g_AchPinnedHeight;
+        j["tree_scroll_y"] = g_AchTreeScrollY;
+        j["list_scroll_y"] = g_AchListScrollY;
+
+        nlohmann::json expanded = nlohmann::json::array();
+        for (const auto& [id, exp] : g_AchExpandedInPopout) {
+            if (exp) expanded.push_back(id);
+        }
+        j["expanded_in_popout"] = expanded;
+    }
+
+    std::ofstream file(path);
+    if (file.is_open()) file << j.dump(2);
+}
+
+static void LoadAchTrackerState() {
+    std::string path = AlterEgo::GW2API::GetDataDirectory() + "/ach_tracked.json";
+    std::ifstream file(path);
+    if (!file.is_open()) return;
+    try {
+        auto j = nlohmann::json::parse(file);
+        std::lock_guard<std::recursive_mutex> lock(g_AchMutex);
+        if (j.contains("pinned") && j["pinned"].is_array()) {
+            g_AchPinned.clear();
+            for (const auto& id : j["pinned"]) g_AchPinned.push_back(id.get<uint32_t>());
+        }
+        g_AchPopoutVisible = j.value("popout_visible", false);
+        g_AchShowCompletedSteps = j.value("show_completed_steps", !j.value("show_remaining", true));
+        g_AchSelectedGroupId = j.value("selected_group", "");
+        g_AchSelectedCatId = j.value("selected_category", 0u);
+        g_AchTreeWidth = j.value("tree_width", 220.0f);
+        g_AchPinnedHeight = j.value("pinned_height", 200.0f);
+        g_AchTreeScrollY = j.value("tree_scroll_y", 0.0f);
+        g_AchListScrollY = j.value("list_scroll_y", 0.0f);
+        if (j.contains("expanded_in_popout") && j["expanded_in_popout"].is_array()) {
+            g_AchExpandedInPopout.clear();
+            for (const auto& id : j["expanded_in_popout"]) {
+                g_AchExpandedInPopout[id.get<uint32_t>()] = true;
+            }
+        }
+        if (g_AchSelectedCatId > 0) g_AchRestoreScroll = true;
+    } catch (...) {}
+}
+
+static void SaveAchGroupCache() {
+    std::string dir = AlterEgo::GW2API::GetDataDirectory();
+    std::filesystem::create_directories(dir);
+    std::string path = dir + "/ach_groups.json";
+
+    nlohmann::json j;
+    auto epochSecs = std::chrono::duration_cast<std::chrono::seconds>(
+        std::chrono::system_clock::now().time_since_epoch()).count();
+    j["fetch_time"] = epochSecs;
+
+    {
+        std::lock_guard<std::recursive_mutex> lock(g_AchMutex);
+
+        nlohmann::json groups = nlohmann::json::array();
+        for (const auto& g : g_AchGroups) {
+            nlohmann::json gj;
+            gj["id"] = g.id;
+            gj["name"] = g.name;
+            gj["description"] = g.description;
+            gj["order"] = g.order;
+            gj["categories"] = g.categories;
+            groups.push_back(gj);
+        }
+        j["groups"] = groups;
+
+        nlohmann::json cats = nlohmann::json::object();
+        for (const auto& [id, c] : g_AchCategories) {
+            nlohmann::json cj;
+            cj["id"] = c.id;
+            cj["name"] = c.name;
+            cj["description"] = c.description;
+            cj["order"] = c.order;
+            cj["icon_url"] = c.icon_url;
+            cj["achievements"] = c.achievements;
+            cats[std::to_string(id)] = cj;
+        }
+        j["categories"] = cats;
+    }
+
+    std::ofstream file(path);
+    if (file.is_open()) file << j.dump(2);
+}
+
+static void LoadAchGroupCache() {
+    std::string path = AlterEgo::GW2API::GetDataDirectory() + "/ach_groups.json";
+    std::ifstream file(path);
+    if (!file.is_open()) return;
+    try {
+        auto j = nlohmann::json::parse(file);
+
+        // Check staleness (refresh weekly)
+        int64_t fetchEpoch = j.value("fetch_time", (int64_t)0);
+        auto now = std::chrono::system_clock::now();
+        auto elapsed = now - std::chrono::system_clock::from_time_t((time_t)fetchEpoch);
+        if (elapsed > std::chrono::hours(7 * 24)) return; // stale
+
+        std::lock_guard<std::recursive_mutex> lock(g_AchMutex);
+
+        if (j.contains("groups") && j["groups"].is_array()) {
+            g_AchGroups.clear();
+            for (const auto& gj : j["groups"]) {
+                AchGroupDef g;
+                g.id = gj.value("id", "");
+                g.name = gj.value("name", "");
+                g.description = gj.value("description", "");
+                g.order = gj.value("order", 0);
+                if (gj.contains("categories") && gj["categories"].is_array()) {
+                    for (const auto& cid : gj["categories"]) g.categories.push_back(cid.get<uint32_t>());
+                }
+                g_AchGroups.push_back(std::move(g));
+            }
+        }
+
+        if (j.contains("categories") && j["categories"].is_object()) {
+            g_AchCategories.clear();
+            for (auto& [key, cj] : j["categories"].items()) {
+                AchCategoryDef c;
+                c.id = cj.value("id", 0u);
+                c.name = cj.value("name", "");
+                c.description = cj.value("description", "");
+                c.order = cj.value("order", 0);
+                c.icon_url = cj.value("icon_url", "");
+                if (cj.contains("achievements") && cj["achievements"].is_array()) {
+                    for (const auto& aid : cj["achievements"]) c.achievements.push_back(aid.get<uint32_t>());
+                }
+                g_AchCategories[c.id] = std::move(c);
+            }
+        }
+
+        // Build reverse lookup
+        for (const auto& [catId, cat] : g_AchCategories) {
+            for (uint32_t achId : cat.achievements) {
+                g_AchIdToCategory[achId] = catId;
+            }
+        }
+
+        if (!g_AchGroups.empty()) g_AchGroupsFetched = true;
+    } catch (...) {}
+}
+
+static void SaveAchDefCache() {
+    std::string dir = AlterEgo::GW2API::GetDataDirectory();
+    std::filesystem::create_directories(dir);
+    std::string path = dir + "/ach_defs.json";
+
+    nlohmann::json j;
+    {
+        std::lock_guard<std::recursive_mutex> lock(g_AchMutex);
+        for (const auto& [id, d] : g_AchDefs) {
+            nlohmann::json dj;
+            dj["id"] = d.id;
+            dj["name"] = d.name;
+            dj["description"] = d.description;
+            dj["requirement"] = d.requirement;
+            dj["icon_url"] = d.icon_url;
+            dj["type"] = d.type;
+            dj["flags"] = d.flags;
+            dj["max_count"] = d.max_count;
+            dj["total_ap"] = d.total_ap;
+            dj["prerequisites"] = d.prerequisites;
+            nlohmann::json bits = nlohmann::json::array();
+            for (const auto& b : d.bits) {
+                nlohmann::json bj;
+                bj["type"] = b.type;
+                bj["item_id"] = b.item_id;
+                bj["text"] = b.text;
+                bits.push_back(bj);
+            }
+            dj["bits"] = bits;
+            j[std::to_string(id)] = dj;
+        }
+    }
+
+    std::ofstream file(path);
+    if (file.is_open()) file << j.dump();
+}
+
+static void LoadAchDefCache() {
+    std::string path = AlterEgo::GW2API::GetDataDirectory() + "/ach_defs.json";
+    std::ifstream file(path);
+    if (!file.is_open()) return;
+    try {
+        auto j = nlohmann::json::parse(file);
+        std::lock_guard<std::recursive_mutex> lock(g_AchMutex);
+        for (auto& [key, dj] : j.items()) {
+            AchDef d;
+            d.id = dj.value("id", 0u);
+            d.name = dj.value("name", "");
+            d.description = dj.value("description", "");
+            d.requirement = dj.value("requirement", "");
+            d.icon_url = dj.value("icon_url", "");
+            d.type = dj.value("type", "");
+            if (dj.contains("flags") && dj["flags"].is_array()) {
+                for (const auto& f : dj["flags"]) d.flags.push_back(f.get<std::string>());
+            }
+            d.max_count = dj.value("max_count", 0);
+            d.total_ap = dj.value("total_ap", 0);
+            if (dj.contains("prerequisites") && dj["prerequisites"].is_array()) {
+                for (const auto& p : dj["prerequisites"]) d.prerequisites.push_back(p.get<uint32_t>());
+            }
+            if (dj.contains("bits") && dj["bits"].is_array()) {
+                for (const auto& bj : dj["bits"]) {
+                    AchBitDef b;
+                    b.type = bj.value("type", "");
+                    b.item_id = bj.value("item_id", 0u);
+                    b.text = bj.value("text", "");
+                    d.bits.push_back(std::move(b));
+                }
+            }
+            if (d.id > 0) g_AchDefs[d.id] = std::move(d);
+        }
+    } catch (...) {}
+}
+
+static void SaveAchNameIndex() {
+    std::string dir = AlterEgo::GW2API::GetDataDirectory();
+    std::filesystem::create_directories(dir);
+    std::string path = dir + "/ach_name_index.json";
+
+    nlohmann::json j;
+    {
+        std::lock_guard<std::recursive_mutex> lock(g_AchMutex);
+        for (const auto& [id, name] : g_AchNameIndex) {
+            j[std::to_string(id)] = name;
+        }
+    }
+
+    std::ofstream file(path);
+    if (file.is_open()) file << j.dump();
+}
+
+static void LoadAchNameIndex() {
+    std::string path = AlterEgo::GW2API::GetDataDirectory() + "/ach_name_index.json";
+    std::ifstream file(path);
+    if (!file.is_open()) return;
+    try {
+        auto j = nlohmann::json::parse(file);
+        std::lock_guard<std::recursive_mutex> lock(g_AchMutex);
+        g_AchNameIndex.clear();
+        for (auto& [key, val] : j.items()) {
+            uint32_t id = (uint32_t)std::stoul(key);
+            g_AchNameIndex[id] = val.get<std::string>();
+        }
+        if (!g_AchNameIndex.empty()) g_AchNameIndexReady = true;
+    } catch (...) {}
+}
+
+// =========================================================================
+// Achievement Tracker — Waypoint Data
+// =========================================================================
+
+static void SaveAchWaypoints() {
+    std::string dir = AlterEgo::GW2API::GetDataDirectory();
+    std::filesystem::create_directories(dir);
+    std::string path = dir + "/ach_waypoints.json";
+
+    nlohmann::json j;
+    {
+        std::lock_guard<std::recursive_mutex> lock(g_AchMutex);
+        for (const auto& [achId, bits] : g_AchWaypoints) {
+            nlohmann::json entry;
+            for (const auto& [bitIdx, code] : bits) {
+                entry[std::to_string(bitIdx)] = code;
+            }
+            j[std::to_string(achId)] = entry;
+        }
+    }
+
+    std::ofstream file(path);
+    if (file.is_open()) file << j.dump();
+}
+
+static void LoadAchWaypoints() {
+    std::string path = AlterEgo::GW2API::GetDataDirectory() + "/ach_waypoints.json";
+    std::ifstream file(path);
+    if (!file.is_open()) return;
+    try {
+        auto j = nlohmann::json::parse(file);
+        std::lock_guard<std::recursive_mutex> lock(g_AchMutex);
+        g_AchWaypoints.clear();
+        for (auto& [achKey, val] : j.items()) {
+            uint32_t achId = (uint32_t)std::stoul(achKey);
+            if (val.is_string()) {
+                // Single waypoint for the whole achievement
+                g_AchWaypoints[achId][-1] = val.get<std::string>();
+            } else if (val.is_object()) {
+                for (auto& [bitKey, code] : val.items()) {
+                    int bitIdx = std::stoi(bitKey);
+                    g_AchWaypoints[achId][bitIdx] = code.get<std::string>();
+                }
+            }
+        }
+        if (!g_AchWaypoints.empty()) g_AchWaypointsReady = true;
+    } catch (...) {}
+}
+
+static void FetchAchWaypoints() {
+    if (g_AchWaypointsFetching) return;
+    g_AchWaypointsFetching = true;
+
+    std::thread([]() {
+        std::string json = Skinventory::HttpClient::Get(ACH_WAYPOINTS_URL);
+        if (!json.empty()) {
+            try {
+                auto j = nlohmann::json::parse(json);
+                if (j.is_object()) {
+                    std::lock_guard<std::recursive_mutex> lock(g_AchMutex);
+                    g_AchWaypoints.clear();
+                    for (auto& [achKey, val] : j.items()) {
+                        uint32_t achId = (uint32_t)std::stoul(achKey);
+                        if (val.is_string()) {
+                            g_AchWaypoints[achId][-1] = val.get<std::string>();
+                        } else if (val.is_object()) {
+                            for (auto& [bitKey, code] : val.items()) {
+                                int bitIdx = std::stoi(bitKey);
+                                g_AchWaypoints[achId][bitIdx] = code.get<std::string>();
+                            }
+                        }
+                    }
+                    g_AchWaypointsReady = true;
+                    SaveAchWaypoints();
+                }
+            } catch (...) {}
+        }
+        g_AchWaypointsFetching = false;
+    }).detach();
+}
+
+// =========================================================================
+// Achievement Tracker — API Fetch
+// =========================================================================
+
+static void FetchAchGroups() {
+    if (g_AchGroupsFetching) return;
+    g_AchGroupsFetching = true;
+    {
+        std::lock_guard<std::recursive_mutex> lock(g_AchMutex);
+        g_AchStatusMsg = "Fetching achievement groups...";
+    }
+
+    std::thread([]() {
+        // Fetch all groups
+        std::string groupsJson = Skinventory::HttpClient::Get(
+            "https://api.guildwars2.com/v2/achievements/groups?ids=all");
+        if (groupsJson.empty()) {
+            std::lock_guard<std::recursive_mutex> lock(g_AchMutex);
+            g_AchStatusMsg = "Failed to fetch achievement groups";
+            g_AchGroupsFetching = false;
+            return;
+        }
+
+        std::vector<AchGroupDef> groups;
+        try {
+            auto j = nlohmann::json::parse(groupsJson);
+            if (j.is_array()) {
+                for (const auto& gj : j) {
+                    AchGroupDef g;
+                    g.id = gj.value("id", "");
+                    g.name = gj.value("name", "");
+                    g.description = gj.value("description", "");
+                    g.order = gj.value("order", 0);
+                    if (gj.contains("categories") && gj["categories"].is_array()) {
+                        for (const auto& cid : gj["categories"]) g.categories.push_back(cid.get<uint32_t>());
+                    }
+                    if (!g.id.empty()) groups.push_back(std::move(g));
+                }
+            }
+        } catch (...) {}
+
+        if (groups.empty()) {
+            std::lock_guard<std::recursive_mutex> lock(g_AchMutex);
+            g_AchStatusMsg = "Failed to parse achievement groups";
+            g_AchGroupsFetching = false;
+            return;
+        }
+
+        // Sort groups by order
+        std::sort(groups.begin(), groups.end(),
+            [](const AchGroupDef& a, const AchGroupDef& b) { return a.order < b.order; });
+
+        {
+            std::lock_guard<std::recursive_mutex> lock(g_AchMutex);
+            g_AchStatusMsg = "Fetching achievement categories...";
+        }
+
+        // Fetch all categories
+        std::string catsJson = Skinventory::HttpClient::Get(
+            "https://api.guildwars2.com/v2/achievements/categories?ids=all");
+        if (catsJson.empty()) {
+            std::lock_guard<std::recursive_mutex> lock(g_AchMutex);
+            g_AchStatusMsg = "Failed to fetch categories";
+            g_AchGroupsFetching = false;
+            return;
+        }
+
+        std::unordered_map<uint32_t, AchCategoryDef> cats;
+        std::unordered_map<uint32_t, uint32_t> idToCat;
+        try {
+            auto j = nlohmann::json::parse(catsJson);
+            if (j.is_array()) {
+                for (const auto& cj : j) {
+                    AchCategoryDef c;
+                    c.id = cj.value("id", 0u);
+                    c.name = cj.value("name", "");
+                    c.description = cj.value("description", "");
+                    c.order = cj.value("order", 0);
+                    c.icon_url = cj.value("icon", "");
+                    if (cj.contains("achievements") && cj["achievements"].is_array()) {
+                        for (const auto& aid : cj["achievements"]) {
+                            uint32_t achId = aid.get<uint32_t>();
+                            c.achievements.push_back(achId);
+                            idToCat[achId] = c.id;
+                        }
+                    }
+                    if (c.id > 0) cats[c.id] = std::move(c);
+                }
+            }
+        } catch (...) {}
+
+        {
+            std::lock_guard<std::recursive_mutex> lock(g_AchMutex);
+            g_AchGroups = std::move(groups);
+            g_AchCategories = std::move(cats);
+            g_AchIdToCategory = std::move(idToCat);
+            g_AchGroupsFetched = true;
+            g_AchGroupsFetching = false;
+            g_AchStatusMsg = "";
+        }
+
+        SaveAchGroupCache();
+    }).detach();
+}
+
+static AchDef ParseAchDef(const nlohmann::json& ach) {
+    AchDef d;
+    d.id = ach.value("id", 0u);
+    d.name = ach.value("name", "");
+    d.description = ach.value("description", "");
+    d.requirement = ach.value("requirement", "");
+    d.icon_url = ach.value("icon", "");
+    d.type = ach.value("type", "");
+    if (ach.contains("flags") && ach["flags"].is_array()) {
+        for (const auto& f : ach["flags"]) d.flags.push_back(f.get<std::string>());
+    }
+    if (ach.contains("prerequisites") && ach["prerequisites"].is_array()) {
+        for (const auto& p : ach["prerequisites"]) d.prerequisites.push_back(p.get<uint32_t>());
+    }
+    if (ach.contains("bits") && ach["bits"].is_array()) {
+        for (const auto& bj : ach["bits"]) {
+            AchBitDef b;
+            b.type = bj.value("type", "");
+            b.item_id = bj.value("id", 0u);
+            b.text = bj.value("text", "");
+            d.bits.push_back(std::move(b));
+        }
+    }
+    if (ach.contains("tiers") && ach["tiers"].is_array()) {
+        auto& tiers = ach["tiers"];
+        for (const auto& t : tiers) {
+            d.total_ap += t.value("points", 0);
+        }
+        if (!tiers.empty()) {
+            d.max_count = tiers.back().value("count", 0);
+        }
+    }
+    return d;
+}
+
+static void FetchAchCategoryDefs(uint32_t catId) {
+    if (g_AchCatFetching) return;
+    g_AchCatFetching = true;
+
+    std::vector<uint32_t> toFetch;
+    {
+        std::lock_guard<std::recursive_mutex> lock(g_AchMutex);
+        auto it = g_AchCategories.find(catId);
+        if (it == g_AchCategories.end()) { g_AchCatFetching = false; return; }
+        for (uint32_t id : it->second.achievements) {
+            if (g_AchDefs.find(id) == g_AchDefs.end()) toFetch.push_back(id);
+        }
+    }
+
+    if (toFetch.empty()) {
+        g_AchCatFetching = false;
+        // Still need progress — trigger that
+        std::lock_guard<std::recursive_mutex> lock(g_AchMutex);
+        auto it = g_AchCategories.find(catId);
+        if (it != g_AchCategories.end()) {
+            SendAchProgressQuery(it->second.achievements);
+        }
+        return;
+    }
+
+    std::thread([toFetch, catId]() {
+        // Fetch in batches of 200
+        for (size_t start = 0; start < toFetch.size(); start += 200) {
+            size_t end = std::min(start + 200, toFetch.size());
+            std::string idStr;
+            for (size_t i = start; i < end; i++) {
+                if (i > start) idStr += ",";
+                idStr += std::to_string(toFetch[i]);
+            }
+
+            std::string json = Skinventory::HttpClient::Get(
+                "https://api.guildwars2.com/v2/achievements?ids=" + idStr);
+            if (json.empty()) continue;
+
+            try {
+                auto j = nlohmann::json::parse(json);
+                if (j.is_array()) {
+                    std::lock_guard<std::recursive_mutex> lock(g_AchMutex);
+                    for (const auto& ach : j) {
+                        AchDef d = ParseAchDef(ach);
+                        if (d.id > 0) g_AchDefs[d.id] = std::move(d);
+                    }
+                }
+            } catch (...) {}
+        }
+
+        g_AchCatFetching = false;
+        SaveAchDefCache();
+
+        // Now fetch progress for this category
+        std::lock_guard<std::recursive_mutex> lock(g_AchMutex);
+        auto it = g_AchCategories.find(catId);
+        if (it != g_AchCategories.end()) {
+            SendAchProgressQuery(it->second.achievements);
+        }
+    }).detach();
+}
+
+static void SendAchProgressQuery(const std::vector<uint32_t>& ids) {
+    if (ids.empty() || !APIDefs) return;
+
+    // Send via H&S achievement query (same mechanism as Clears)
+    HoardQueryAchievementRequest req{};
+    req.api_version = HOARD_API_VERSION;
+    strncpy(req.requester, "Alter Ego", sizeof(req.requester) - 1);
+    strncpy(req.response_event, EV_AE_ACH_PROGRESS_RESPONSE, sizeof(req.response_event) - 1);
+
+    // Batch into chunks of 200 (H&S limit)
+    for (size_t start = 0; start < ids.size(); start += 200) {
+        size_t end = std::min(start + 200, ids.size());
+        req.id_count = (uint32_t)(end - start);
+        for (size_t i = start; i < end; i++) {
+            req.ids[i - start] = ids[i];
+        }
+        APIDefs->Events_Raise(EV_HOARD_QUERY_ACHIEVEMENT, &req);
+    }
+    g_AchProgressFetching = true;
+}
+
+static void OnAchProgressResponse(void* eventArgs) {
+    if (!eventArgs) return;
+    auto* resp = (HoardQueryAchievementResponse*)eventArgs;
+    if (resp->api_version != HOARD_API_VERSION) { delete resp; return; }
+
+    if (resp->status != HOARD_STATUS_OK) {
+        if (resp->status == HOARD_STATUS_PENDING) {
+            // H&S is prompting user for API key — retry
+            std::vector<uint32_t> retryIds;
+            for (uint32_t i = 0; i < resp->entry_count; i++) {
+                retryIds.push_back(resp->entries[i].id);
+            }
+            std::thread([retryIds]() {
+                std::this_thread::sleep_for(std::chrono::seconds(3));
+                SendAchProgressQuery(retryIds);
+            }).detach();
+        }
+        g_AchProgressFetching = false;
+        delete resp;
+        return;
+    }
+
+    {
+        std::lock_guard<std::recursive_mutex> lock(g_AchMutex);
+        for (uint32_t i = 0; i < resp->entry_count; i++) {
+            auto& e = resp->entries[i];
+            AchProgress p;
+            p.id = e.id;
+            p.done = e.done;
+            p.current = e.current;
+            p.max = e.max;
+            for (uint32_t b = 0; b < e.bit_count && b < 64; b++) {
+                p.completed_bits.insert(e.bits[b]);
+            }
+            g_AchProgress[e.id] = std::move(p);
+        }
+        g_LastAchProgressQuery = std::chrono::steady_clock::now();
+        g_AchProgressGen++;
+    }
+    g_AchProgressFetching = false;
+    delete resp;
+}
+
+static void FetchAchNameIndex() {
+    if (g_AchNameIndexFetching) return;
+    g_AchNameIndexFetching = true;
+
+    std::thread([]() {
+        // Try GitHub hosted index first
+        std::string json = Skinventory::HttpClient::Get(ACH_NAME_INDEX_URL);
+        if (!json.empty()) {
+            try {
+                auto j = nlohmann::json::parse(json);
+                if (j.is_object() && j.size() > 100) {
+                    std::lock_guard<std::recursive_mutex> lock(g_AchMutex);
+                    g_AchNameIndex.clear();
+                    for (auto& [key, val] : j.items()) {
+                        uint32_t id = (uint32_t)std::stoul(key);
+                        g_AchNameIndex[id] = val.get<std::string>();
+                    }
+                    g_AchNameIndexReady = true;
+                    g_AchNameIndexFetching = false;
+                    SaveAchNameIndex();
+                    return;
+                }
+            } catch (...) {}
+        }
+
+        // Fallback: build index from GW2 API by fetching all achievement IDs in batches
+        {
+            std::lock_guard<std::recursive_mutex> lock(g_AchMutex);
+            g_AchStatusMsg = "Building achievement index...";
+        }
+
+        // Get all achievement IDs
+        std::string idsJson = Skinventory::HttpClient::Get(
+            "https://api.guildwars2.com/v2/achievements");
+        if (idsJson.empty()) { g_AchNameIndexFetching = false; return; }
+
+        std::vector<uint32_t> allIds;
+        try {
+            auto j = nlohmann::json::parse(idsJson);
+            if (j.is_array()) {
+                for (const auto& id : j) allIds.push_back(id.get<uint32_t>());
+            }
+        } catch (...) {}
+
+        if (allIds.empty()) { g_AchNameIndexFetching = false; return; }
+
+        std::unordered_map<uint32_t, std::string> nameIndex;
+        for (size_t start = 0; start < allIds.size(); start += 200) {
+            size_t end = std::min(start + 200, allIds.size());
+            std::string idStr;
+            for (size_t i = start; i < end; i++) {
+                if (i > start) idStr += ",";
+                idStr += std::to_string(allIds[i]);
+            }
+
+            std::string batchJson = Skinventory::HttpClient::Get(
+                "https://api.guildwars2.com/v2/achievements?ids=" + idStr);
+            if (batchJson.empty()) continue;
+
+            try {
+                auto j = nlohmann::json::parse(batchJson);
+                if (j.is_array()) {
+                    for (const auto& ach : j) {
+                        uint32_t id = ach.value("id", 0u);
+                        std::string name = ach.value("name", "");
+                        if (id > 0 && !name.empty()) nameIndex[id] = name;
+                    }
+
+                    // Also cache full defs while we have them
+                    std::lock_guard<std::recursive_mutex> lock(g_AchMutex);
+                    for (const auto& ach : j) {
+                        AchDef d = ParseAchDef(ach);
+                        if (d.id > 0 && g_AchDefs.find(d.id) == g_AchDefs.end()) {
+                            g_AchDefs[d.id] = std::move(d);
+                        }
+                    }
+                }
+            } catch (...) {}
+        }
+
+        {
+            std::lock_guard<std::recursive_mutex> lock(g_AchMutex);
+            g_AchNameIndex = std::move(nameIndex);
+            g_AchNameIndexReady = !g_AchNameIndex.empty();
+            g_AchStatusMsg = "";
+        }
+        g_AchNameIndexFetching = false;
+
+        if (g_AchNameIndexReady) {
+            SaveAchNameIndex();
+            SaveAchDefCache();
+        }
+    }).detach();
+}
+
+static void FetchPinnedAchDefs() {
+    std::vector<uint32_t> missing;
+    {
+        std::lock_guard<std::recursive_mutex> lock(g_AchMutex);
+        for (uint32_t id : g_AchPinned) {
+            if (g_AchDefs.find(id) == g_AchDefs.end()) missing.push_back(id);
+        }
+    }
+    if (missing.empty()) return; // All defs cached; progress queried via OnHoardPongForAch
+
+    std::thread([missing]() {
+        for (size_t start = 0; start < missing.size(); start += 200) {
+            size_t end = std::min(start + 200, missing.size());
+            std::string idStr;
+            for (size_t i = start; i < end; i++) {
+                if (i > start) idStr += ",";
+                idStr += std::to_string(missing[i]);
+            }
+            std::string json = Skinventory::HttpClient::Get(
+                "https://api.guildwars2.com/v2/achievements?ids=" + idStr);
+            if (json.empty()) continue;
+            try {
+                auto j = nlohmann::json::parse(json);
+                if (j.is_array()) {
+                    std::lock_guard<std::recursive_mutex> lock(g_AchMutex);
+                    for (const auto& ach : j) {
+                        AchDef d = ParseAchDef(ach);
+                        if (d.id > 0) g_AchDefs[d.id] = std::move(d);
+                    }
+                }
+            } catch (...) {}
+        }
+        SaveAchDefCache();
+        // Progress queried via OnHoardPongForAch when H&S is ready
+    }).detach();
 }
 
 // DLL entry point
@@ -1124,30 +2364,12 @@ static void RenderEquipmentSlot(const AlterEgo::EquipmentItem* eq, const char* s
                 }
             }
 
-            // Infusions
+            // Infusions (name only)
             for (auto inf_id : eq->infusions) {
                 if (inf_id == 0) continue;
                 const auto* iinfo = AlterEgo::GW2API::GetItemInfo(inf_id);
                 if (iinfo) {
-                    ImGui::Spacing();
                     ImGui::TextColored(ImVec4(0.5f, 0.8f, 0.5f, 1.0f), "%s", iinfo->name.c_str());
-                    // Show infusion stats from its details
-                    if (iinfo->details.is_object() && iinfo->details.contains("infix_upgrade") &&
-                        iinfo->details["infix_upgrade"].contains("attributes")) {
-                        for (const auto& attr : iinfo->details["infix_upgrade"]["attributes"]) {
-                            std::string name = attr.value("attribute", "");
-                            int mod = attr.value("modifier", 0);
-                            if (mod > 0) {
-                                ImGui::TextColored(ImVec4(0.5f, 0.8f, 0.5f, 1.0f), "+%d %s", mod, name.c_str());
-                            }
-                        }
-                    }
-                    if (!iinfo->description.empty()) {
-                        ImGui::PushTextWrapPos(300.0f);
-                        std::string desc = StripGW2Markup(iinfo->description);
-                        ImGui::TextColored(ImVec4(0.5f, 0.8f, 0.5f, 1.0f), "%s", desc.c_str());
-                        ImGui::PopTextWrapPos();
-                    }
                 }
             }
 
@@ -1179,11 +2401,11 @@ static void RenderEquipmentSlot(const AlterEgo::EquipmentItem* eq, const char* s
                 }
             }
 
-            // Transmuted skin
+            // Transmuted skin — show original item name (the item before reskin)
             if (skin_info && item_info && skin_info->name != item_info->name) {
                 ImGui::Spacing();
                 ImGui::TextColored(ImVec4(0.5f, 0.5f, 0.5f, 1.0f), "Transmuted");
-                ImGui::TextColored(ImVec4(0.5f, 0.5f, 0.5f, 1.0f), "%s", skin_info->name.c_str());
+                ImGui::TextColored(ImVec4(0.5f, 0.5f, 0.5f, 1.0f), "%s", item_info->name.c_str());
             }
 
             // Rarity + type
@@ -1205,8 +2427,9 @@ static void RenderEquipmentSlot(const AlterEgo::EquipmentItem* eq, const char* s
                 }
             }
 
-            // Description
-            if (item_info && !item_info->description.empty()) {
+            // Description (skip for legendary relics — API returns a stale emulated effect)
+            bool isLegendaryRelic = item_info && item_info->type == "Relic" && item_info->rarity == "Legendary";
+            if (item_info && !item_info->description.empty() && !isLegendaryRelic) {
                 ImGui::PushTextWrapPos(300.0f);
                 std::string idesc = StripGW2Markup(item_info->description);
                 ImGui::TextColored(ImVec4(0.6f, 0.8f, 0.6f, 1.0f), "%s", idesc.c_str());
@@ -1214,7 +2437,7 @@ static void RenderEquipmentSlot(const AlterEgo::EquipmentItem* eq, const char* s
             }
 
             // Legendary relic API limitation note
-            if (item_info && item_info->type == "Relic" && item_info->rarity == "Legendary") {
+            if (isLegendaryRelic) {
                 ImGui::Spacing();
                 ImGui::PushTextWrapPos(300.0f);
                 ImGui::TextColored(ImVec4(0.6f, 0.6f, 0.4f, 1.0f),
@@ -1222,16 +2445,13 @@ static void RenderEquipmentSlot(const AlterEgo::EquipmentItem* eq, const char* s
                 ImGui::PopTextWrapPos();
             }
 
-            // Skin unlock status from H&S cache
-            if (eq->skin != 0 && AlterEgo::GW2API::HasSkinUnlockData(eq->skin)) {
-                if (AlterEgo::GW2API::IsSkinUnlocked(eq->skin)) {
-                    ImGui::TextColored(ImVec4(0.35f, 0.82f, 0.35f, 1.0f), "Skin Unlocked");
-                } else {
-                    ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.4f, 1.0f), "Skin Locked");
-                }
+            // Skin unlock status — only show if locked (unlocked is implied for equipped items)
+            if (eq->skin != 0 && AlterEgo::GW2API::HasSkinUnlockData(eq->skin) &&
+                !AlterEgo::GW2API::IsSkinUnlocked(eq->skin)) {
+                ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.4f, 1.0f), "Skin Locked");
             }
 
-            // Dyes (limit to skin's actual dye channel count)
+            // Dyes (limit to skin's actual dye channel count, use material-specific RGB)
             if (!eq->dyes.empty()) {
                 int maxDyes = (int)eq->dyes.size();
                 if (skin_info && skin_info->dye_slot_count >= 0) {
@@ -1243,8 +2463,15 @@ static void RenderEquipmentSlot(const AlterEgo::EquipmentItem* eq, const char* s
                     const auto* dye = AlterEgo::GW2API::GetDyeColor(eq->dyes[di]);
                     if (dye) {
                         if (!hasAny) { ImGui::Spacing(); hasAny = true; }
-                        ImVec4 dyeCol((float)dye->r / 255.0f, (float)dye->g / 255.0f,
-                                      (float)dye->b / 255.0f, 1.0f);
+                        // Pick material-specific RGB; default to cloth when no skin material info
+                        int cr = dye->cloth_r, cg = dye->cloth_g, cb = dye->cloth_b;
+                        if (skin_info && di < (int)skin_info->dye_slot_materials.size()) {
+                            const auto& mat = skin_info->dye_slot_materials[di];
+                            if (mat == "leather") { cr = dye->leather_r; cg = dye->leather_g; cb = dye->leather_b; }
+                            else if (mat == "metal") { cr = dye->metal_r; cg = dye->metal_g; cb = dye->metal_b; }
+                        }
+                        ImVec4 dyeCol((float)cr / 255.0f, (float)cg / 255.0f,
+                                      (float)cb / 255.0f, 1.0f);
                         ImGui::ColorButton("##dye", dyeCol, 0, ImVec2(12, 12));
                         ImGui::SameLine();
                         ImGui::Text("%s", dye->name.c_str());
@@ -3028,7 +4255,9 @@ static const char* ChatChannelName(ChatMessageType type) {
 }
 
 static void OnEvChatMessage(void* eventArgs) {
-    if (!eventArgs || !g_ChatBuildDetection) return;
+    if (!eventArgs) return;
+    g_ChatAddonConnected = true;
+    if (!g_ChatBuildDetection) return;
 
     EvChatMessage* msg = (EvChatMessage*)eventArgs;
 
@@ -3580,6 +4809,8 @@ static const RelicEntry RELIC_LIST[] = {
     {"Relic of Zakiros",            101955, "Fury + crit dmg + healing"},
     {"Relic of the Coral Heart",    107061, "Underwater bonus"},
     {"Relic of Agony",              104849, "Interrupt bonus"},
+    {"Relic of the Pirate Queen",   106221, "Quickness on disable"},
+    {"Relic of the Mist Stranger",  106206, "Siphon health on hit"},
 };
 static const int RELIC_COUNT = sizeof(RELIC_LIST) / sizeof(RELIC_LIST[0]);
 
@@ -5060,6 +6291,20 @@ static void RenderBuildLibrary() {
         g_LibImportError.clear();
     }
 
+    // Events: Chat addon status
+    ImGui::SameLine();
+    if (g_ChatAddonConnected) {
+        ImGui::TextColored(ImVec4(0.35f, 0.82f, 0.35f, 1.0f), "Chat: Connected");
+    } else {
+        ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.4f, 1.0f), "Chat: Not detected");
+        if (ImGui::IsItemHovered()) {
+            ImGui::BeginTooltip();
+            ImGui::Text("Install 'Events: Chat' from the Nexus addon library");
+            ImGui::Text("to import builds shared in GW2 chat.");
+            ImGui::EndTooltip();
+        }
+    }
+
     // Import panel
     if (g_LibShowImport) {
         ImGui::Separator();
@@ -5609,6 +6854,7 @@ void AddonLoad(AddonAPI_t* aApi) {
     AlterEgo::GW2API::LoadBuildLibrary();
     AlterEgo::GW2API::LoadItemNameCache();
     SeedItemNameCache();
+    LoadLoginTimestamps();
     AlterEgo::GW2API::FetchAllItemStatsAsync();
     LoadCharSortConfig();
     RebuildCharDisplayOrder();
@@ -5619,14 +6865,20 @@ void AddonLoad(AddonAPI_t* aApi) {
     // Subscribe to Events: Chat for build link detection
     APIDefs->Events_Subscribe(EV_CHAT_MESSAGE, OnEvChatMessage);
 
+    // Subscribe to Events: Alerts for real-time skin unlock + achievement completion
+    APIDefs->Events_Subscribe(EV_ALERT_UNLOCKED_SKIN, OnEvAlertSkinUnlocked);
+    APIDefs->Events_Subscribe(EV_ALERT_ACHIEVEMENT_COMPLETED, OnEvAlertAchievementCompleted);
+
     // Subscribe to H&S events
     APIDefs->Events_Subscribe(EV_HOARD_PONG, AlterEgo::GW2API::OnHoardPong);
+    APIDefs->Events_Subscribe(EV_HOARD_PONG, OnHoardPongForAch);
     APIDefs->Events_Subscribe(EV_HOARD_DATA_UPDATED, AlterEgo::GW2API::OnHoardDataUpdated);
     APIDefs->Events_Subscribe(EV_AE_CHAR_LIST_RESP, AlterEgo::GW2API::OnCharListResponse);
     APIDefs->Events_Subscribe(EV_AE_CHAR_DATA_RESP, AlterEgo::GW2API::OnCharDataResponse);
     APIDefs->Events_Subscribe(EV_AE_SKIN_UNLOCK_RESP, AlterEgo::GW2API::OnSkinUnlocksResponse);
     APIDefs->Events_Subscribe(EV_AE_ITEM_LOC_RESP, AlterEgo::GW2API::OnItemLocationResponse);
     APIDefs->Events_Subscribe(EV_AE_CLEARS_ACH_RESPONSE, OnClearsAchResponse);
+    APIDefs->Events_Subscribe(EV_AE_ACH_PROGRESS_RESPONSE, OnAchProgressResponse);
 
     // Register render functions
     APIDefs->GUI_Register(RT_Render, AddonRender);
@@ -5634,6 +6886,7 @@ void AddonLoad(AddonAPI_t* aApi) {
 
     // Register keybind
     APIDefs->InputBinds_RegisterWithString("KB_ALTER_EGO_TOGGLE", ProcessKeybind, "CTRL+SHIFT+E");
+    APIDefs->InputBinds_RegisterWithString("KB_ALTER_EGO_TRACKER", ProcessKeybind, "(null)");
 
     // Load icon textures from embedded PNG data
     APIDefs->Textures_LoadFromMemory(TEX_ICON, (void*)ICON_NORMAL, ICON_NORMAL_size, nullptr);
@@ -5643,6 +6896,11 @@ void AddonLoad(AddonAPI_t* aApi) {
     LoadSettings();
     LoadSession();
     LoadClearsCache();
+    LoadAchTrackerState();
+    LoadAchGroupCache();
+    LoadAchDefCache();
+    LoadAchNameIndex();
+    LoadAchWaypoints();
 
     // Register quick access shortcut
     if (g_ShowQAIcon) {
@@ -5663,6 +6921,16 @@ void AddonLoad(AddonAPI_t* aApi) {
 
     // Ping H&S to check availability
     AlterEgo::GW2API::PingHoard();
+
+    // Fetch pinned + saved category achievement definitions (public API, no H&S needed)
+    // Progress is queried separately when H&S becomes available (OnHoardPongForAch)
+    if (!g_AchPinned.empty() || g_AchSelectedCatId > 0) {
+        uint32_t savedCat = g_AchSelectedCatId;
+        std::thread([savedCat]() {
+            FetchPinnedAchDefs();
+            if (savedCat > 0) FetchAchCategoryDefs(savedCat);
+        }).detach();
+    }
 
     // Initialize Skinventory subsystems
     {
@@ -5704,14 +6972,20 @@ void AddonUnload() {
     // Unsubscribe chat events
     APIDefs->Events_Unsubscribe(EV_CHAT_MESSAGE, OnEvChatMessage);
 
+    // Unsubscribe Events: Alerts
+    APIDefs->Events_Unsubscribe(EV_ALERT_UNLOCKED_SKIN, OnEvAlertSkinUnlocked);
+    APIDefs->Events_Unsubscribe(EV_ALERT_ACHIEVEMENT_COMPLETED, OnEvAlertAchievementCompleted);
+
     // Unsubscribe H&S events
     APIDefs->Events_Unsubscribe(EV_HOARD_PONG, AlterEgo::GW2API::OnHoardPong);
+    APIDefs->Events_Unsubscribe(EV_HOARD_PONG, OnHoardPongForAch);
     APIDefs->Events_Unsubscribe(EV_HOARD_DATA_UPDATED, AlterEgo::GW2API::OnHoardDataUpdated);
     APIDefs->Events_Unsubscribe(EV_AE_CHAR_LIST_RESP, AlterEgo::GW2API::OnCharListResponse);
     APIDefs->Events_Unsubscribe(EV_AE_CHAR_DATA_RESP, AlterEgo::GW2API::OnCharDataResponse);
     APIDefs->Events_Unsubscribe(EV_AE_SKIN_UNLOCK_RESP, AlterEgo::GW2API::OnSkinUnlocksResponse);
     APIDefs->Events_Unsubscribe(EV_AE_ITEM_LOC_RESP, AlterEgo::GW2API::OnItemLocationResponse);
     APIDefs->Events_Unsubscribe(EV_AE_CLEARS_ACH_RESPONSE, OnClearsAchResponse);
+    APIDefs->Events_Unsubscribe(EV_AE_ACH_PROGRESS_RESPONSE, OnAchProgressResponse);
 
     // Shutdown Skinventory subsystems
     Skinventory::WikiImage::Shutdown();
@@ -5727,14 +7001,46 @@ void AddonUnload() {
 
     SaveSession();
     SaveSettings();
+    SaveAchTrackerState();
+    if (g_LoginTimestampsDirty) SaveLoginTimestamps();
     AlterEgo::GW2API::SaveItemNameCache();
     APIDefs = nullptr;
+}
+
+static void SaveLoginTimestamps() {
+    std::string dir = AlterEgo::GW2API::GetDataDirectory();
+    std::filesystem::create_directories(dir);
+    std::string path = dir + "/login_times.json";
+    nlohmann::json j;
+    for (const auto& [name, ts] : g_LoginTimestamps)
+        j[name] = ts;
+    std::ofstream file(path);
+    if (file.is_open()) file << j.dump(2);
+    g_LoginTimestampsDirty = false;
+}
+
+static void LoadLoginTimestamps() {
+    std::string path = AlterEgo::GW2API::GetDataDirectory() + "/login_times.json";
+    std::ifstream file(path);
+    if (!file.is_open()) return;
+    try {
+        auto j = nlohmann::json::parse(file);
+        for (auto it = j.begin(); it != j.end(); ++it) {
+            if (it.value().is_number())
+                g_LoginTimestamps[it.key()] = it.value().get<int64_t>();
+        }
+    } catch (...) {}
 }
 
 void OnMumbleIdentityUpdated(void* eventArgs) {
     if (!eventArgs) return;
     const MumbleIdentity* id = (const MumbleIdentity*)eventArgs;
-    g_CurrentCharName = std::string(id->Name);
+    std::string newName(id->Name);
+    if (!newName.empty() && newName != g_CurrentCharName) {
+        g_LoginTimestamps[newName] = (int64_t)std::time(nullptr);
+        g_LoginTimestampsDirty = true;
+    }
+    g_CurrentCharName = newName;
 }
 
 void ProcessKeybind(const char* aIdentifier, bool aIsRelease) {
@@ -5746,6 +7052,10 @@ void ProcessKeybind(const char* aIdentifier, bool aIsRelease) {
             APIDefs->Log(LOGL_INFO, "AlterEgo",
                 g_WindowVisible ? "Window shown" : "Window hidden");
         }
+    }
+    else if (strcmp(aIdentifier, "KB_ALTER_EGO_TRACKER") == 0) {
+        g_AchPopoutVisible = !g_AchPopoutVisible;
+        SaveAchTrackerState();
     }
 }
 
@@ -6240,53 +7550,103 @@ static void RenderSkinList() {
 
     ImGui::Separator();
 
-    std::vector<uint32_t> skins;
-    if (g_SkinSelectedType == "Armor") {
-        skins = Skinventory::SkinCache::GetSkinsByCategory("Armor", g_SkinSelectedSubtype, g_SkinSelectedWeightClass);
-    } else if (g_SkinSelectedType == "Weapon") {
-        skins = Skinventory::SkinCache::GetSkinsByCategory("Weapon", g_SkinSelectedSubtype, "");
-    } else if (g_SkinSelectedType == "Back") {
-        skins = Skinventory::SkinCache::GetSkinsByCategory("Back", "", "");
-    }
+    // Cached display list — only rebuild when inputs change
+    struct SkinDisplayEntry { uint32_t id; bool owned; };
+    static std::vector<SkinDisplayEntry> s_displaySkins;
+    static int s_ownedCount = 0;
+    static int s_totalCount = 0;
+    static std::string s_cacheType;
+    static std::string s_cacheSubtype;
+    static std::string s_cacheWeight;
+    static std::string s_cacheFilter;
+    static bool s_cacheShowOwned = true;
+    static bool s_cacheShowUnowned = true;
+    static bool s_cacheHasOwnerData = false;
+    static uint64_t s_cacheOwnedGen = 0;
 
     std::string filterLower(g_SkinSearchFilter);
     std::transform(filterLower.begin(), filterLower.end(), filterLower.begin(), ::tolower);
 
-    int ownedCount = 0;
-    int totalCount = 0;
+    bool hasOwnerData = Skinventory::OwnedSkins::HasData();
+    uint64_t ownedGen = Skinventory::OwnedSkins::GetGeneration();
 
-    bool showStatus = Skinventory::OwnedSkins::HasData();
+    bool needRebuild = (s_cacheType != g_SkinSelectedType) ||
+                       (s_cacheSubtype != g_SkinSelectedSubtype) ||
+                       (s_cacheWeight != g_SkinSelectedWeightClass) ||
+                       (s_cacheFilter != filterLower) ||
+                       (s_cacheShowOwned != g_SkinShowOwned) ||
+                       (s_cacheShowUnowned != g_SkinShowUnowned) ||
+                       (s_cacheHasOwnerData != hasOwnerData) ||
+                       (s_cacheOwnedGen != ownedGen);
+
+    if (needRebuild) {
+        s_cacheType = g_SkinSelectedType;
+        s_cacheSubtype = g_SkinSelectedSubtype;
+        s_cacheWeight = g_SkinSelectedWeightClass;
+        s_cacheFilter = filterLower;
+        s_cacheShowOwned = g_SkinShowOwned;
+        s_cacheShowUnowned = g_SkinShowUnowned;
+        s_cacheHasOwnerData = hasOwnerData;
+        s_cacheOwnedGen = ownedGen;
+
+        s_displaySkins.clear();
+        s_ownedCount = 0;
+        s_totalCount = 0;
+
+        std::vector<uint32_t> skins;
+        if (g_SkinSelectedType == "Armor") {
+            skins = Skinventory::SkinCache::GetSkinsByCategory("Armor", g_SkinSelectedSubtype, g_SkinSelectedWeightClass);
+        } else if (g_SkinSelectedType == "Weapon") {
+            skins = Skinventory::SkinCache::GetSkinsByCategory("Weapon", g_SkinSelectedSubtype, "");
+        } else if (g_SkinSelectedType == "Back") {
+            skins = Skinventory::SkinCache::GetSkinsByCategory("Back", "", "");
+        }
+
+        s_displaySkins.reserve(skins.size());
+        for (uint32_t skinId : skins) {
+            auto skinOpt = Skinventory::SkinCache::GetSkin(skinId);
+            if (!skinOpt || skinOpt->name.empty()) continue;
+
+            s_totalCount++;
+            bool owned = Skinventory::OwnedSkins::IsOwned(skinId);
+            if (owned) s_ownedCount++;
+
+            if (hasOwnerData) {
+                if (owned && !g_SkinShowOwned) continue;
+                if (!owned && !g_SkinShowUnowned) continue;
+            }
+
+            if (!filterLower.empty()) {
+                std::string nameLower = skinOpt->name;
+                std::transform(nameLower.begin(), nameLower.end(), nameLower.begin(), ::tolower);
+                if (nameLower.find(filterLower) == std::string::npos) continue;
+            }
+
+            s_displaySkins.push_back({skinId, owned});
+        }
+    }
+
+    int ownedCount = s_ownedCount;
+    int totalCount = s_totalCount;
+    const auto& displaySkins = s_displaySkins;
+
+    bool showStatus = hasOwnerData;
     float statusHeight = showStatus ? (ImGui::GetFrameHeightWithSpacing() + ImGui::GetStyle().ItemSpacing.y) : 0;
     float scrollHeight = ImGui::GetContentRegionAvail().y - statusHeight;
 
-    // Pre-filter skins into a display list for clipping
-    struct SkinDisplayEntry { uint32_t id; bool owned; };
-    std::vector<SkinDisplayEntry> displaySkins;
-    displaySkins.reserve(skins.size());
-    bool hasOwnerData = Skinventory::OwnedSkins::HasData();
-    for (uint32_t skinId : skins) {
-        auto skinOpt = Skinventory::SkinCache::GetSkin(skinId);
-        if (!skinOpt || skinOpt->name.empty()) continue;
-
-        totalCount++;
-        bool owned = Skinventory::OwnedSkins::IsOwned(skinId);
-        if (owned) ownedCount++;
-
-        if (hasOwnerData) {
-            if (owned && !g_SkinShowOwned) continue;
-            if (!owned && !g_SkinShowUnowned) continue;
-        }
-
-        if (!filterLower.empty()) {
-            std::string nameLower = skinOpt->name;
-            std::transform(nameLower.begin(), nameLower.end(), nameLower.begin(), ::tolower);
-            if (nameLower.find(filterLower) == std::string::npos) continue;
-        }
-
-        displaySkins.push_back({skinId, owned});
-    }
-
     ImGui::BeginChild("SkinListScroll", ImVec2(0, scrollHeight));
+    if (g_SkinScrollToSkin) {
+        for (int i = 0; i < (int)displaySkins.size(); i++) {
+            if (displaySkins[i].id == g_SkinSelectedId) {
+                float itemHeight = ImGui::GetTextLineHeightWithSpacing();
+                float targetY = i * itemHeight;
+                float windowHeight = ImGui::GetWindowHeight();
+                ImGui::SetScrollY(targetY - windowHeight * 0.5f + itemHeight * 0.5f);
+                g_SkinScrollToSkin = false;
+                break;
+            }
+        }
+    }
     ImGuiListClipper clipper;
     clipper.Begin((int)displaySkins.size());
     while (clipper.Step()) {
@@ -6322,7 +7682,6 @@ static void RenderSkinList() {
             }
             ImGui::PopStyleColor();
             if (selected && g_SkinScrollToSkin) {
-                ImGui::SetScrollHereY(0.5f);
                 g_SkinScrollToSkin = false;
             }
         }
@@ -6630,17 +7989,22 @@ static void RenderSkinShoppingList() {
     }
     s_wasFetching = isFetching;
 
-    if (g_SkinShopListDirty && !isFetching) {
-        g_SkinShopList.clear();
+    // Amortized shopping list rebuild: collect IDs once, then process a batch per frame
+    static std::vector<uint32_t> s_shopQueue;
+    static bool s_shopBuilding = false;
+    static const int SHOP_BATCH_SIZE = 50;
 
-        std::vector<uint32_t> to_price;
+    if (g_SkinShopListDirty && !isFetching) {
+        g_SkinShopListDirty = false;
+        g_SkinShopList.clear();
+        s_shopQueue.clear();
 
         auto collectSkins = [&](const std::string& type, const std::string& subtype,
                                  const std::string& weight) {
             auto skins = Skinventory::SkinCache::GetSkinsByCategory(type, subtype, weight);
             for (uint32_t id : skins) {
                 if (!Skinventory::OwnedSkins::IsOwned(id)) {
-                    to_price.push_back(id);
+                    s_shopQueue.push_back(id);
                 }
             }
         };
@@ -6659,10 +8023,19 @@ static void RenderSkinShoppingList() {
         }
 
         if (s_needsFetch) {
-            Skinventory::Commerce::FetchPricesForSkins(to_price);
+            Skinventory::Commerce::FetchPricesForSkins(s_shopQueue);
         }
 
-        for (uint32_t id : to_price) {
+        s_shopBuilding = !s_shopQueue.empty();
+    }
+
+    // Process a batch of queued skins per frame
+    if (s_shopBuilding && !s_shopQueue.empty()) {
+        int count = std::min(SHOP_BATCH_SIZE, (int)s_shopQueue.size());
+        for (int i = 0; i < count; i++) {
+            uint32_t id = s_shopQueue.back();
+            s_shopQueue.pop_back();
+
             int vendorPrice = Skinventory::Commerce::GetVendorPrice(id);
             const auto* p = Skinventory::Commerce::GetPrice(id);
             int tpPrice = (p && p->tradeable && p->sell_price > 0) ? p->sell_price : 0;
@@ -6689,10 +8062,11 @@ static void RenderSkinShoppingList() {
             }
         }
 
-        std::sort(g_SkinShopList.begin(), g_SkinShopList.end(),
-            [](const auto& a, const auto& b) { return a.price < b.price; });
-
-        g_SkinShopListDirty = false;
+        if (s_shopQueue.empty()) {
+            s_shopBuilding = false;
+            std::sort(g_SkinShopList.begin(), g_SkinShopList.end(),
+                [](const auto& a, const auto& b) { return a.price < b.price; });
+        }
     }
 
     int tpCount = 0, vendorCount = 0;
@@ -6877,16 +8251,16 @@ static std::string ShortenEncounterName(const std::string& text) {
         {"Defeat the Vale Guardian.",                                      "Vale Guardian"},
         {"Traverse the Spirit Woods.",                                     "Spirit Woods"},
         {"Destroy Gorseval.",                                              "Gorseval"},
-        {"Cull the bandits to lure out the bandit leader.",                "Sabetha"},
+        {"Cull the bandits to lure out the bandit leader.",                ""},
         {"Defeat Sabetha the Saboteur.",                                   "Sabetha"},
         // W2 — Salvation Pass
         {"Defeat Slothasor.",                                              "Sloth"},
         {"Protect the caged prisoners.",                                   "Trio"},
-        {"Cull the bandits in the ruins.",                                 "Trio"},
+        {"Cull the bandits in the ruins.",                                 ""},
         {"Defeat Inquisitor Matthias Gabrel.",                             "Matthias"},
         // W3 — Stronghold of the Faithful
         {"Escort Glenna to the stronghold's courtyard.",                   "Escort"},
-        {"Defeat McLeod and breach the stronghold.",                       "Escort"},
+        {"Defeat McLeod and breach the stronghold.",                       ""},
         {"Destroy the Keep Construct.",                                    "Keep Construct"},
         {"Traverse the Twisted Castle.",                                   "Twisted Castle"},
         {"Defeat Xera.",                                                   "Xera"},
@@ -6916,7 +8290,7 @@ static std::string ShortenEncounterName(const std::string& text) {
         // W8 — Mount Balrior
         {"Cleanse the camp of titanspawn.",                                "Camp"},
         {"Defeat the sentient conduit.",                                   "Conduit"},
-        {"Defeat the blighted beast and his empowering allies.",           "Greer"},
+        {"Defeat the blighted beast and his empowering allies.",           ""},
         {"Defeat Decima.",                                                 "Decima"},
         {"Defeat Greer.",                                                  "Greer"},
         {"Defeat Ura.",                                                    "Ura"},
@@ -7149,20 +8523,934 @@ static void RenderClears() {
                     ImGui::Text("%s", wingName.c_str());
 
                 ImGui::TableNextColumn();
+                // Render encounters, skipping progress-only bits (empty short name)
+                bool firstEnc = true;
                 for (size_t i = 0; i < wing.bitNames.size(); i++) {
-                    bool bitDone = (i < wing.bitDone.size()) ? wing.bitDone[i] : false;
-                    if (i > 0) ImGui::SameLine();
                     std::string shortName = ShortenEncounterName(wing.bitNames[i]);
-                    RenderClearStatus(g_ClearsFetched, bitDone, shortName.c_str());
-                    if (i + 1 < wing.bitNames.size()) {
+                    if (shortName.empty()) continue; // skip progress-only bits
+                    bool bitDone = (i < wing.bitDone.size()) ? wing.bitDone[i] : false;
+                    if (!firstEnc) {
                         ImGui::SameLine();
                         ImGui::TextColored(ImVec4(0.3f, 0.3f, 0.3f, 1.0f), "|");
+                        ImGui::SameLine();
                     }
+                    RenderClearStatus(g_ClearsFetched, bitDone, shortName.c_str());
+                    firstEnc = false;
                 }
             }
             ImGui::EndTable();
         }
     }
+}
+
+// =========================================================================
+// Achievement Tracker — UI
+// =========================================================================
+
+// Find achievement ID by name match (reverse lookup on g_AchNameIndex)
+// Tries: exact match, then parentName + ": " + name
+static uint32_t FindAchIdByName(const std::string& name, const std::string& parentName = "") {
+    // Exact match
+    for (const auto& [id, n] : g_AchNameIndex) {
+        if (n == name) return id;
+    }
+    // Try parentName + ": " + name (common meta-achievement pattern)
+    if (!parentName.empty()) {
+        std::string qualified = parentName + ": " + name;
+        for (const auto& [id, n] : g_AchNameIndex) {
+            if (n == qualified) return id;
+        }
+    }
+    return 0;
+}
+
+// Navigate to a specific achievement: find its category, select it, fetch defs, expand it
+static void NavigateToAchievement(uint32_t achId) {
+    // Find which category contains this achievement
+    auto catIt = g_AchIdToCategory.find(achId);
+    if (catIt != g_AchIdToCategory.end()) {
+        uint32_t catId = catIt->second;
+        if (g_AchSelectedCatId != catId) {
+            g_AchSelectedCatId = catId;
+            // Find which group owns this category
+            for (const auto& group : g_AchGroups) {
+                for (uint32_t gCatId : group.categories) {
+                    if (gCatId == catId) {
+                        g_AchSelectedGroupId = group.id;
+                        break;
+                    }
+                }
+            }
+            FetchAchCategoryDefs(catId);
+        }
+    }
+    // Mark this achievement as expanded and set scroll target
+    g_AchExpandedInList.insert(achId);
+    g_AchNavigateToId = achId;
+}
+
+static bool IsAchPinned(uint32_t id) {
+    return std::find(g_AchPinned.begin(), g_AchPinned.end(), id) != g_AchPinned.end();
+}
+
+static void ToggleAchPin(uint32_t id) {
+    auto it = std::find(g_AchPinned.begin(), g_AchPinned.end(), id);
+    if (it != g_AchPinned.end()) {
+        g_AchPinned.erase(it);
+    } else {
+        if (g_AchPinned.size() < 20) g_AchPinned.push_back(id);
+    }
+    SaveAchTrackerState();
+}
+
+static void RenderAchProgressBar(float fraction, const ImVec4& color, float height = 4.0f) {
+    ImVec2 pos = ImGui::GetCursorScreenPos();
+    float width = ImGui::GetContentRegionAvail().x;
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    dl->AddRectFilled(pos, ImVec2(pos.x + width, pos.y + height),
+        ImGui::GetColorU32(ImVec4(0.15f, 0.15f, 0.15f, 0.8f)));
+    if (fraction > 0.0f) {
+        dl->AddRectFilled(pos, ImVec2(pos.x + width * fraction, pos.y + height),
+            ImGui::GetColorU32(color));
+    }
+    ImGui::Dummy(ImVec2(width, height));
+}
+
+static void RenderAchEntry(uint32_t achId, bool showPinButton) {
+    auto defIt = g_AchDefs.find(achId);
+    auto progIt = g_AchProgress.find(achId);
+
+    // If no definition yet, show ID and loading indicator
+    if (defIt == g_AchDefs.end()) {
+        // Check name index for at least a name
+        auto nameIt = g_AchNameIndex.find(achId);
+        if (nameIt != g_AchNameIndex.end()) {
+            ImGui::TextColored(ImVec4(0.6f, 0.6f, 0.6f, 1.0f), "%s (loading...)", nameIt->second.c_str());
+        } else {
+            ImGui::TextColored(ImVec4(0.4f, 0.4f, 0.4f, 1.0f), "Achievement %u (loading...)", achId);
+        }
+        return;
+    }
+
+    const AchDef& def = defIt->second;
+    bool done = progIt != g_AchProgress.end() && progIt->second.done;
+    int current = (progIt != g_AchProgress.end()) ? progIt->second.current : 0;
+    int max = def.max_count > 0 ? def.max_count : ((progIt != g_AchProgress.end()) ? progIt->second.max : 0);
+
+    ImGui::PushID((int)achId);
+
+    bool hasBits = !def.bits.empty() && !done;
+    bool expanded = g_AchExpandedInList.count(achId) > 0;
+
+    // Achievement name row — clickable if has bits
+    {
+        // Build the header label
+        std::string headerText;
+        if (done) {
+            headerText = "[x]  " + def.name;
+        } else {
+            headerText = "[ ]  " + def.name;
+        }
+        if (def.total_ap > 0) {
+            headerText += "  (" + std::to_string(def.total_ap) + " AP)";
+        }
+        if (max > 0) {
+            headerText += "  " + std::to_string(done ? max : current) + "/" + std::to_string(max);
+        }
+
+        ImVec4 headerColor = done ? ImVec4(0.35f, 0.82f, 0.35f, 1.0f) : ImVec4(0.9f, 0.9f, 0.9f, 1.0f);
+
+        if (hasBits) {
+            std::string selectableLabel = headerText + "###ach" + std::to_string(achId);
+            ImGui::PushStyleColor(ImGuiCol_Header, ImVec4(0.2f, 0.2f, 0.2f, 0.5f));
+            ImGui::PushStyleColor(ImGuiCol_HeaderHovered, ImVec4(0.3f, 0.3f, 0.3f, 0.5f));
+            ImGui::PushStyleColor(ImGuiCol_Text, headerColor);
+            if (ImGui::Selectable(selectableLabel.c_str(), expanded, ImGuiSelectableFlags_AllowItemOverlap)) {
+                if (expanded) g_AchExpandedInList.erase(achId);
+                else g_AchExpandedInList.insert(achId);
+            }
+            ImGui::PopStyleColor(3);
+        } else {
+            ImGui::TextColored(headerColor, "%s", headerText.c_str());
+        }
+
+        // Wiki link on right-click (on the header)
+        if (ImGui::IsItemHovered() && ImGui::IsMouseReleased(ImGuiMouseButton_Right)) {
+            std::string wikiUrl = "https://wiki.guildwars2.com/wiki/" + def.name;
+            std::replace(wikiUrl.begin(), wikiUrl.end(), ' ', '_');
+            ShellExecuteA(NULL, "open", wikiUrl.c_str(), NULL, NULL, SW_SHOWNORMAL);
+        }
+    }
+
+    // Pin button (same line as header)
+    if (showPinButton) {
+        ImGui::SameLine(ImGui::GetContentRegionAvail().x - 30.0f);
+        bool pinned = IsAchPinned(achId);
+        if (pinned) {
+            if (ImGui::SmallButton("Unpin")) ToggleAchPin(achId);
+        } else {
+            if (ImGui::SmallButton("Pin")) ToggleAchPin(achId);
+        }
+    }
+
+    // Progress bar
+    if (max > 0) {
+        float frac = done ? 1.0f : (float)current / (float)max;
+        ImVec4 barColor = done ? ImVec4(0.3f, 0.6f, 0.25f, 0.6f) : ImVec4(0.4f, 0.7f, 0.3f, 1.0f);
+        RenderAchProgressBar(frac, barColor);
+    }
+
+    // Requirement text + achievement-level waypoint button
+    if (!done && !def.requirement.empty()) {
+        std::string cleanReq = StripGW2Markup(def.requirement);
+        ImGui::TextColored(ImVec4(0.5f, 0.5f, 0.5f, 1.0f), "  %s", cleanReq.c_str());
+    }
+    // Achievement-level waypoint (bitIndex -1)
+    {
+        auto wpIt = g_AchWaypoints.find(achId);
+        if (wpIt != g_AchWaypoints.end()) {
+            auto wpBitIt = wpIt->second.find(-1);
+            if (wpBitIt != wpIt->second.end()) {
+                ImGui::SameLine();
+                if (ImGui::SmallButton("WP")) {
+                    ImGui::SetClipboardText(wpBitIt->second.c_str());
+                }
+                if (ImGui::IsItemHovered()) {
+                    ImGui::SetTooltip("Copy waypoint: %s", wpBitIt->second.c_str());
+                }
+            }
+        }
+    }
+
+    // Expanded bits (sub-objectives) — shown when clicked
+    if (hasBits && expanded) {
+        auto wpIt = g_AchWaypoints.find(achId);
+        ImGui::Indent(16.0f);
+        for (size_t i = 0; i < def.bits.size(); i++) {
+            bool bitDone = (progIt != g_AchProgress.end()) &&
+                progIt->second.completed_bits.count((uint32_t)i) > 0;
+            const AchBitDef& bit = def.bits[i];
+
+            // Resolve label and detect type: Skin, sub-Achievement, or plain Text
+            std::string label;
+            uint32_t skinId = 0;
+            uint32_t subAchId = 0;
+            std::optional<Skinventory::SkinInfo> skinInfo;
+            if (bit.type == "Skin" && bit.item_id > 0) {
+                skinId = bit.item_id;
+                skinInfo = Skinventory::SkinCache::GetSkin(skinId);
+                if (skinInfo.has_value()) {
+                    label = skinInfo->name;
+                } else if (!bit.text.empty()) {
+                    label = bit.text;
+                } else {
+                    label = "Skin #" + std::to_string(skinId);
+                }
+            } else if (bit.type == "Text" && !bit.text.empty()) {
+                label = bit.text;
+                // Check if this text matches an achievement name (sub-achievement in meta)
+                subAchId = FindAchIdByName(bit.text, def.name);
+            } else {
+                label = bit.text.empty() ? ("Step " + std::to_string(i + 1)) : bit.text;
+            }
+
+            // Check for per-bit waypoint
+            std::string bitWaypoint;
+            if (wpIt != g_AchWaypoints.end()) {
+                auto wpBitIt = wpIt->second.find((int)i);
+                if (wpBitIt != wpIt->second.end()) {
+                    bitWaypoint = wpBitIt->second;
+                }
+            }
+
+            ImGui::PushID((int)i);
+            if (bitDone) {
+                if (subAchId > 0) {
+                    // Completed sub-achievement — still clickable to navigate
+                    std::string selLabel = "[x] " + label + "###subach";
+                    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.35f, 0.82f, 0.35f, 0.7f));
+                    if (ImGui::Selectable(selLabel.c_str(), false, ImGuiSelectableFlags_AllowItemOverlap)) {
+                        NavigateToAchievement(subAchId);
+                    }
+                    ImGui::PopStyleColor();
+                    if (ImGui::IsItemHovered()) {
+                        ImGui::SetTooltip("Click to navigate to achievement");
+                    }
+                } else {
+                    ImGui::TextColored(ImVec4(0.35f, 0.82f, 0.35f, 0.7f), "[x] %s", label.c_str());
+                }
+            } else if (skinId > 0 && skinInfo.has_value()) {
+                // Clickable skin entry → navigate to Skinventory
+                std::string selLabel = "[ ] " + label + "###skinbit";
+                if (ImGui::Selectable(selLabel.c_str(), false, ImGuiSelectableFlags_AllowItemOverlap)) {
+                    g_SkinSelectedId = skinId;
+                    g_SkinSelectedType = skinInfo->type;
+                    if (skinInfo->type == "Armor") {
+                        g_SkinSelectedWeightClass = skinInfo->weight_class;
+                    }
+                    g_SkinSelectedSubtype = skinInfo->subtype;
+                    g_SkinSwitchToBrowser = true;
+                    g_SkinScrollToSkin = true;
+                    g_SwitchToSkinventory = true;
+                    Skinventory::WikiImage::RequestImage(skinId, skinInfo->name, skinInfo->weight_class);
+                    Skinventory::Commerce::FetchPriceForSkin(skinId);
+                }
+                if (ImGui::IsItemHovered()) {
+                    ImGui::SetTooltip("Click to view in Skinventory");
+                }
+            } else if (subAchId > 0) {
+                // Clickable sub-achievement → navigate to it
+                std::string selLabel = "[ ] " + label + "###subach";
+                if (ImGui::Selectable(selLabel.c_str(), false, ImGuiSelectableFlags_AllowItemOverlap)) {
+                    NavigateToAchievement(subAchId);
+                }
+                if (ImGui::IsItemHovered()) {
+                    ImGui::SetTooltip("Click to navigate to achievement");
+                }
+            } else {
+                ImGui::Text("[ ] %s", label.c_str());
+            }
+            // Waypoint copy button for this bit
+            if (!bitWaypoint.empty()) {
+                ImGui::SameLine();
+                if (ImGui::SmallButton("WP")) {
+                    ImGui::SetClipboardText(bitWaypoint.c_str());
+                }
+                if (ImGui::IsItemHovered()) {
+                    ImGui::SetTooltip("Copy waypoint: %s", bitWaypoint.c_str());
+                }
+            }
+            ImGui::PopID();
+        }
+        ImGui::Unindent(16.0f);
+    }
+
+    // Scroll-to target: if this achievement is the navigation target, scroll here
+    if (g_AchNavigateToId == achId) {
+        ImGui::SetScrollHereY(0.3f);
+        g_AchNavigateToId = 0;
+    }
+
+    ImGui::PopID();
+    ImGui::Spacing();
+}
+
+static void RenderAchievements() {
+    // On first open, trigger fetch if not cached
+    if (!g_AchGroupsFetched && !g_AchGroupsFetching) {
+        FetchAchGroups();
+    }
+    if (!g_AchNameIndexReady && !g_AchNameIndexFetching) {
+        FetchAchNameIndex();
+    }
+    if (!g_AchWaypointsReady && !g_AchWaypointsFetching) {
+        FetchAchWaypoints();
+    }
+
+    // Toolbar: search + popout toggle + refresh
+    float searchWidth = ImGui::GetContentRegionAvail().x - 180.0f;
+    if (searchWidth < 100.0f) searchWidth = 100.0f;
+    ImGui::SetNextItemWidth(searchWidth);
+    ImGui::InputTextWithHint("##AchSearch", "Search achievements...", g_AchSearchBuf, sizeof(g_AchSearchBuf));
+    ImGui::SameLine();
+    if (ImGui::Button(g_AchPopoutVisible ? "Hide Popout" : "Show Popout")) {
+        g_AchPopoutVisible = !g_AchPopoutVisible;
+        SaveAchTrackerState();
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Refresh")) {
+        g_AchGroupsFetched = false;
+        FetchAchGroups();
+        if (g_AchSelectedCatId > 0) FetchAchCategoryDefs(g_AchSelectedCatId);
+    }
+
+    // Status message
+    {
+        std::lock_guard<std::recursive_mutex> lock(g_AchMutex);
+        if (!g_AchStatusMsg.empty()) {
+            ImGui::TextColored(ImVec4(1.0f, 0.85f, 0.0f, 1.0f), "%s", g_AchStatusMsg.c_str());
+        }
+    }
+
+    if (!g_AchGroupsFetched) return;
+
+    // Search mode — cached results to avoid iterating 8000+ names every frame
+    bool searchActive = g_AchSearchBuf[0] != '\0';
+    if (searchActive) {
+        std::string query(g_AchSearchBuf);
+        std::transform(query.begin(), query.end(), query.begin(), ::tolower);
+
+        if (!g_AchNameIndexReady) {
+            ImGui::TextColored(ImVec4(0.6f, 0.6f, 0.6f, 1.0f), "Loading search index...");
+            return;
+        }
+
+        // Cache search results — only re-search when query changes
+        static std::string s_achSearchCache;
+        static std::vector<uint32_t> s_achSearchResults;
+        static bool s_achSearchTruncated = false;
+
+        if (s_achSearchCache != query) {
+            s_achSearchCache = query;
+            s_achSearchResults.clear();
+            s_achSearchTruncated = false;
+
+            std::lock_guard<std::recursive_mutex> lock(g_AchMutex);
+            for (const auto& [id, name] : g_AchNameIndex) {
+                std::string lowerName = name;
+                std::transform(lowerName.begin(), lowerName.end(), lowerName.begin(), ::tolower);
+                if (lowerName.find(query) != std::string::npos) {
+                    s_achSearchResults.push_back(id);
+                    if (s_achSearchResults.size() >= 50) {
+                        s_achSearchTruncated = true;
+                        break;
+                    }
+                }
+            }
+        }
+
+        ImGui::BeginChild("AchSearchResults", ImVec2(0, 0), true);
+        std::lock_guard<std::recursive_mutex> lock(g_AchMutex);
+        for (uint32_t id : s_achSearchResults) {
+            // Show category hint
+            auto catIt = g_AchIdToCategory.find(id);
+            if (catIt != g_AchIdToCategory.end()) {
+                auto catDefIt = g_AchCategories.find(catIt->second);
+                if (catDefIt != g_AchCategories.end()) {
+                    ImGui::TextColored(ImVec4(0.5f, 0.5f, 0.5f, 1.0f), "[%s]", catDefIt->second.name.c_str());
+                    ImGui::SameLine();
+                }
+            }
+
+            // If we have the full def, render it
+            if (g_AchDefs.count(id)) {
+                RenderAchEntry(id, true);
+            } else {
+                auto nameIt = g_AchNameIndex.find(id);
+                ImGui::Text("%s", nameIt != g_AchNameIndex.end() ? nameIt->second.c_str() : "?");
+                ImGui::SameLine(ImGui::GetContentRegionAvail().x - 30.0f);
+                ImGui::PushID((int)id);
+                bool pinned = IsAchPinned(id);
+                if (pinned) {
+                    if (ImGui::SmallButton("Unpin")) ToggleAchPin(id);
+                } else {
+                    if (ImGui::SmallButton("Pin")) ToggleAchPin(id);
+                }
+                ImGui::PopID();
+                ImGui::Spacing();
+            }
+        }
+        if (s_achSearchTruncated) {
+            ImGui::TextColored(ImVec4(0.6f, 0.6f, 0.6f, 1.0f), "... and more (refine your search)");
+        }
+        if (s_achSearchResults.empty()) {
+            ImGui::TextColored(ImVec4(0.6f, 0.6f, 0.6f, 1.0f), "No results");
+        }
+        ImGui::EndChild();
+        return;
+    }
+
+    // Main layout: left tree + splitter + right list
+    float availWidth = ImGui::GetContentRegionAvail().x;
+    float availHeight = ImGui::GetContentRegionAvail().y;
+    g_AchTreeWidth = (g_AchTreeWidth < 120.0f) ? 120.0f : (g_AchTreeWidth > availWidth - 200.0f) ? availWidth - 200.0f : g_AchTreeWidth;
+
+    // Left panel: Group/Category tree
+    ImGui::BeginChild("AchTree", ImVec2(g_AchTreeWidth, availHeight), true);
+    if (g_AchRestoreScroll) {
+        ImGui::SetScrollY(g_AchTreeScrollY);
+    }
+    {
+        std::lock_guard<std::recursive_mutex> lock(g_AchMutex);
+        for (const auto& group : g_AchGroups) {
+            if (group.name.empty()) continue;
+
+            // Auto-open the saved group
+            bool forceOpen = g_AchRestoreScroll && (group.id == g_AchSelectedGroupId);
+            if (forceOpen) ImGui::SetNextItemOpen(true);
+            if (ImGui::TreeNode(group.name.c_str())) {
+                // Sort categories by order within the group
+                std::vector<const AchCategoryDef*> sortedCats;
+                for (uint32_t catId : group.categories) {
+                    auto it = g_AchCategories.find(catId);
+                    if (it != g_AchCategories.end() && !it->second.name.empty()) {
+                        sortedCats.push_back(&it->second);
+                    }
+                }
+                std::sort(sortedCats.begin(), sortedCats.end(),
+                    [](const AchCategoryDef* a, const AchCategoryDef* b) { return a->order < b->order; });
+
+                for (const auto* cat : sortedCats) {
+                    bool selected = (g_AchSelectedCatId == cat->id);
+                    if (ImGui::Selectable(cat->name.c_str(), selected)) {
+                        if (g_AchSelectedCatId != cat->id) {
+                            g_AchSelectedCatId = cat->id;
+                            g_AchSelectedGroupId = group.id;
+                            FetchAchCategoryDefs(cat->id);
+                        }
+                    }
+                }
+                ImGui::TreePop();
+            }
+        }
+    }
+    g_AchTreeScrollY = ImGui::GetScrollY();
+    ImGui::EndChild();
+
+    // Draggable vertical splitter
+    ImGui::SameLine();
+    {
+        float splitterW = 6.0f;
+        float h = availHeight;
+        ImVec2 pos = ImGui::GetCursorScreenPos();
+        ImGui::InvisibleButton("##achtree_splitter", ImVec2(splitterW, h));
+        bool hovered = ImGui::IsItemHovered();
+        bool active = ImGui::IsItemActive();
+        if (hovered || active)
+            ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeEW);
+        if (active) {
+            float delta = ImGui::GetIO().MouseDelta.x;
+            if (delta != 0.0f) {
+                g_AchTreeWidth += delta;
+                g_AchTreeWidth = (g_AchTreeWidth < 120.0f) ? 120.0f : (g_AchTreeWidth > availWidth - 200.0f) ? availWidth - 200.0f : g_AchTreeWidth;
+            }
+        }
+        if (ImGui::IsItemDeactivated()) {
+            SaveAchTrackerState();
+        }
+        ImU32 lineCol = (hovered || active)
+            ? IM_COL32(180, 160, 80, 180)
+            : IM_COL32(80, 75, 60, 100);
+        float cx = pos.x + splitterW * 0.5f;
+        ImGui::GetWindowDrawList()->AddLine(
+            ImVec2(cx, pos.y), ImVec2(cx, pos.y + h), lineCol, 2.0f);
+    }
+
+    ImGui::SameLine();
+
+    // Right panel: split into category list (top) + pinned section (bottom)
+    ImGui::BeginChild("##AchRight", ImVec2(0, availHeight), false);
+    {
+        float rightWidth = ImGui::GetContentRegionAvail().x;
+        bool hasPinned = !g_AchPinned.empty();
+        float splitterH = hasPinned ? 6.0f : 0.0f;
+
+        // Clamp pinned height
+        if (hasPinned) {
+            float minPinned = 60.0f;
+            float maxPinned = availHeight - 100.0f;
+            g_AchPinnedHeight = (g_AchPinnedHeight < minPinned) ? minPinned : (g_AchPinnedHeight > maxPinned) ? maxPinned : g_AchPinnedHeight;
+        }
+
+        float innerAvail = ImGui::GetContentRegionAvail().y;
+        float spacing = ImGui::GetStyle().ItemSpacing.y;
+        float topHeight = hasPinned ? (innerAvail - g_AchPinnedHeight - splitterH - 2 * spacing) : innerAvail;
+
+        // Top: Fixed category heading + scrollable list
+        float catHeaderH = 0.0f;
+        {
+            std::lock_guard<std::recursive_mutex> lock(g_AchMutex);
+            if (g_AchSelectedCatId > 0) {
+                auto catIt = g_AchCategories.find(g_AchSelectedCatId);
+                if (catIt != g_AchCategories.end()) {
+                    float startY = ImGui::GetCursorPosY();
+                    ImGui::TextColored(ImVec4(0.9f, 0.75f, 0.25f, 1.0f), "%s", catIt->second.name.c_str());
+                    if (!catIt->second.description.empty()) {
+                        std::string cleanDesc = StripGW2Markup(catIt->second.description);
+                        ImGui::TextColored(ImVec4(0.6f, 0.6f, 0.6f, 1.0f), "%s", cleanDesc.c_str());
+                    }
+                    ImGui::Separator();
+                    catHeaderH = ImGui::GetCursorPosY() - startY;
+                }
+            }
+        }
+
+        ImGui::BeginChild("AchList", ImVec2(rightWidth, topHeight - catHeaderH), true);
+        if (g_AchRestoreScroll) {
+            ImGui::SetScrollY(g_AchListScrollY);
+            g_AchRestoreScroll = false;
+        }
+        {
+            std::lock_guard<std::recursive_mutex> lock(g_AchMutex);
+
+            if (g_AchSelectedCatId > 0) {
+                auto catIt = g_AchCategories.find(g_AchSelectedCatId);
+                if (catIt != g_AchCategories.end()) {
+                    if (g_AchCatFetching) {
+                        ImGui::TextColored(ImVec4(1.0f, 0.85f, 0.0f, 1.0f), "Loading...");
+                    }
+
+                    for (uint32_t achId : catIt->second.achievements) {
+                        RenderAchEntry(achId, true);
+                    }
+                }
+            } else {
+                ImGui::TextColored(ImVec4(0.6f, 0.6f, 0.6f, 1.0f), "Select a category from the left panel");
+            }
+        }
+        g_AchListScrollY = ImGui::GetScrollY();
+        ImGui::EndChild();
+
+        // Horizontal splitter + Pinned section
+        if (hasPinned) {
+            // Draggable horizontal splitter
+            {
+                ImVec2 pos = ImGui::GetCursorScreenPos();
+                ImGui::InvisibleButton("##achpinned_splitter", ImVec2(rightWidth, splitterH));
+                bool hovered = ImGui::IsItemHovered();
+                bool active = ImGui::IsItemActive();
+                if (hovered || active)
+                    ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeNS);
+                if (active) {
+                    float delta = ImGui::GetIO().MouseDelta.y;
+                    if (delta != 0.0f) {
+                        g_AchPinnedHeight -= delta;
+                        float minPinned = 60.0f;
+                        float maxPinned = availHeight - 100.0f;
+                        g_AchPinnedHeight = (g_AchPinnedHeight < minPinned) ? minPinned : (g_AchPinnedHeight > maxPinned) ? maxPinned : g_AchPinnedHeight;
+                    }
+                }
+                if (ImGui::IsItemDeactivated()) {
+                    SaveAchTrackerState();
+                }
+                ImU32 lineCol = (hovered || active)
+                    ? IM_COL32(180, 160, 80, 180)
+                    : IM_COL32(80, 75, 60, 100);
+                float cy = pos.y + splitterH * 0.5f;
+                ImGui::GetWindowDrawList()->AddLine(
+                    ImVec2(pos.x, cy), ImVec2(pos.x + rightWidth, cy), lineCol, 2.0f);
+            }
+
+            // Bottom: Fixed pinned heading + scrollable pinned list
+            float pinnedHeaderH = 0.0f;
+            {
+                float startY = ImGui::GetCursorPosY();
+                ImGui::TextColored(ImVec4(0.9f, 0.75f, 0.25f, 1.0f), "Pinned (%d)", (int)g_AchPinned.size());
+                ImGui::Separator();
+                pinnedHeaderH = ImGui::GetCursorPosY() - startY;
+            }
+            ImGui::BeginChild("AchPinned", ImVec2(rightWidth, g_AchPinnedHeight - pinnedHeaderH), true);
+            {
+                std::lock_guard<std::recursive_mutex> lock(g_AchMutex);
+                int pinnedCount = (int)g_AchPinned.size();
+                int moveFrom = -1, moveTo = -1;
+                for (int idx = 0; idx < pinnedCount; idx++) {
+                    uint32_t id = g_AchPinned[idx];
+                    ImGui::PushID(idx + 90000);
+
+                    // Up/down arrow buttons (drawn triangles)
+                    float btnSize = ImGui::GetFrameHeight();
+                    ImVec4 dimCol(0.5f, 0.5f, 0.5f, 0.3f);
+                    ImVec4 normalCol(0.7f, 0.65f, 0.4f, 1.0f);
+
+                    // Up button
+                    bool canUp = idx > 0;
+                    if (!canUp) ImGui::PushStyleColor(ImGuiCol_Text, dimCol);
+                    if (ImGui::InvisibleButton("##up", ImVec2(btnSize, btnSize)) && canUp) {
+                        moveFrom = idx; moveTo = idx - 1;
+                    }
+                    {
+                        ImVec2 rmin = ImGui::GetItemRectMin();
+                        ImVec2 rmax = ImGui::GetItemRectMax();
+                        float cx = (rmin.x + rmax.x) * 0.5f;
+                        float cy = (rmin.y + rmax.y) * 0.5f;
+                        float hs = btnSize * 0.25f;
+                        ImU32 col = canUp ? (ImGui::IsItemHovered() ? IM_COL32(255, 230, 120, 255) : IM_COL32(180, 165, 100, 255))
+                                          : IM_COL32(128, 128, 128, 80);
+                        ImGui::GetWindowDrawList()->AddTriangleFilled(
+                            ImVec2(cx, cy - hs), ImVec2(cx - hs, cy + hs), ImVec2(cx + hs, cy + hs), col);
+                    }
+                    if (!canUp) ImGui::PopStyleColor();
+
+                    ImGui::SameLine(0, 1);
+
+                    // Down button
+                    bool canDown = idx < pinnedCount - 1;
+                    if (!canDown) ImGui::PushStyleColor(ImGuiCol_Text, dimCol);
+                    if (ImGui::InvisibleButton("##dn", ImVec2(btnSize, btnSize)) && canDown) {
+                        moveFrom = idx; moveTo = idx + 1;
+                    }
+                    {
+                        ImVec2 rmin = ImGui::GetItemRectMin();
+                        ImVec2 rmax = ImGui::GetItemRectMax();
+                        float cx = (rmin.x + rmax.x) * 0.5f;
+                        float cy = (rmin.y + rmax.y) * 0.5f;
+                        float hs = btnSize * 0.25f;
+                        ImU32 col = canDown ? (ImGui::IsItemHovered() ? IM_COL32(255, 230, 120, 255) : IM_COL32(180, 165, 100, 255))
+                                            : IM_COL32(128, 128, 128, 80);
+                        ImGui::GetWindowDrawList()->AddTriangleFilled(
+                            ImVec2(cx, cy + hs), ImVec2(cx - hs, cy - hs), ImVec2(cx + hs, cy - hs), col);
+                    }
+                    if (!canDown) ImGui::PopStyleColor();
+
+                    ImGui::SameLine(0, 4);
+
+                    RenderAchEntry(id, true);
+
+                    ImGui::PopID();
+                }
+                // Apply move after loop
+                if (moveFrom >= 0 && moveTo >= 0 && moveFrom != moveTo) {
+                    std::swap(g_AchPinned[moveFrom], g_AchPinned[moveTo]);
+                    SaveAchTrackerState();
+                }
+            }
+            ImGui::EndChild();
+        }
+    }
+    ImGui::EndChild(); // ##AchRight
+}
+
+// =========================================================================
+// Achievement Tracker — Popout Window
+// =========================================================================
+
+// Cached display data for the popout — rebuilt only when inputs change
+struct PopoutBitDisplay {
+    std::string label;
+    uint32_t skinId = 0;
+    uint32_t subAchId = 0;
+    std::string skinType;
+    std::string skinWeightClass;
+    std::string skinSubtype;
+    std::string skinName;
+    std::string waypoint;
+    bool done = false;
+};
+
+struct PopoutAchDisplay {
+    uint32_t achId = 0;
+    std::string name;
+    std::string loadingName;
+    bool hasDef = false;
+    bool done = false;
+    bool hasBits = false;
+    int current = 0;
+    int max = 0;
+    std::vector<PopoutBitDisplay> bits;
+};
+
+static std::vector<PopoutAchDisplay> s_popoutCache;
+static std::vector<uint32_t> s_popoutLastPinned;
+static uint64_t s_popoutLastProgressGen = 0;
+static bool s_popoutCacheDirty = true;
+
+
+static void InvalidatePopoutCache() { s_popoutCacheDirty = true; }
+
+static void RebuildPopoutCache() {
+    // Called under g_AchMutex or after snapshot
+    s_popoutCache.clear();
+    s_popoutCache.reserve(g_AchPinned.size());
+
+    for (uint32_t achId : g_AchPinned) {
+        PopoutAchDisplay disp;
+        disp.achId = achId;
+
+        auto defIt = g_AchDefs.find(achId);
+        auto progIt = g_AchProgress.find(achId);
+
+        disp.done = (progIt != g_AchProgress.end()) && progIt->second.done;
+        disp.current = (progIt != g_AchProgress.end()) ? progIt->second.current : 0;
+
+        if (defIt != g_AchDefs.end()) {
+            const AchDef& def = defIt->second;
+            disp.hasDef = true;
+            disp.name = def.name;
+            disp.max = def.max_count > 0 ? def.max_count : ((progIt != g_AchProgress.end()) ? progIt->second.max : 0);
+            disp.hasBits = !def.bits.empty() && !disp.done;
+
+            if (disp.hasBits) {
+                auto wpIt = g_AchWaypoints.find(achId);
+                disp.bits.reserve(def.bits.size());
+                for (size_t i = 0; i < def.bits.size(); i++) {
+                    PopoutBitDisplay bd;
+                    bd.done = (progIt != g_AchProgress.end()) &&
+                        progIt->second.completed_bits.count((uint32_t)i) > 0;
+
+                    const AchBitDef& bit = def.bits[i];
+                    if (bit.type == "Skin" && bit.item_id > 0) {
+                        bd.skinId = bit.item_id;
+                        auto skinInfo = Skinventory::SkinCache::GetSkin(bd.skinId);
+                        if (skinInfo.has_value()) {
+                            bd.label = skinInfo->name;
+                            bd.skinType = skinInfo->type;
+                            bd.skinWeightClass = skinInfo->weight_class;
+                            bd.skinSubtype = skinInfo->subtype;
+                            bd.skinName = skinInfo->name;
+                        } else {
+                            bd.label = !bit.text.empty() ? bit.text : "Skin #" + std::to_string(bd.skinId);
+                        }
+                    } else if (bit.type == "Text" && !bit.text.empty()) {
+                        bd.label = bit.text;
+                        bd.subAchId = FindAchIdByName(bit.text, def.name);
+                    } else {
+                        bd.label = bit.text.empty() ? ("Step " + std::to_string(i + 1)) : bit.text;
+                    }
+
+                    if (wpIt != g_AchWaypoints.end()) {
+                        auto wpBitIt = wpIt->second.find((int)i);
+                        if (wpBitIt != wpIt->second.end()) {
+                            bd.waypoint = wpBitIt->second;
+                        }
+                    }
+                    disp.bits.push_back(std::move(bd));
+                }
+            }
+        } else {
+            disp.hasDef = false;
+            auto nameIt = g_AchNameIndex.find(achId);
+            disp.loadingName = (nameIt != g_AchNameIndex.end()) ? nameIt->second : "";
+        }
+
+        s_popoutCache.push_back(std::move(disp));
+    }
+
+    s_popoutLastPinned = g_AchPinned;
+    s_popoutLastProgressGen = g_AchProgressGen;
+    s_popoutCacheDirty = false;
+}
+
+static void RenderAchPopout() {
+    if (!g_AchPopoutVisible) return;
+    if (g_CurrentCharName.empty()) return; // not yet logged in (character select screen)
+
+    // Rebuild cache if dirty (brief lock, then release)
+    {
+        std::lock_guard<std::recursive_mutex> lock(g_AchMutex);
+        if (s_popoutCacheDirty || g_AchPinned != s_popoutLastPinned ||
+            g_AchProgressGen != s_popoutLastProgressGen) {
+            RebuildPopoutCache();
+        }
+    }
+
+    ImGui::SetNextWindowSizeConstraints(ImVec2(250, 100), ImVec2(500, 800));
+    if (ImGui::Begin("Achievement Tracker", &g_AchPopoutVisible,
+                     ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoBringToFrontOnFocus | ImGuiWindowFlags_NoFocusOnAppearing)) {
+
+        // Toolbar
+        ImGui::Checkbox("Show completed steps", &g_AchShowCompletedSteps);
+        ImGui::SameLine();
+        if (ImGui::SmallButton("Refresh##pop")) {
+            std::lock_guard<std::recursive_mutex> lock(g_AchMutex);
+            if (!g_AchPinned.empty()) {
+                SendAchProgressQuery(g_AchPinned);
+            }
+        }
+        ImGui::Separator();
+
+        if (s_popoutCache.empty()) {
+            ImGui::TextColored(ImVec4(0.6f, 0.6f, 0.6f, 1.0f), "No pinned achievements");
+            ImGui::TextColored(ImVec4(0.5f, 0.5f, 0.5f, 1.0f), "Pin achievements from the Achievements tab");
+        }
+
+        // Render from cache — no lock needed
+        for (int idx = 0; idx < (int)s_popoutCache.size(); idx++) {
+            const auto& disp = s_popoutCache[idx];
+            ImGui::PushID(idx + 80000);
+            ImGui::BeginGroup();
+
+            if (disp.hasDef) {
+                if (disp.done) {
+                    ImGui::TextColored(ImVec4(0.35f, 0.82f, 0.35f, 1.0f), "[x] %s", disp.name.c_str());
+                } else if (disp.hasBits) {
+                    bool expanded = g_AchExpandedInPopout[disp.achId];
+                    std::string label = (expanded ? "v " : "> ") + disp.name;
+                    if (disp.max > 0) label += "  " + std::to_string(disp.current) + "/" + std::to_string(disp.max);
+                    if (ImGui::Selectable(label.c_str(), false, ImGuiSelectableFlags_AllowItemOverlap)) {
+                        g_AchExpandedInPopout[disp.achId] = !expanded;
+                        SaveAchTrackerState();
+                    }
+                } else {
+                    std::string label = "  " + disp.name;
+                    if (disp.max > 0) label += "  " + std::to_string(disp.current) + "/" + std::to_string(disp.max);
+                    ImGui::TextColored(ImVec4(0.9f, 0.9f, 0.9f, 1.0f), "%s", label.c_str());
+                }
+
+                if (!disp.done && disp.max > 0) {
+                    float frac = (float)disp.current / (float)disp.max;
+                    RenderAchProgressBar(frac, ImVec4(0.4f, 0.7f, 0.3f, 1.0f), 3.0f);
+                }
+
+                if (disp.hasBits && g_AchExpandedInPopout[disp.achId]) {
+                    for (size_t i = 0; i < disp.bits.size(); i++) {
+                        const auto& bd = disp.bits[i];
+                        if (!g_AchShowCompletedSteps && bd.done) continue;
+
+                        ImGui::PushID((int)i);
+                        if (bd.done) {
+                            if (bd.subAchId > 0) {
+                                std::string selLabel = "    [x] " + bd.label + "###popsubach";
+                                ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.35f, 0.82f, 0.35f, 0.6f));
+                                if (ImGui::Selectable(selLabel.c_str(), false, ImGuiSelectableFlags_AllowItemOverlap)) {
+                                    NavigateToAchievement(bd.subAchId);
+                                }
+                                ImGui::PopStyleColor();
+                            } else {
+                                ImGui::TextColored(ImVec4(0.35f, 0.82f, 0.35f, 0.6f), "    [x] %s", bd.label.c_str());
+                            }
+                        } else if (bd.skinId > 0 && !bd.skinName.empty()) {
+                            std::string selLabel = "    [ ] " + bd.label + "###popskinbit";
+                            if (ImGui::Selectable(selLabel.c_str(), false, ImGuiSelectableFlags_AllowItemOverlap)) {
+                                g_SkinSelectedId = bd.skinId;
+                                g_SkinSelectedType = bd.skinType;
+                                if (bd.skinType == "Armor") {
+                                    g_SkinSelectedWeightClass = bd.skinWeightClass;
+                                }
+                                g_SkinSelectedSubtype = bd.skinSubtype;
+                                g_SkinSwitchToBrowser = true;
+                                g_SkinScrollToSkin = true;
+                                g_SwitchToSkinventory = true;
+                                Skinventory::WikiImage::RequestImage(bd.skinId, bd.skinName, bd.skinWeightClass);
+                                Skinventory::Commerce::FetchPriceForSkin(bd.skinId);
+                            }
+                            if (ImGui::IsItemHovered()) {
+                                ImGui::SetTooltip("Click to view in Skinventory");
+                            }
+                        } else if (bd.subAchId > 0) {
+                            std::string selLabel = "    [ ] " + bd.label + "###popsubach";
+                            if (ImGui::Selectable(selLabel.c_str(), false, ImGuiSelectableFlags_AllowItemOverlap)) {
+                                NavigateToAchievement(bd.subAchId);
+                            }
+                            if (ImGui::IsItemHovered()) {
+                                ImGui::SetTooltip("Click to navigate to achievement");
+                            }
+                        } else {
+                            if (!bd.waypoint.empty()) {
+                                std::string selLabel = "    [ ] " + bd.label + "###popbit";
+                                if (ImGui::Selectable(selLabel.c_str(), false, ImGuiSelectableFlags_AllowItemOverlap)) {
+                                    ImGui::SetClipboardText(bd.waypoint.c_str());
+                                }
+                                if (ImGui::IsItemHovered()) {
+                                    ImGui::SetTooltip("Click to copy: %s", bd.waypoint.c_str());
+                                }
+                            } else {
+                                ImGui::TextColored(ImVec4(0.9f, 0.9f, 0.9f, 1.0f), "    [ ] %s", bd.label.c_str());
+                                if (ImGui::IsItemHovered()) {
+                                    ImGui::SetTooltip("Click to copy name");
+                                    if (ImGui::IsItemClicked()) {
+                                        ImGui::SetClipboardText(bd.label.c_str());
+                                    }
+                                }
+                            }
+                        }
+                        ImGui::PopID();
+                    }
+                }
+            } else {
+                if (!disp.loadingName.empty()) {
+                    ImGui::Text("%s (loading...)", disp.loadingName.c_str());
+                } else {
+                    ImGui::Text("Achievement %u (loading...)", disp.achId);
+                }
+            }
+            ImGui::EndGroup();
+
+            ImGui::PopID();
+            ImGui::Spacing();
+        }
+    }
+    ImGui::End();
 }
 
 static void RenderSkinventory() {
@@ -7295,6 +9583,9 @@ void AddonRender() {
     Skinventory::WikiImage::Tick();
     Skinventory::OwnedSkins::Tick();
 
+    // Persist login timestamps when dirty (crash-safe)
+    if (g_LoginTimestampsDirty) SaveLoginTimestamps();
+
     PushGW2Theme();
 
     // Render gear customize dialog (separate window, always checked)
@@ -7303,6 +9594,9 @@ void AddonRender() {
 
     // Render chat build detection toast (always visible, even when main window is hidden)
     RenderBuildToast();
+
+    // Achievement tracker popout (independent of main window)
+    RenderAchPopout();
 
     if (!g_WindowVisible) { PopGW2Theme(); return; }
 
@@ -7700,7 +9994,7 @@ void AddonRender() {
                         if (g_ShowCraftingIcons && !ch.crafting.empty()) extraLines++;
                         if (g_ShowAge && !ch.created.empty()) extraLines++;
                         if (g_ShowPlaytime && ch.age > 0) extraLines++;
-                        if (g_ShowLastLogin && !ch.last_modified.empty()) extraLines++;
+                        if (g_ShowLastLogin && g_LoginTimestamps.count(ch.name)) extraLines++;
                         if (g_BirthdayMode != 2) {
                             int bdays = DaysUntilBirthday(ch.created);
                             bool showBday = (g_BirthdayMode == 0 && bdays >= 0) ||
@@ -7936,24 +10230,20 @@ void AddonRender() {
                                 ImGui::TextColored(dimCol, "%dh", hours);
                         }
 
-                        // 5. Last Login:
-                        if (g_ShowLastLogin && !ch.last_modified.empty()) {
-                            struct tm tm = {};
-                            if (sscanf(ch.last_modified.c_str(), "%d-%d-%dT%d:%d:%d",
-                                    &tm.tm_year, &tm.tm_mon, &tm.tm_mday,
-                                    &tm.tm_hour, &tm.tm_min, &tm.tm_sec) == 6) {
-                                tm.tm_year -= 1900;
-                                tm.tm_mon -= 1;
-                                time_t login = mktime(&tm);
+                        // 5. Last Login (from local MumbleLink tracking):
+                        if (g_ShowLastLogin) {
+                            auto tsIt = g_LoginTimestamps.find(ch.name);
+                            if (tsIt != g_LoginTimestamps.end()) {
                                 time_t now_t = std::time(nullptr);
-                                int elapsed = (int)difftime(now_t, login);
+                                int elapsed = (int)difftime(now_t, (time_t)tsIt->second);
                                 std::string ago;
-                                if (elapsed < 3600) ago = std::to_string(elapsed / 60) + "m";
-                                else if (elapsed < 86400) ago = std::to_string(elapsed / 3600) + "h";
-                                else ago = std::to_string(elapsed / 86400) + "d";
+                                if (elapsed < 60) ago = "Just Now";
+                                else if (elapsed < 3600) ago = std::to_string(elapsed / 60) + "m ago";
+                                else if (elapsed < 86400) ago = std::to_string(elapsed / 3600) + "h ago";
+                                else ago = std::to_string(elapsed / 86400) + "d ago";
                                 ImGui::TextColored(labelCol, "Last Login:");
                                 ImGui::SameLine();
-                                ImGui::TextColored(dimCol, "%s ago", ago.c_str());
+                                ImGui::TextColored(dimCol, "%s", ago.c_str());
                             }
                         }
                         ImGui::Unindent(6.0f);
@@ -8093,20 +10383,14 @@ void AddonRender() {
                         }
                     }
 
-                    // Last login
-                    if (!ch.last_modified.empty()) {
-                        // Parse ISO date to time_t for relative display
-                        struct tm tm_val = {};
-                        if (sscanf(ch.last_modified.c_str(), "%d-%d-%dT%d:%d:%d",
-                            &tm_val.tm_year, &tm_val.tm_mon, &tm_val.tm_mday,
-                            &tm_val.tm_hour, &tm_val.tm_min, &tm_val.tm_sec) >= 3) {
-                            tm_val.tm_year -= 1900;
-                            tm_val.tm_mon -= 1;
-                            time_t login_t = _mkgmtime(&tm_val);
+                    // Last login (from local MumbleLink tracking)
+                    {
+                        auto tsIt = g_LoginTimestamps.find(ch.name);
+                        if (tsIt != g_LoginTimestamps.end()) {
                             time_t now_t = std::time(nullptr);
-                            int elapsed = (int)difftime(now_t, login_t);
+                            int elapsed = (int)difftime(now_t, (time_t)tsIt->second);
                             std::string ago;
-                            if (elapsed < 60) ago = "just now";
+                            if (elapsed < 60) ago = "Just Now";
                             else if (elapsed < 3600) ago = std::to_string(elapsed / 60) + "m ago";
                             else if (elapsed < 86400) ago = std::to_string(elapsed / 3600) + "h ago";
                             else ago = std::to_string(elapsed / 86400) + "d ago";
@@ -8162,7 +10446,12 @@ void AddonRender() {
             ImGui::EndTabItem();
         }
 
-        if (g_SkinInitialized && ImGui::BeginTabItem("Skinventory")) {
+        ImGuiTabItemFlags skinTabFlags = 0;
+        if (g_SwitchToSkinventory) {
+            skinTabFlags = ImGuiTabItemFlags_SetSelected;
+            g_SwitchToSkinventory = false;
+        }
+        if (g_SkinInitialized && ImGui::BeginTabItem("Skinventory", nullptr, skinTabFlags)) {
             g_MainTab = 2;
             RenderSkinventory();
             ImGui::EndTabItem();
@@ -8171,6 +10460,12 @@ void AddonRender() {
         if (ImGui::BeginTabItem("Clears")) {
             g_MainTab = 3;
             RenderClears();
+            ImGui::EndTabItem();
+        }
+
+        if (ImGui::BeginTabItem("Achievements")) {
+            g_MainTab = 4;
+            RenderAchievements();
             ImGui::EndTabItem();
         }
 
@@ -8316,7 +10611,7 @@ extern "C" __declspec(dllexport) AddonDefinition_t* GetAddonDef() {
     AddonDef.Version.Build = V_BUILD;
     AddonDef.Version.Revision = V_REVISION;
     AddonDef.Author = "PieOrCake.7635";
-    AddonDef.Description = "Manage characters, builds, skins, and clears";
+    AddonDef.Description = "Manage characters, builds, skins, clears, achievements";
     AddonDef.Load = AddonLoad;
     AddonDef.Unload = AddonUnload;
     AddonDef.Flags = AF_None;

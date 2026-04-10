@@ -20,6 +20,8 @@ namespace Skinventory {
     std::atomic<bool> OwnedSkins::s_querying{false};
     std::atomic<bool> OwnedSkins::s_data_updated{false};
     std::string OwnedSkins::s_status_message = "Waiting for Hoard & Seek...";
+    std::atomic<uint64_t> OwnedSkins::s_generation{0};
+    std::unordered_set<uint32_t> OwnedSkins::s_locally_marked;
     std::vector<uint32_t> OwnedSkins::s_pending_ids;
     size_t OwnedSkins::s_batch_index = 0;
     std::atomic<bool> OwnedSkins::s_batch_pending{false};
@@ -160,8 +162,13 @@ namespace Skinventory {
                     for (const auto& id : j) {
                         s_owned_skins.insert(id.get<uint32_t>());
                     }
+                    // Re-insert locally marked skins (from alerts) that stale API data may not include
+                    for (uint32_t id : s_locally_marked) {
+                        s_owned_skins.insert(id);
+                    }
                     s_has_data = true;
                     s_querying = false;
+                    s_generation++;
                     s_status_message = "Owned: " + std::to_string(s_owned_skins.size());
                 }
             } catch (...) {
@@ -280,6 +287,16 @@ namespace Skinventory {
         return s_owned_skins.count(skin_id) > 0;
     }
 
+    void OwnedSkins::MarkOwned(uint32_t skin_id) {
+        {
+            std::lock_guard<std::mutex> lock(s_mutex);
+            s_owned_skins.insert(skin_id);
+            s_locally_marked.insert(skin_id);
+        }
+        s_generation++;
+        SaveToCache();
+    }
+
     bool OwnedSkins::HasData() {
         return s_has_data;
     }
@@ -305,6 +322,10 @@ namespace Skinventory {
     size_t OwnedSkins::GetQueriedCount() {
         std::lock_guard<std::mutex> lock(s_mutex);
         return s_queried_skins.size();
+    }
+
+    uint64_t OwnedSkins::GetGeneration() {
+        return s_generation;
     }
 
     // --- Disk Cache ---
