@@ -76,6 +76,7 @@ If an LLM creating software upsets you, then perhaps this repo isn't for you. Mo
 ![Build panel](screenshots/build.png)
 ![Build library](screenshots/library.png)
 ![Clears](screenshots/clears.png)
+![Achievements](screenshots/cheevs.png)
 ![Skinventory](screenshots/skinventory.png)
 
 ## Character Portraits
