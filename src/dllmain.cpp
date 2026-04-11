@@ -547,6 +547,16 @@ static std::string g_AchStatusMsg;
 
 #define ACH_NAME_INDEX_URL "https://raw.githubusercontent.com/PieOrCake/alter_ego/main/data/achievement_names.json"
 #define ACH_WAYPOINTS_URL "https://raw.githubusercontent.com/PieOrCake/alter_ego/main/data/achievement_waypoints.json"
+#define HERO_CHALLENGES_URL "https://raw.githubusercontent.com/PieOrCake/alter_ego/main/data/hero_challenges.json"
+
+// Hero challenge data: id -> { map_name, expansion }
+struct HeroChallengeInfo {
+    std::string map_name;
+    std::string expansion;
+};
+static std::unordered_map<std::string, HeroChallengeInfo> g_HeroChallenges; // id -> info
+static bool g_HeroChallengesReady = false;
+static bool g_HeroChallengesFetching = false;
 
 // Waypoint data: achId -> (bitIndex -> chatCode), bitIndex -1 = achievement-level waypoint
 static std::unordered_map<uint32_t, std::unordered_map<int, std::string>> g_AchWaypoints;
@@ -597,6 +607,9 @@ static void SaveAchWaypoints();
 static void LoadAchWaypoints();
 static void FetchAchWaypoints();
 static void FetchActiveSpecialEvent();
+static void SaveHeroChallenges();
+static void LoadHeroChallenges();
+static void FetchHeroChallenges();
 
 // Character search
 static char g_CharSearchBuf[128] = "";
@@ -1763,6 +1776,67 @@ static void FetchAchWaypoints() {
             } catch (...) {}
         }
         g_AchWaypointsFetching = false;
+    }).detach();
+}
+
+// =========================================================================
+// Hero Challenges — Data
+// =========================================================================
+
+static void SaveHeroChallenges() {
+    std::string path = AlterEgo::GW2API::GetDataDirectory() + "/hero_challenges.json";
+    nlohmann::json j;
+    for (const auto& [id, info] : g_HeroChallenges) {
+        nlohmann::json entry;
+        entry["map_name"] = info.map_name;
+        entry["expansion"] = info.expansion;
+        j[id] = entry;
+    }
+    std::ofstream file(path);
+    if (file.is_open()) file << j.dump();
+}
+
+static void LoadHeroChallenges() {
+    std::string path = AlterEgo::GW2API::GetDataDirectory() + "/hero_challenges.json";
+    std::ifstream file(path);
+    if (!file.is_open()) return;
+    try {
+        auto j = nlohmann::json::parse(file);
+        if (j.is_object()) {
+            g_HeroChallenges.clear();
+            for (auto& [id, val] : j.items()) {
+                HeroChallengeInfo info;
+                info.map_name = val.value("map_name", "");
+                info.expansion = val.value("expansion", "");
+                g_HeroChallenges[id] = std::move(info);
+            }
+            g_HeroChallengesReady = !g_HeroChallenges.empty();
+        }
+    } catch (...) {}
+}
+
+static void FetchHeroChallenges() {
+    if (g_HeroChallengesFetching) return;
+    g_HeroChallengesFetching = true;
+    std::thread([]() {
+        std::string json = Skinventory::HttpClient::Get(HERO_CHALLENGES_URL);
+        if (!json.empty()) {
+            try {
+                auto j = nlohmann::json::parse(json);
+                if (j.is_object()) {
+                    g_HeroChallenges.clear();
+                    for (auto& [id, val] : j.items()) {
+                        HeroChallengeInfo info;
+                        info.map_name = val.value("map_name", "");
+                        info.expansion = val.value("expansion", "");
+                        g_HeroChallenges[id] = std::move(info);
+                    }
+                    g_HeroChallengesReady = true;
+                    SaveHeroChallenges();
+                }
+            } catch (...) {}
+        }
+        g_HeroChallengesFetching = false;
     }).detach();
 }
 
@@ -3264,6 +3338,162 @@ static ImVec2 RenderTraitIcon(uint32_t trait_id, bool selected, bool isMinor, fl
 
     ImGui::PopID();
     return center;
+}
+
+// =========================================================================
+// Hero Challenges Panel
+// =========================================================================
+
+struct HCMapEntry {
+    std::string map_name;
+    int total = 0;
+    int completed = 0;
+};
+
+struct HCExpansionEntry {
+    std::string expansion;
+    std::vector<HCMapEntry> maps;
+    int total = 0;
+    int completed = 0;
+};
+
+static void RenderHeroChallengesPanel(const AlterEgo::Character& ch) {
+    // Trigger fetch if not loaded
+    if (!g_HeroChallengesReady && !g_HeroChallengesFetching) {
+        FetchHeroChallenges();
+    }
+
+    if (!g_HeroChallengesReady) {
+        ImGui::TextColored(ImVec4(0.6f, 0.6f, 0.6f, 1.0f), "Loading hero challenge data...");
+        return;
+    }
+
+    // Cache: rebuild only when character changes
+    static std::string s_hcCacheCharName;
+    static size_t s_hcCacheHPCount = 0;
+    static std::vector<HCExpansionEntry> s_hcCache;
+    static int s_hcTotalAll = 0;
+    static int s_hcCompletedAll = 0;
+    static int s_hcUnknownCompleted = 0; // completed IDs not in our data
+
+    if (s_hcCacheCharName != ch.name || s_hcCacheHPCount != ch.heropoints.size()) {
+        s_hcCacheCharName = ch.name;
+        s_hcCacheHPCount = ch.heropoints.size();
+        s_hcCache.clear();
+        s_hcTotalAll = 0;
+        s_hcCompletedAll = 0;
+        s_hcUnknownCompleted = 0;
+
+        // Build completed set
+        std::unordered_set<std::string> completedSet(ch.heropoints.begin(), ch.heropoints.end());
+
+        // Group by expansion -> map
+        // expansion -> map_name -> {total, completed}
+        std::map<std::string, std::map<std::string, std::pair<int, int>>> grouped;
+
+        // Define expansion order
+        static const std::vector<std::string> expansionOrder = {
+            "Core", "Living World Season 2", "Heart of Thorns", "Path of Fire"
+        };
+        // Pre-populate order
+        for (const auto& exp : expansionOrder) {
+            grouped[exp]; // ensure key exists
+        }
+
+        for (const auto& [id, info] : g_HeroChallenges) {
+            auto& mapEntry = grouped[info.expansion][info.map_name];
+            mapEntry.first++;  // total
+            if (completedSet.count(id)) {
+                mapEntry.second++;  // completed
+            }
+        }
+
+        // Count completed IDs not in our data
+        for (const auto& hp : ch.heropoints) {
+            if (g_HeroChallenges.find(hp) == g_HeroChallenges.end()) {
+                s_hcUnknownCompleted++;
+            }
+        }
+
+        // Build display entries
+        for (const auto& [exp, maps] : grouped) {
+            if (maps.empty()) continue;
+            HCExpansionEntry entry;
+            entry.expansion = exp;
+            for (const auto& [mapName, counts] : maps) {
+                HCMapEntry me;
+                me.map_name = mapName;
+                me.total = counts.first;
+                me.completed = counts.second;
+                entry.total += me.total;
+                entry.completed += me.completed;
+                entry.maps.push_back(std::move(me));
+            }
+            // Sort maps alphabetically
+            std::sort(entry.maps.begin(), entry.maps.end(),
+                [](const HCMapEntry& a, const HCMapEntry& b) { return a.map_name < b.map_name; });
+            s_hcTotalAll += entry.total;
+            s_hcCompletedAll += entry.completed;
+            s_hcCache.push_back(std::move(entry));
+        }
+    }
+
+    // Summary
+    ImGui::Text("Hero Challenges: %d / %d", s_hcCompletedAll, s_hcTotalAll);
+    if (s_hcUnknownCompleted > 0) {
+        ImGui::SameLine();
+        ImGui::TextColored(ImVec4(0.5f, 0.5f, 0.5f, 1.0f),
+            "(+ %d from expansions not yet tracked)", s_hcUnknownCompleted);
+    }
+
+    // Progress bar
+    float progress = s_hcTotalAll > 0 ? (float)s_hcCompletedAll / (float)s_hcTotalAll : 0.0f;
+    ImGui::ProgressBar(progress, ImVec2(-1, 0));
+    ImGui::Spacing();
+
+    if (ch.heropoints.empty()) {
+        ImGui::TextColored(ImVec4(0.6f, 0.6f, 0.6f, 1.0f),
+            "No hero challenge data available for this character.\nTry refreshing character data.");
+        return;
+    }
+
+    // Render expansion trees
+    for (const auto& exp : s_hcCache) {
+        int remaining = exp.total - exp.completed;
+        char label[256];
+        if (remaining == 0) {
+            snprintf(label, sizeof(label), "%s  (%d/%d) " "\xE2\x9C\x93",
+                exp.expansion.c_str(), exp.completed, exp.total);
+        } else {
+            snprintf(label, sizeof(label), "%s  (%d/%d) — %d remaining",
+                exp.expansion.c_str(), exp.completed, exp.total, remaining);
+        }
+
+        bool allDone = (exp.completed == exp.total);
+        if (allDone) ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.5f, 0.7f, 0.5f, 1.0f));
+
+        // Default open if there are incomplete challenges
+        if (!allDone) ImGui::SetNextItemOpen(true, ImGuiCond_Once);
+        if (ImGui::TreeNode(exp.expansion.c_str(), "%s", label)) {
+            for (const auto& m : exp.maps) {
+                int mRemaining = m.total - m.completed;
+                bool mapDone = (m.completed == m.total);
+
+                if (mapDone) {
+                    ImGui::TextColored(ImVec4(0.5f, 0.7f, 0.5f, 1.0f),
+                        "  %s  %d/%d " "\xE2\x9C\x93", m.map_name.c_str(), m.completed, m.total);
+                } else {
+                    ImGui::Text("  %s  %d/%d", m.map_name.c_str(), m.completed, m.total);
+                    ImGui::SameLine();
+                    ImGui::TextColored(ImVec4(0.8f, 0.6f, 0.3f, 1.0f),
+                        "— %d remaining", mRemaining);
+                }
+            }
+            ImGui::TreePop();
+        }
+
+        if (allDone) ImGui::PopStyleColor();
+    }
 }
 
 static void RenderSkillIcon(uint32_t skill_id, float size);
@@ -7051,6 +7281,7 @@ void AddonLoad(AddonAPI_t* aApi) {
     LoadAchDefCache();
     LoadAchNameIndex();
     LoadAchWaypoints();
+    LoadHeroChallenges();
 
     // Register quick access shortcut
     if (g_ShowQAIcon) {
@@ -10501,6 +10732,13 @@ void AddonRender() {
                             g_SelectedTab = 1;
                             ImGui::BeginChild("BuildScroll", ImVec2(0, 0), false);
                             RenderBuildPanel(ch);
+                            ImGui::EndChild();
+                            ImGui::EndTabItem();
+                        }
+                        if (ImGui::BeginTabItem("Hero Challenges")) {
+                            g_SelectedTab = 2;
+                            ImGui::BeginChild("HeroChallengeScroll", ImVec2(0, 0), false);
+                            RenderHeroChallengesPanel(ch);
                             ImGui::EndChild();
                             ImGui::EndTabItem();
                         }

@@ -549,6 +549,9 @@ namespace AlterEgo {
             case 5:
                 endpoint = "/v2/characters/" + UrlEncode(char_name) + "/crafting";
                 break;
+            case 6:
+                endpoint = "/v2/characters/" + UrlEncode(char_name) + "/heropoints";
+                break;
             default:
                 return;
         }
@@ -838,6 +841,16 @@ namespace AlterEgo {
                     }
                     break;
                 }
+                case 6: { // /heropoints — completed hero challenge IDs
+                    std::lock_guard<std::mutex> lock(s_mutex);
+                    s_current_char.heropoints.clear();
+                    if (cj.is_array()) {
+                        for (const auto& hp : cj) {
+                            if (hp.is_string()) s_current_char.heropoints.push_back(hp.get<std::string>());
+                        }
+                    }
+                    break;
+                }
             }
         } catch (const std::exception& e) {
             if (s_api) {
@@ -888,7 +901,11 @@ namespace AlterEgo {
                     s_fetch_phase = 5;
                     s_fetch_message = s_current_char.name + ": Fetching crafting...";
                     break;
-                case 5: { // crafting done → add/update this character, then next
+                case 5: // crafting done → heropoints
+                    s_fetch_phase = 6;
+                    s_fetch_message = s_current_char.name + ": Fetching hero challenges...";
+                    break;
+                case 6: { // heropoints done → add/update this character, then next
                     // Add or update this character in the list
                     bool found = false;
                     for (auto& existing : s_characters) {
@@ -933,7 +950,7 @@ namespace AlterEgo {
             SaveItemNameCache();
         } else {
             // Save after each character completes (for incremental persistence)
-            if (phase == 5) SaveCharacterData();
+            if (phase == 6) SaveCharacterData();
             FetchCharacterPhase();
         }
     }
@@ -1904,6 +1921,10 @@ namespace AlterEgo {
                 }
                 cj["build_tabs"] = bt_arr;
 
+                if (!ch.heropoints.empty()) {
+                    cj["heropoints"] = ch.heropoints;
+                }
+
                 chars_arr.push_back(cj);
             }
             j["characters"] = chars_arr;
@@ -2032,6 +2053,12 @@ namespace AlterEgo {
                                 bt.aquatic_skills = parseSkillBarJson(bj["aquatic_skills"]);
 
                             ch.build_tabs.push_back(bt);
+                        }
+                    }
+
+                    if (cj.contains("heropoints") && cj["heropoints"].is_array()) {
+                        for (const auto& hp : cj["heropoints"]) {
+                            if (hp.is_string()) ch.heropoints.push_back(hp.get<std::string>());
                         }
                     }
 

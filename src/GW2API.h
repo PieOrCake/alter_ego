@@ -211,6 +211,7 @@ namespace AlterEgo {
         std::map<int, std::string> equipment_tab_names; // tab number -> name
         int active_build_tab = 0;
         int active_equipment_tab = 0;
+        std::vector<std::string> heropoints;    // Completed hero challenge IDs (e.g. "0-29")
     };
 
     // Item location result from H&S cache query
