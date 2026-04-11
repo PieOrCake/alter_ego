@@ -31,7 +31,7 @@
 #define V_MAJOR 0
 #define V_MINOR 9
 #define V_BUILD 3
-#define V_REVISION 0
+#define V_REVISION 1
 
 // Quick Access icon identifiers
 #define QA_ID "QA_ALTER_EGO"
@@ -536,6 +536,7 @@ static std::unordered_map<uint32_t, AchProgress> g_AchProgress;  // account prog
 static std::vector<uint32_t> g_AchPinned;                        // pinned achievement IDs
 static std::unordered_map<uint32_t, std::string> g_AchNameIndex; // id -> name (for search)
 static std::unordered_map<uint32_t, uint32_t> g_AchIdToCategory; // ach id -> category id
+static std::unordered_set<uint32_t> g_AchHiddenCatIds;          // categories to hide (e.g. Character Adventure Guide)
 
 static std::recursive_mutex g_AchMutex;
 static bool g_AchGroupsFetched = false;
@@ -572,6 +573,14 @@ static uint32_t g_AchNavigateToId = 0;     // pending navigation: jump to this a
 static bool g_AchPinnedBootQueried = false; // flag: have we queried pinned progress after H&S became available?
 static bool g_ClearsBootQueried = false;   // flag: have we queried clears completion after H&S became available?
 
+// Active special event detection (from /v2/achievements/daily "special" array)
+static std::vector<uint32_t> g_AchActiveEventCatIds;  // category IDs for the active event
+static bool g_AchActiveEventFetched = false;
+static bool g_AchActiveEventFetching = false;
+
+// Optimistic update grace period — protects alert-based increments from stale API snapback
+static std::unordered_map<uint32_t, std::chrono::steady_clock::time_point> g_AchOptimisticTime;
+
 // Persistence & caching
 static std::chrono::steady_clock::time_point g_LastAchProgressQuery{};
 static void SaveAchTrackerState();
@@ -587,6 +596,7 @@ static void FetchPinnedAchDefs();
 static void SaveAchWaypoints();
 static void LoadAchWaypoints();
 static void FetchAchWaypoints();
+static void FetchActiveSpecialEvent();
 
 // Character search
 static char g_CharSearchBuf[128] = "";
@@ -742,17 +752,44 @@ static void OnEvAlertAchievementCompleted(void* eventArgs) {
     if (!eventArgs) return;
     auto* payload = (AlertUnlockPayload*)eventArgs;
     if (payload->ID != 0) {
-        std::lock_guard<std::recursive_mutex> lock(g_AchMutex);
-        auto it = g_AchProgress.find(payload->ID);
-        if (it != g_AchProgress.end()) {
-            it->second.done = true;
-        } else {
-            AchProgress p;
-            p.id = payload->ID;
-            p.done = true;
-            g_AchProgress[payload->ID] = std::move(p);
+        {
+            std::lock_guard<std::recursive_mutex> lock(g_AchMutex);
+            auto it = g_AchProgress.find(payload->ID);
+            if (it != g_AchProgress.end()) {
+                // Increment progress — handle completion based on achievement type
+                it->second.current++;
+                if (it->second.max > 0 && it->second.current >= it->second.max) {
+                    // Check if this is a repeatable achievement
+                    auto defIt = g_AchDefs.find(payload->ID);
+                    bool isRepeatable = false;
+                    bool isDailyOrWeekly = false;
+                    if (defIt != g_AchDefs.end()) {
+                        for (const auto& f : defIt->second.flags) {
+                            if (f == "Repeatable") isRepeatable = true;
+                            if (f == "Daily" || f == "Weekly") isDailyOrWeekly = true;
+                        }
+                    }
+                    if (isRepeatable && !isDailyOrWeekly) {
+                        // Infinite repeatable — reset to 0, bump repeat count
+                        it->second.current = 0;
+                        it->second.repeated++;
+                        it->second.done = false;
+                        it->second.completed_bits.clear();
+                    } else {
+                        // Non-repeatable or daily/weekly — mark done
+                        it->second.done = true;
+                    }
+                }
+            } else {
+                // No existing progress — create with current=1, don't assume done
+                AchProgress p;
+                p.id = payload->ID;
+                p.current = 1;
+                g_AchProgress[payload->ID] = std::move(p);
+            }
+            g_AchProgressGen++;
+            g_AchOptimisticTime[payload->ID] = std::chrono::steady_clock::now();
         }
-        g_AchProgressGen++;
     }
 }
 
@@ -1516,6 +1553,27 @@ static void LoadAchGroupCache() {
             }
         }
 
+        // Build hidden category set
+        g_AchHiddenCatIds.clear();
+        for (const auto& g : g_AchGroups) {
+            if (g.name == "Character Adventure Guide") {
+                for (uint32_t cid : g.categories) g_AchHiddenCatIds.insert(cid);
+            } else if (g.name == "Bonus Events") {
+                for (uint32_t cid : g.categories) {
+                    auto catIt = g_AchCategories.find(cid);
+                    if (catIt == g_AchCategories.end()) continue;
+                    const auto& n = catIt->second.name;
+                    if (n.find("Marshaling") != std::string::npos ||
+                        n.find("Mobilization") != std::string::npos ||
+                        n.find("Black Lion") != std::string::npos ||
+                        n.find("Wizard's Vault") != std::string::npos ||
+                        n.find("Gnashbash") != std::string::npos ||
+                        n == "Fractal Incursion")
+                        g_AchHiddenCatIds.insert(cid);
+                }
+            }
+        }
+
         if (!g_AchGroups.empty()) g_AchGroupsFetched = true;
     } catch (...) {}
 }
@@ -1804,12 +1862,72 @@ static void FetchAchGroups() {
             g_AchGroups = std::move(groups);
             g_AchCategories = std::move(cats);
             g_AchIdToCategory = std::move(idToCat);
+            // Build hidden category set
+            g_AchHiddenCatIds.clear();
+            for (const auto& g : g_AchGroups) {
+                if (g.name == "Character Adventure Guide") {
+                    for (uint32_t cid : g.categories) g_AchHiddenCatIds.insert(cid);
+                } else if (g.name == "Bonus Events") {
+                    for (uint32_t cid : g.categories) {
+                        auto catIt = g_AchCategories.find(cid);
+                        if (catIt == g_AchCategories.end()) continue;
+                        const auto& n = catIt->second.name;
+                        if (n.find("Marshaling") != std::string::npos ||
+                            n.find("Mobilization") != std::string::npos ||
+                            n.find("Black Lion") != std::string::npos ||
+                            n.find("Wizard's Vault") != std::string::npos ||
+                            n.find("Gnashbash") != std::string::npos ||
+                            n == "Fractal Incursion")
+                            g_AchHiddenCatIds.insert(cid);
+                    }
+                }
+            }
             g_AchGroupsFetched = true;
             g_AchGroupsFetching = false;
             g_AchStatusMsg = "";
         }
 
         SaveAchGroupCache();
+        FetchActiveSpecialEvent();
+    }).detach();
+}
+
+static void FetchActiveSpecialEvent() {
+    if (g_AchActiveEventFetching) return;
+    g_AchActiveEventFetching = true;
+    std::thread([]() {
+        std::string json = Skinventory::HttpClient::Get("https://api.guildwars2.com/v2/achievements/daily");
+        std::vector<uint32_t> specialAchIds;
+        if (!json.empty()) {
+            try {
+                auto j = nlohmann::json::parse(json);
+                if (j.contains("special") && j["special"].is_array()) {
+                    for (const auto& entry : j["special"]) {
+                        if (entry.contains("id")) specialAchIds.push_back(entry["id"].get<uint32_t>());
+                    }
+                }
+            } catch (...) {}
+        }
+
+        // Resolve achievement IDs to category IDs via reverse lookup
+        std::vector<uint32_t> catIds;
+        if (!specialAchIds.empty()) {
+            std::unordered_set<uint32_t> seen;
+            std::lock_guard<std::recursive_mutex> lock(g_AchMutex);
+            for (uint32_t achId : specialAchIds) {
+                auto it = g_AchIdToCategory.find(achId);
+                if (it != g_AchIdToCategory.end() && seen.insert(it->second).second) {
+                    catIds.push_back(it->second);
+                }
+            }
+        }
+
+        {
+            std::lock_guard<std::recursive_mutex> lock(g_AchMutex);
+            g_AchActiveEventCatIds = std::move(catIds);
+            g_AchActiveEventFetched = true;
+            g_AchActiveEventFetching = false;
+        }
     }).detach();
 }
 
@@ -1965,6 +2083,38 @@ static void OnAchProgressResponse(void* eventArgs) {
             p.max = e.max;
             for (uint32_t b = 0; b < e.bit_count && b < 64; b++) {
                 p.completed_bits.insert(e.bits[b]);
+            }
+            // For infinite repeatables, the API returns done=true if ever completed,
+            // even after restart. Override based on current progress.
+            if (p.done && p.max > 0 && p.current < p.max) {
+                auto defIt = g_AchDefs.find(e.id);
+                if (defIt != g_AchDefs.end()) {
+                    bool isRepeatable = false, isDailyOrWeekly = false;
+                    for (const auto& f : defIt->second.flags) {
+                        if (f == "Repeatable") isRepeatable = true;
+                        if (f == "Daily" || f == "Weekly") isDailyOrWeekly = true;
+                    }
+                    if (isRepeatable && !isDailyOrWeekly) {
+                        p.done = false;
+                    }
+                }
+            }
+            // Grace period: protect optimistic alert increments from stale API data
+            auto optIt = g_AchOptimisticTime.find(e.id);
+            if (optIt != g_AchOptimisticTime.end()) {
+                auto elapsed = std::chrono::steady_clock::now() - optIt->second;
+                auto existIt = g_AchProgress.find(e.id);
+                if (elapsed < std::chrono::minutes(10) && existIt != g_AchProgress.end()
+                    && p.current < existIt->second.current) {
+                    // API hasn't caught up — keep our optimistic current/done,
+                    // but merge in any newly completed bits from the API
+                    for (uint32_t bit : p.completed_bits) {
+                        existIt->second.completed_bits.insert(bit);
+                    }
+                    continue;
+                }
+                // API caught up or grace period expired — accept and clear
+                g_AchOptimisticTime.erase(optIt);
             }
             g_AchProgress[e.id] = std::move(p);
         }
@@ -8846,6 +8996,9 @@ static void RenderAchievements() {
     if (!g_AchWaypointsReady && !g_AchWaypointsFetching) {
         FetchAchWaypoints();
     }
+    if (g_AchGroupsFetched && !g_AchActiveEventFetched && !g_AchActiveEventFetching) {
+        FetchActiveSpecialEvent();
+    }
 
     // Toolbar: search + popout toggle + refresh
     float searchWidth = ImGui::GetContentRegionAvail().x - 180.0f;
@@ -8853,16 +9006,28 @@ static void RenderAchievements() {
     ImGui::SetNextItemWidth(searchWidth);
     ImGui::InputTextWithHint("##AchSearch", "Search achievements...", g_AchSearchBuf, sizeof(g_AchSearchBuf));
     ImGui::SameLine();
-    if (ImGui::Button(g_AchPopoutVisible ? "Hide Popout" : "Show Popout")) {
+    if (ImGui::Button(g_AchPopoutVisible ? "Hide Popout Tracker" : "Show Popout Tracker")) {
         g_AchPopoutVisible = !g_AchPopoutVisible;
         SaveAchTrackerState();
     }
     ImGui::SameLine();
-    if (ImGui::Button("Refresh")) {
+    if (g_AchProgressFetching) ImGui::PushStyleVar(ImGuiStyleVar_Alpha, 0.5f);
+    if (ImGui::Button(g_AchProgressFetching ? "Refreshing..." : "Refresh") && !g_AchProgressFetching) {
         g_AchGroupsFetched = false;
+        g_AchActiveEventFetched = false;
         FetchAchGroups();
         if (g_AchSelectedCatId > 0) FetchAchCategoryDefs(g_AchSelectedCatId);
+        // Also refresh pinned achievement progress
+        std::vector<uint32_t> pinnedCopy;
+        {
+            std::lock_guard<std::recursive_mutex> lock(g_AchMutex);
+            pinnedCopy = g_AchPinned;
+        }
+        if (!pinnedCopy.empty()) {
+            SendAchProgressQuery(pinnedCopy);
+        }
     }
+    if (g_AchProgressFetching) ImGui::PopStyleVar();
 
     // Status message
     {
@@ -8900,6 +9065,9 @@ static void RenderAchievements() {
                 std::string lowerName = name;
                 std::transform(lowerName.begin(), lowerName.end(), lowerName.begin(), ::tolower);
                 if (lowerName.find(query) != std::string::npos) {
+                    // Skip achievements from hidden groups (e.g. Character Adventure Guide)
+                    auto catIt = g_AchIdToCategory.find(id);
+                    if (catIt != g_AchIdToCategory.end() && g_AchHiddenCatIds.count(catIt->second)) continue;
                     s_achSearchResults.push_back(id);
                     if (s_achSearchResults.size() >= 50) {
                         s_achSearchTruncated = true;
@@ -8962,16 +9130,44 @@ static void RenderAchievements() {
     }
     {
         std::lock_guard<std::recursive_mutex> lock(g_AchMutex);
+
+        // Current Bonus Event — shown at top when /v2/achievements/daily has special entries
+        if (!g_AchActiveEventCatIds.empty()) {
+            static const std::string kActiveEventGroupId = "__active_event__";
+            bool forceOpenEvent = g_AchRestoreScroll && (g_AchSelectedGroupId == kActiveEventGroupId);
+            if (forceOpenEvent) ImGui::SetNextItemOpen(true);
+            else if (!g_AchRestoreScroll) ImGui::SetNextItemOpen(true, ImGuiCond_Once);
+            if (ImGui::TreeNode("Current Bonus Event")) {
+                for (uint32_t catId : g_AchActiveEventCatIds) {
+                    auto it = g_AchCategories.find(catId);
+                    if (it == g_AchCategories.end() || it->second.name.empty()) continue;
+                    bool selected = (g_AchSelectedCatId == catId);
+                    if (ImGui::Selectable(it->second.name.c_str(), selected)) {
+                        if (g_AchSelectedCatId != catId) {
+                            g_AchSelectedCatId = catId;
+                            g_AchSelectedGroupId = kActiveEventGroupId;
+                            FetchAchCategoryDefs(catId);
+                        }
+                    }
+                }
+                ImGui::TreePop();
+            }
+        }
+
         for (const auto& group : g_AchGroups) {
             if (group.name.empty()) continue;
+            if (group.name == "Character Adventure Guide") continue; // per-character; API can't distinguish
+            if (group.name == "Bonus Events") continue; // API group is polluted with unrelated categories
+            if (group.name == "Historical") continue; // massive grab-bag; active events surfaced via Current Bonus Event
 
             // Auto-open the saved group
             bool forceOpen = g_AchRestoreScroll && (group.id == g_AchSelectedGroupId);
             if (forceOpen) ImGui::SetNextItemOpen(true);
             if (ImGui::TreeNode(group.name.c_str())) {
-                // Sort categories by order within the group
+                // Sort categories by order within the group, skipping hidden categories
                 std::vector<const AchCategoryDef*> sortedCats;
                 for (uint32_t catId : group.categories) {
+                    if (g_AchHiddenCatIds.count(catId)) continue;
                     auto it = g_AchCategories.find(catId);
                     if (it != g_AchCategories.end() && !it->second.name.empty()) {
                         sortedCats.push_back(&it->second);
@@ -9312,6 +9508,24 @@ static void RebuildPopoutCache() {
 }
 
 static void RenderAchPopout() {
+    // Auto-refresh pinned achievement progress every 10 minutes
+    {
+        auto now = std::chrono::steady_clock::now();
+        if (!g_AchProgressFetching &&
+            g_LastAchProgressQuery != std::chrono::steady_clock::time_point{} &&
+            (now - g_LastAchProgressQuery) >= std::chrono::minutes(10)) {
+            g_LastAchProgressQuery = now;
+            std::vector<uint32_t> pinnedCopy;
+            {
+                std::lock_guard<std::recursive_mutex> lock(g_AchMutex);
+                pinnedCopy = g_AchPinned;
+            }
+            if (!pinnedCopy.empty()) {
+                SendAchProgressQuery(pinnedCopy);
+            }
+        }
+    }
+
     if (!g_AchPopoutVisible) return;
     if (g_CurrentCharName.empty()) return; // not yet logged in (character select screen)
 
@@ -9326,17 +9540,23 @@ static void RenderAchPopout() {
 
     ImGui::SetNextWindowSizeConstraints(ImVec2(250, 100), ImVec2(500, 800));
     if (ImGui::Begin("Achievement Tracker", &g_AchPopoutVisible,
-                     ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoBringToFrontOnFocus | ImGuiWindowFlags_NoFocusOnAppearing)) {
+                     ImGuiWindowFlags_NoCollapse)) {
 
         // Toolbar
         ImGui::Checkbox("Show completed steps", &g_AchShowCompletedSteps);
         ImGui::SameLine();
-        if (ImGui::SmallButton("Refresh##pop")) {
-            std::lock_guard<std::recursive_mutex> lock(g_AchMutex);
-            if (!g_AchPinned.empty()) {
-                SendAchProgressQuery(g_AchPinned);
+        if (g_AchProgressFetching) ImGui::PushStyleVar(ImGuiStyleVar_Alpha, 0.5f);
+        if (ImGui::SmallButton(g_AchProgressFetching ? "Refreshing...##pop" : "Refresh##pop") && !g_AchProgressFetching) {
+            std::vector<uint32_t> pinnedCopy;
+            {
+                std::lock_guard<std::recursive_mutex> lock(g_AchMutex);
+                pinnedCopy = g_AchPinned;
+            }
+            if (!pinnedCopy.empty()) {
+                SendAchProgressQuery(pinnedCopy);
             }
         }
+        if (g_AchProgressFetching) ImGui::PopStyleVar();
         ImGui::Separator();
 
         if (s_popoutCache.empty()) {
@@ -9607,52 +9827,16 @@ void AddonRender() {
         return;
     }
 
-    // H&S status + Refresh button
+    // H&S status
     auto hoardStatus = AlterEgo::GW2API::GetHoardStatus();
     auto fetchStatus = AlterEgo::GW2API::GetFetchStatus();
     bool scanning = (fetchStatus == AlterEgo::FetchStatus::InProgress);
     bool hoardReady = (hoardStatus == AlterEgo::HoardStatus::Available ||
                        hoardStatus == AlterEgo::HoardStatus::Ready);
-    bool disabled = scanning || !hoardReady;
 
-    if (disabled) ImGui::PushStyleVar(ImGuiStyleVar_Alpha, 0.5f);
-    if (ImGui::Button("Refresh Characters") && !disabled) {
-        // Fetch just the character name list, then show selection popup
-        g_RefreshListFetching = true;
-        AlterEgo::GW2API::RequestCharacterList();
-    }
-    if (disabled) ImGui::PopStyleVar();
-
-    // When the list-only fetch completes, populate the popup
-    if (g_RefreshListFetching &&
-        AlterEgo::GW2API::GetFetchStatus() != AlterEgo::FetchStatus::InProgress) {
-        g_RefreshListFetching = false;
-        const auto& names = AlterEgo::GW2API::GetPendingCharNames();
-        if (!names.empty()) {
-            g_RefreshNames = names;
-            // Pre-select: currently viewed character checked, rest unchecked
-            g_RefreshSelection.assign(names.size(), false);
-            const auto& chars = AlterEgo::GW2API::GetCharacters();
-            std::string currentName;
-            if (g_SelectedCharIdx >= 0 && g_SelectedCharIdx < (int)g_CharDisplayOrder.size()) {
-                int ri = g_CharDisplayOrder[g_SelectedCharIdx];
-                if (ri >= 0 && ri < (int)chars.size()) currentName = chars[ri].name;
-            }
-            for (size_t i = 0; i < names.size(); i++) {
-                if (names[i] == currentName)
-                    g_RefreshSelection[i] = true;
-            }
-            g_RefreshPopupOpen = true;
-            ImGui::OpenPopup("Select Characters to Refresh");
-        }
-    }
-
-    ImGui::SameLine();
-
-    // H&S connection indicator
+    // H&S connection warnings (shown globally, above tab bar)
     if (hoardStatus == AlterEgo::HoardStatus::Unknown) {
         ImGui::TextColored(ImVec4(0.6f, 0.6f, 0.6f, 1.0f), "Checking for H&S...");
-        // Retry ping periodically
         static auto lastPing = std::chrono::steady_clock::time_point{};
         auto now = std::chrono::steady_clock::now();
         if (now - lastPing > std::chrono::seconds(5)) {
@@ -9663,7 +9847,6 @@ void AddonRender() {
         ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.4f, 1.0f), "H&S not detected. Install Hoard & Seek.");
     } else if (hoardStatus == AlterEgo::HoardStatus::PermPending) {
         ImGui::TextColored(ImVec4(1.0f, 0.85f, 0.0f, 1.0f), "Approve Alter Ego in H&S permission popup.");
-        // Retry request every 3 seconds until user accepts/denies.
         static auto lastPermRetry = std::chrono::steady_clock::time_point{};
         auto permNow = std::chrono::steady_clock::now();
         if (permNow - lastPermRetry > std::chrono::seconds(3)) {
@@ -9672,162 +9855,6 @@ void AddonRender() {
         }
     } else if (hoardStatus == AlterEgo::HoardStatus::PermDenied) {
         ImGui::TextColored(ImVec4(1.0f, 0.3f, 0.3f, 1.0f), "H&S permission denied. Enable in H&S settings.");
-    } else if (fetchStatus == AlterEgo::FetchStatus::InProgress) {
-        g_FetchDoneTime = std::chrono::steady_clock::time_point{}; // reset fade timer while in progress
-        ImGui::TextColored(ImVec4(1.0f, 0.85f, 0.0f, 1.0f), "%s",
-            AlterEgo::GW2API::GetFetchStatusMessage().c_str());
-    } else if (fetchStatus == AlterEgo::FetchStatus::Error ||
-               fetchStatus == AlterEgo::FetchStatus::Success) {
-        // Record completion time on first frame after finishing
-        if (g_FetchDoneTime == std::chrono::steady_clock::time_point{})
-            g_FetchDoneTime = std::chrono::steady_clock::now();
-        float elapsed = std::chrono::duration<float>(
-            std::chrono::steady_clock::now() - g_FetchDoneTime).count();
-        if (elapsed < 5.0f) {
-            float alpha = (elapsed < 4.0f) ? 1.0f : (5.0f - elapsed); // fade during last second
-            ImVec4 col = (fetchStatus == AlterEgo::FetchStatus::Error)
-                ? ImVec4(1.0f, 0.3f, 0.3f, alpha)
-                : ImVec4(0.35f, 0.82f, 0.35f, alpha);
-            ImGui::TextColored(col, "%s",
-                AlterEgo::GW2API::GetFetchStatusMessage().c_str());
-        }
-        // After 5s, fall through to show "Last updated" below
-        if (elapsed >= 5.0f && !AlterEgo::GW2API::HasCharacterData()) {
-            ImGui::TextColored(ImVec4(0.6f, 0.6f, 0.6f, 1.0f),
-                "H&S connected. Click Refresh to load characters.");
-        } else if (elapsed >= 5.0f) {
-            time_t last = AlterEgo::GW2API::GetLastUpdated();
-            if (last > 0) {
-                time_t now_t = std::time(nullptr);
-                int el = (int)difftime(now_t, last);
-                std::string ago;
-                if (el < 60) ago = "just now";
-                else if (el < 3600) ago = std::to_string(el / 60) + "m ago";
-                else if (el < 86400) ago = std::to_string(el / 3600) + "h ago";
-                else ago = std::to_string(el / 86400) + "d ago";
-                ImGui::TextColored(ImVec4(0.6f, 0.6f, 0.6f, 1.0f), "Last updated %s", ago.c_str());
-            }
-        }
-    } else if (!AlterEgo::GW2API::HasCharacterData()) {
-        ImGui::TextColored(ImVec4(0.6f, 0.6f, 0.6f, 1.0f),
-            "H&S connected. Click Refresh to load characters.");
-    } else {
-        time_t last = AlterEgo::GW2API::GetLastUpdated();
-        if (last > 0) {
-            time_t now_t = std::time(nullptr);
-            int elapsed = (int)difftime(now_t, last);
-            std::string ago;
-            if (elapsed < 60) ago = "just now";
-            else if (elapsed < 3600) ago = std::to_string(elapsed / 60) + "m ago";
-            else if (elapsed < 86400) ago = std::to_string(elapsed / 3600) + "h ago";
-            else ago = std::to_string(elapsed / 86400) + "d ago";
-            ImGui::TextColored(ImVec4(0.6f, 0.6f, 0.6f, 1.0f), "Last updated %s", ago.c_str());
-        }
-    }
-
-    // Character refresh selection popup
-    if (ImGui::BeginPopup("Select Characters to Refresh")) {
-        ImGui::Text("Select characters to refresh:");
-        ImGui::Spacing();
-
-        // All / None / Lv80 buttons
-        if (ImGui::SmallButton("All")) {
-            for (size_t i = 0; i < g_RefreshSelection.size(); i++)
-                g_RefreshSelection[i] = true;
-        }
-        ImGui::SameLine();
-        if (ImGui::SmallButton("None")) {
-            for (size_t i = 0; i < g_RefreshSelection.size(); i++)
-                g_RefreshSelection[i] = false;
-        }
-        ImGui::SameLine();
-        if (ImGui::SmallButton("Lv80")) {
-            const auto& cachedChars = AlterEgo::GW2API::GetCharacters();
-            for (size_t i = 0; i < g_RefreshNames.size(); i++) {
-                g_RefreshSelection[i] = false;
-                for (const auto& cc : cachedChars) {
-                    if (cc.name == g_RefreshNames[i] && cc.level == 80) {
-                        g_RefreshSelection[i] = true;
-                        break;
-                    }
-                }
-            }
-        }
-
-        ImGui::Separator();
-
-        // Scrollable checkbox list
-        ImGui::BeginChild("##charCheckList", ImVec2(280, 300), true);
-        const auto& cachedChars = AlterEgo::GW2API::GetCharacters();
-        for (size_t i = 0; i < g_RefreshNames.size(); i++) {
-            ImGui::PushID((int)i);
-            bool checked = g_RefreshSelection[i];
-
-            // Look up cached data for level/profession color
-            const AlterEgo::Character* cached = nullptr;
-            for (const auto& cc : cachedChars) {
-                if (cc.name == g_RefreshNames[i]) { cached = &cc; break; }
-            }
-
-            if (ImGui::Checkbox("##cb", &checked))
-                g_RefreshSelection[i] = checked;
-            ImGui::SameLine();
-            if (cached) {
-                ImGui::TextColored(GetProfessionColor(cached->profession), "%s", g_RefreshNames[i].c_str());
-                ImGui::SameLine();
-                ImGui::TextColored(ImVec4(0.5f, 0.5f, 0.5f, 1.0f), "Lv%d", cached->level);
-            } else {
-                ImGui::Text("%s", g_RefreshNames[i].c_str());
-            }
-            ImGui::PopID();
-        }
-        ImGui::EndChild();
-
-        // Count selected
-        int selCount = 0;
-        for (bool b : g_RefreshSelection) { if (b) selCount++; }
-
-        ImGui::Spacing();
-        char btnLabel[64];
-        snprintf(btnLabel, sizeof(btnLabel), "Refresh Selected (%d)", selCount);
-        bool canRefresh = (selCount > 0);
-        if (!canRefresh) ImGui::PushStyleVar(ImGuiStyleVar_Alpha, 0.5f);
-        if (ImGui::Button(btnLabel) && canRefresh) {
-            // Build the selected name list, with currently viewed character first
-            std::vector<std::string> selected;
-            const auto& chars = AlterEgo::GW2API::GetCharacters();
-            std::string currentName;
-            if (g_SelectedCharIdx >= 0 && g_SelectedCharIdx < (int)g_CharDisplayOrder.size()) {
-                int ri = g_CharDisplayOrder[g_SelectedCharIdx];
-                if (ri >= 0 && ri < (int)chars.size()) currentName = chars[ri].name;
-            }
-
-            // Add current character first if selected
-            for (size_t i = 0; i < g_RefreshNames.size(); i++) {
-                if (g_RefreshSelection[i] && g_RefreshNames[i] == currentName) {
-                    selected.push_back(g_RefreshNames[i]);
-                    break;
-                }
-            }
-            // Add the rest
-            for (size_t i = 0; i < g_RefreshNames.size(); i++) {
-                if (g_RefreshSelection[i] && g_RefreshNames[i] != currentName)
-                    selected.push_back(g_RefreshNames[i]);
-            }
-
-            AlterEgo::GW2API::RequestCharacterRefreshSelected(selected);
-            g_DetailsFetched = false;
-            g_RefreshPopupOpen = false;
-            ImGui::CloseCurrentPopup();
-        }
-        if (!canRefresh) ImGui::PopStyleVar();
-        ImGui::SameLine();
-        if (ImGui::Button("Cancel")) {
-            g_RefreshPopupOpen = false;
-            ImGui::CloseCurrentPopup();
-        }
-
-        ImGui::EndPopup();
     }
 
     ImGui::Separator();
@@ -9880,6 +9907,54 @@ void AddonRender() {
                 g_CharListWidth = (g_CharListWidth < 120.0f) ? 120.0f : (g_CharListWidth > availW - 200.0f) ? availW - 200.0f : g_CharListWidth;
 
                 ImGui::BeginChild("CharList", ImVec2(g_CharListWidth, 0), true);
+
+                // Refresh Characters button + status
+                {
+                    bool refreshDisabled = scanning || !hoardReady;
+                    if (refreshDisabled) ImGui::PushStyleVar(ImGuiStyleVar_Alpha, 0.5f);
+                    if (ImGui::Button("Refresh", ImVec2(-1, 0)) && !refreshDisabled) {
+                        g_RefreshListFetching = true;
+                        AlterEgo::GW2API::RequestCharacterList();
+                    }
+                    if (refreshDisabled) ImGui::PopStyleVar();
+
+                    // Compact status line
+                    if (fetchStatus == AlterEgo::FetchStatus::InProgress) {
+                        g_FetchDoneTime = std::chrono::steady_clock::time_point{};
+                        ImGui::TextColored(ImVec4(1.0f, 0.85f, 0.0f, 1.0f), "%s",
+                            AlterEgo::GW2API::GetFetchStatusMessage().c_str());
+                    } else if (fetchStatus == AlterEgo::FetchStatus::Error ||
+                               fetchStatus == AlterEgo::FetchStatus::Success) {
+                        if (g_FetchDoneTime == std::chrono::steady_clock::time_point{})
+                            g_FetchDoneTime = std::chrono::steady_clock::now();
+                        float elapsed = std::chrono::duration<float>(
+                            std::chrono::steady_clock::now() - g_FetchDoneTime).count();
+                        if (elapsed < 5.0f) {
+                            float alpha = (elapsed < 4.0f) ? 1.0f : (5.0f - elapsed);
+                            ImVec4 col = (fetchStatus == AlterEgo::FetchStatus::Error)
+                                ? ImVec4(1.0f, 0.3f, 0.3f, alpha)
+                                : ImVec4(0.35f, 0.82f, 0.35f, alpha);
+                            ImGui::TextColored(col, "%s",
+                                AlterEgo::GW2API::GetFetchStatusMessage().c_str());
+                        }
+                    }
+                    if (!scanning) {
+                        time_t last = AlterEgo::GW2API::GetLastUpdated();
+                        if (last > 0) {
+                            time_t now_t = std::time(nullptr);
+                            int el = (int)difftime(now_t, last);
+                            std::string ago;
+                            if (el < 60) ago = "just now";
+                            else if (el < 3600) ago = std::to_string(el / 60) + "m ago";
+                            else if (el < 86400) ago = std::to_string(el / 3600) + "h ago";
+                            else ago = std::to_string(el / 86400) + "d ago";
+                            ImGui::TextColored(ImVec4(0.6f, 0.6f, 0.6f, 1.0f), "Updated %s", ago.c_str());
+                        } else if (hoardReady && !AlterEgo::GW2API::HasCharacterData()) {
+                            ImGui::TextColored(ImVec4(0.6f, 0.6f, 0.6f, 1.0f), "Click Refresh to load");
+                        }
+                    }
+                    ImGui::Separator();
+                }
 
                 // Sort mode selector + direction toggle (inside the list child)
                 {
@@ -10435,6 +10510,127 @@ void AddonRender() {
                     ImGui::TextColored(ImVec4(0.5f, 0.5f, 0.5f, 1.0f), "Select a character from the list.");
                 }
                 ImGui::EndChild();
+            }
+
+            // When the character list fetch completes, populate the refresh popup
+            if (g_RefreshListFetching &&
+                AlterEgo::GW2API::GetFetchStatus() != AlterEgo::FetchStatus::InProgress) {
+                g_RefreshListFetching = false;
+                const auto& names = AlterEgo::GW2API::GetPendingCharNames();
+                if (!names.empty()) {
+                    g_RefreshNames = names;
+                    g_RefreshSelection.assign(names.size(), false);
+                    const auto& chars = AlterEgo::GW2API::GetCharacters();
+                    std::string currentName;
+                    if (g_SelectedCharIdx >= 0 && g_SelectedCharIdx < (int)g_CharDisplayOrder.size()) {
+                        int ri = g_CharDisplayOrder[g_SelectedCharIdx];
+                        if (ri >= 0 && ri < (int)chars.size()) currentName = chars[ri].name;
+                    }
+                    for (size_t i = 0; i < names.size(); i++) {
+                        if (names[i] == currentName)
+                            g_RefreshSelection[i] = true;
+                    }
+                    g_RefreshPopupOpen = true;
+                    ImGui::OpenPopup("Select Characters to Refresh");
+                }
+            }
+
+            // Character refresh selection popup
+            if (ImGui::BeginPopup("Select Characters to Refresh")) {
+                ImGui::Text("Select characters to refresh:");
+                ImGui::Spacing();
+
+                if (ImGui::SmallButton("All")) {
+                    for (size_t i = 0; i < g_RefreshSelection.size(); i++)
+                        g_RefreshSelection[i] = true;
+                }
+                ImGui::SameLine();
+                if (ImGui::SmallButton("None")) {
+                    for (size_t i = 0; i < g_RefreshSelection.size(); i++)
+                        g_RefreshSelection[i] = false;
+                }
+                ImGui::SameLine();
+                if (ImGui::SmallButton("Lv80")) {
+                    const auto& cachedChars = AlterEgo::GW2API::GetCharacters();
+                    for (size_t i = 0; i < g_RefreshNames.size(); i++) {
+                        g_RefreshSelection[i] = false;
+                        for (const auto& cc : cachedChars) {
+                            if (cc.name == g_RefreshNames[i] && cc.level == 80) {
+                                g_RefreshSelection[i] = true;
+                                break;
+                            }
+                        }
+                    }
+                }
+
+                ImGui::Separator();
+
+                ImGui::BeginChild("##charCheckList", ImVec2(280, 300), true);
+                const auto& cachedChars = AlterEgo::GW2API::GetCharacters();
+                for (size_t i = 0; i < g_RefreshNames.size(); i++) {
+                    ImGui::PushID((int)i);
+                    bool checked = g_RefreshSelection[i];
+
+                    const AlterEgo::Character* cached = nullptr;
+                    for (const auto& cc : cachedChars) {
+                        if (cc.name == g_RefreshNames[i]) { cached = &cc; break; }
+                    }
+
+                    if (ImGui::Checkbox("##cb", &checked))
+                        g_RefreshSelection[i] = checked;
+                    ImGui::SameLine();
+                    if (cached) {
+                        ImGui::TextColored(GetProfessionColor(cached->profession), "%s", g_RefreshNames[i].c_str());
+                        ImGui::SameLine();
+                        ImGui::TextColored(ImVec4(0.5f, 0.5f, 0.5f, 1.0f), "Lv%d", cached->level);
+                    } else {
+                        ImGui::Text("%s", g_RefreshNames[i].c_str());
+                    }
+                    ImGui::PopID();
+                }
+                ImGui::EndChild();
+
+                int selCount = 0;
+                for (bool b : g_RefreshSelection) { if (b) selCount++; }
+
+                ImGui::Spacing();
+                char btnLabel[64];
+                snprintf(btnLabel, sizeof(btnLabel), "Refresh Selected (%d)", selCount);
+                bool canRefresh = (selCount > 0);
+                if (!canRefresh) ImGui::PushStyleVar(ImGuiStyleVar_Alpha, 0.5f);
+                if (ImGui::Button(btnLabel) && canRefresh) {
+                    std::vector<std::string> selected;
+                    const auto& chars = AlterEgo::GW2API::GetCharacters();
+                    std::string currentName;
+                    if (g_SelectedCharIdx >= 0 && g_SelectedCharIdx < (int)g_CharDisplayOrder.size()) {
+                        int ri = g_CharDisplayOrder[g_SelectedCharIdx];
+                        if (ri >= 0 && ri < (int)chars.size()) currentName = chars[ri].name;
+                    }
+
+                    for (size_t i = 0; i < g_RefreshNames.size(); i++) {
+                        if (g_RefreshSelection[i] && g_RefreshNames[i] == currentName) {
+                            selected.push_back(g_RefreshNames[i]);
+                            break;
+                        }
+                    }
+                    for (size_t i = 0; i < g_RefreshNames.size(); i++) {
+                        if (g_RefreshSelection[i] && g_RefreshNames[i] != currentName)
+                            selected.push_back(g_RefreshNames[i]);
+                    }
+
+                    AlterEgo::GW2API::RequestCharacterRefreshSelected(selected);
+                    g_DetailsFetched = false;
+                    g_RefreshPopupOpen = false;
+                    ImGui::CloseCurrentPopup();
+                }
+                if (!canRefresh) ImGui::PopStyleVar();
+                ImGui::SameLine();
+                if (ImGui::Button("Cancel")) {
+                    g_RefreshPopupOpen = false;
+                    ImGui::CloseCurrentPopup();
+                }
+
+                ImGui::EndPopup();
             }
 
             ImGui::EndTabItem();
