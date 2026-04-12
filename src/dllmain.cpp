@@ -31,7 +31,7 @@
 #define V_MAJOR 0
 #define V_MINOR 9
 #define V_BUILD 3
-#define V_REVISION 2
+#define V_REVISION 3
 
 // Quick Access icon identifiers
 #define QA_ID "QA_ALTER_EGO"
@@ -1298,19 +1298,24 @@ static void SaveClearsCache() {
         return ej;
     };
 
-    nlohmann::json fractals = nlohmann::json::array();
-    for (const auto& e : g_DailyFractals) fractals.push_back(serializeEntry(e));
-    j["dailyFractals"] = fractals;
+    // Snapshot data under lock to prevent concurrent modification
+    {
+        std::lock_guard<std::mutex> lock(g_ClearsMutex);
 
-    nlohmann::json bounties = nlohmann::json::array();
-    for (const auto& e : g_DailyBounties) bounties.push_back(serializeEntry(e));
-    j["dailyBounties"] = bounties;
+        nlohmann::json fractals = nlohmann::json::array();
+        for (const auto& e : g_DailyFractals) fractals.push_back(serializeEntry(e));
+        j["dailyFractals"] = fractals;
 
-    nlohmann::json wings = nlohmann::json::array();
-    for (const auto& e : g_WeeklyWings) wings.push_back(serializeEntry(e));
-    j["weeklyWings"] = wings;
+        nlohmann::json bounties = nlohmann::json::array();
+        for (const auto& e : g_DailyBounties) bounties.push_back(serializeEntry(e));
+        j["dailyBounties"] = bounties;
 
-    j["weeklyStrikes"] = serializeEntry(g_WeeklyStrikes);
+        nlohmann::json wings = nlohmann::json::array();
+        for (const auto& e : g_WeeklyWings) wings.push_back(serializeEntry(e));
+        j["weeklyWings"] = wings;
+
+        j["weeklyStrikes"] = serializeEntry(g_WeeklyStrikes);
+    }
 
     std::ofstream file(path);
     if (file.is_open()) file << j.dump(2);
@@ -1355,15 +1360,32 @@ static void LoadClearsCache() {
         {
             std::lock_guard<std::mutex> lock(g_ClearsMutex);
 
+            // Clear vectors before loading to prevent accumulation
+            g_DailyFractals.clear();
+            g_DailyBounties.clear();
+            g_WeeklyWings.clear();
+            g_WeeklyStrikes = ClearEntry{};
+
+            // Helper: deduplicate entries by ID
+            auto dedup = [](std::vector<ClearEntry>& vec) {
+                std::unordered_set<uint32_t> seen;
+                vec.erase(std::remove_if(vec.begin(), vec.end(),
+                    [&seen](const ClearEntry& e) {
+                        return !seen.insert(e.id).second;
+                    }), vec.end());
+            };
+
             // Load daily data only if no daily reset has occurred since fetch
             if (!dailyStale) {
                 if (j.contains("dailyFractals") && j["dailyFractals"].is_array()) {
                     for (const auto& ej : j["dailyFractals"])
                         g_DailyFractals.push_back(deserializeEntry(ej));
+                    dedup(g_DailyFractals);
                 }
                 if (j.contains("dailyBounties") && j["dailyBounties"].is_array()) {
                     for (const auto& ej : j["dailyBounties"])
                         g_DailyBounties.push_back(deserializeEntry(ej));
+                    dedup(g_DailyBounties);
                 }
             }
 
@@ -1372,6 +1394,7 @@ static void LoadClearsCache() {
                 if (j.contains("weeklyWings") && j["weeklyWings"].is_array()) {
                     for (const auto& ej : j["weeklyWings"])
                         g_WeeklyWings.push_back(deserializeEntry(ej));
+                    dedup(g_WeeklyWings);
                     // Sort into canonical W1-W8 order
                     static const std::unordered_map<uint32_t, int> wingOrder = {
                         {9128, 1}, {9147, 2}, {9182, 3}, {9144, 4},
@@ -7591,10 +7614,16 @@ static void OnClearsAchResponse(void* eventArgs) {
                 ce.done = it->second.done;
                 ce.current = it->second.current;
                 ce.max = it->second.max;
-                ce.bitDone.assign(ce.bitNames.size(), false);
-                for (uint32_t bitIdx : it->second.bits) {
-                    if (bitIdx < ce.bitDone.size()) {
-                        ce.bitDone[bitIdx] = true;
+                // API clears bits when achievement is fully completed;
+                // detect this and mark all encounters done
+                if (it->second.done && ce.max > 0 && ce.current >= ce.max) {
+                    ce.bitDone.assign(ce.bitNames.size(), true);
+                } else {
+                    ce.bitDone.assign(ce.bitNames.size(), false);
+                    for (uint32_t bitIdx : it->second.bits) {
+                        if (bitIdx < ce.bitDone.size()) {
+                            ce.bitDone[bitIdx] = true;
+                        }
                     }
                 }
             }
@@ -8891,21 +8920,7 @@ static void RenderClears() {
                         wingName = "W" + std::to_string(it->second) + ": " + wingName;
                 }
 
-                // Compute wing completion from individual bits
-                // (API 'done' flag may persist across weekly resets)
-                bool allDone = g_ClearsFetched && !wing.bitDone.empty();
-                if (allDone) {
-                    for (size_t i = 0; i < wing.bitNames.size(); i++) {
-                        std::string sn = ShortenEncounterName(wing.bitNames[i]);
-                        if (sn.empty()) continue;
-                        bool bd = (i < wing.bitDone.size()) ? wing.bitDone[i] : false;
-                        if (!bd) { allDone = false; break; }
-                    }
-                }
-                if (allDone)
-                    ImGui::TextColored(ImVec4(0.35f, 0.82f, 0.35f, 1.0f), "%s", wingName.c_str());
-                else
-                    ImGui::Text("%s", wingName.c_str());
+                ImGui::Text("%s", wingName.c_str());
 
                 ImGui::TableNextColumn();
                 // Render encounters, skipping progress-only bits (empty short name)
