@@ -31,7 +31,7 @@
 #define V_MAJOR 0
 #define V_MINOR 9
 #define V_BUILD 3
-#define V_REVISION 1
+#define V_REVISION 2
 
 // Quick Access icon identifiers
 #define QA_ID "QA_ALTER_EGO"
@@ -424,7 +424,7 @@ static std::unordered_set<std::string> s_portraitMissing;
 
 static int64_t GetFileModTime(const std::string& path) {
     try {
-        auto ftime = std::filesystem::last_write_time(path);
+        auto ftime = std::filesystem::last_write_time(std::filesystem::u8path(path));
         return ftime.time_since_epoch().count();
     } catch (...) { return 0; }
 }
@@ -2470,25 +2470,28 @@ static void RenderEquipmentSlot(const AlterEgo::EquipmentItem* eq, const char* s
             ImGui::EndTooltip();
         }
     } else {
-        // Try to show skin icon first, fall back to item icon
-        uint32_t display_id = eq->skin ? eq->skin : eq->id;
-        bool is_skin = eq->skin != 0;
-
+        // Show skin icon when available, item icon as fallback
         const AlterEgo::ItemInfo* item_info = AlterEgo::GW2API::GetItemInfo(eq->id);
         const AlterEgo::SkinInfo* skin_info = eq->skin ? AlterEgo::GW2API::GetSkinInfo(eq->skin) : nullptr;
 
+        // Use offset ID for skin icons to avoid cache collision with item icons
+        uint32_t display_id;
         std::string icon_url;
         std::string display_name = slotName;
         std::string rarity = "Basic";
 
         if (skin_info) {
+            display_id = eq->skin + 5000000;
             icon_url = skin_info->icon_url;
             display_name = skin_info->name;
             rarity = skin_info->rarity;
-        } else if (item_info) {
-            icon_url = item_info->icon_url;
-            display_name = item_info->name;
-            rarity = item_info->rarity;
+        } else {
+            display_id = eq->id;
+            if (item_info) {
+                icon_url = item_info->icon_url;
+                display_name = item_info->name;
+                rarity = item_info->rarity;
+            }
         }
 
         // Use item rarity for border color (actual item, not skin)
@@ -3138,9 +3141,25 @@ static void RenderEquipmentPanel(const AlterEgo::Character& ch) {
                 }
                 // Include mod time in texture ID to bust Nexus cache on file change
                 std::string texId = "AE_PORTRAIT_" + ch.name + "_" + std::to_string(cacheIt->second.modTime);
-                try {
-                    overlayTex = APIDefs->Textures_GetOrCreateFromFile(texId.c_str(), cacheIt->second.path.c_str());
-                } catch (...) {}
+                // First check if Nexus already has this texture cached
+                overlayTex = APIDefs->Textures_Get(texId.c_str());
+                if (!overlayTex || !overlayTex->Resource) {
+                    // Load file ourselves (handles UTF-8 paths) and pass bytes to Nexus
+                    try {
+                        auto fspath = std::filesystem::u8path(cacheIt->second.path);
+                        std::ifstream ifs(fspath, std::ios::binary | std::ios::ate);
+                        if (ifs.is_open()) {
+                            auto sz = ifs.tellg();
+                            if (sz > 0) {
+                                std::vector<uint8_t> buf((size_t)sz);
+                                ifs.seekg(0);
+                                ifs.read(reinterpret_cast<char*>(buf.data()), sz);
+                                overlayTex = APIDefs->Textures_GetOrCreateFromMemory(
+                                    texId.c_str(), buf.data(), (uint64_t)buf.size());
+                            }
+                        }
+                    } catch (...) {}
+                }
                 if (overlayTex && overlayTex->Resource) {
                     if (overlayTex->Height > 0)
                         overlayAspect = (float)overlayTex->Width / (float)overlayTex->Height;
@@ -3154,8 +3173,8 @@ static void RenderEquipmentPanel(const AlterEgo::Character& ch) {
                 bool found = false;
                 for (const char* ext : exts) {
                     std::string path = portraitDir + "/" + ch.name + ext;
-                    DWORD attrs = GetFileAttributesA(path.c_str());
-                    if (attrs != INVALID_FILE_ATTRIBUTES && !(attrs & FILE_ATTRIBUTE_DIRECTORY)) {
+                    std::error_code ec;
+                    if (std::filesystem::is_regular_file(std::filesystem::u8path(path), ec)) {
                         int64_t modTime = GetFileModTime(path);
                         s_portraitPathCache[ch.name] = { path, modTime };
                         found = true;
@@ -3214,31 +3233,6 @@ static void RenderEquipmentPanel(const AlterEgo::Character& ch) {
                 overlayTint
             );
 
-            // Vignette: gradient edge fade into window background
-            {
-                ImVec4 bgF = ImGui::GetStyleColorVec4(ImGuiCol_WindowBg);
-                ImU32 bg = ImGui::ColorConvertFloat4ToU32(bgF);
-                ImU32 clear = ImGui::ColorConvertFloat4ToU32(ImVec4(bgF.x, bgF.y, bgF.z, 0.0f));
-                float fadeX = artW * 0.25f; // horizontal fade width
-                float fadeY = artH * 0.20f; // vertical fade height
-
-                // Left fade
-                dl->AddRectFilledMultiColor(
-                    artPos, ImVec2(artPos.x + fadeX, artMax.y),
-                    bg, clear, clear, bg);
-                // Right fade
-                dl->AddRectFilledMultiColor(
-                    ImVec2(artMax.x - fadeX, artPos.y), artMax,
-                    clear, bg, bg, clear);
-                // Top fade
-                dl->AddRectFilledMultiColor(
-                    artPos, ImVec2(artMax.x, artPos.y + fadeY),
-                    bg, bg, clear, clear);
-                // Bottom fade
-                dl->AddRectFilledMultiColor(
-                    ImVec2(artPos.x, artMax.y - fadeY), artMax,
-                    clear, clear, bg, bg);
-            }
         }
         splitter.Merge(ImGui::GetWindowDrawList());
     }
@@ -8651,7 +8645,7 @@ static std::string ShortenEncounterName(const std::string& text) {
         {"Defeat Samarog.",                                                "Samarog"},
         {"Free the prisoner from his bonds.",                              "Deimos"},
         // W5 — Hall of Chains
-        {"Defeat the Soulless Horror.",                                    "Desmina"},
+        {"Defeat the Soulless Horror.",                                    "Soulless Horror"},
         {"Traverse the River of Souls.",                                   "River"},
         {"Restore the Statue of Ice.",                                     "Broken King"},
         {"Restore the Statue of Death and Resurrection.",                  "Eater"},
@@ -8897,7 +8891,17 @@ static void RenderClears() {
                         wingName = "W" + std::to_string(it->second) + ": " + wingName;
                 }
 
-                bool allDone = g_ClearsFetched && wing.done;
+                // Compute wing completion from individual bits
+                // (API 'done' flag may persist across weekly resets)
+                bool allDone = g_ClearsFetched && !wing.bitDone.empty();
+                if (allDone) {
+                    for (size_t i = 0; i < wing.bitNames.size(); i++) {
+                        std::string sn = ShortenEncounterName(wing.bitNames[i]);
+                        if (sn.empty()) continue;
+                        bool bd = (i < wing.bitDone.size()) ? wing.bitDone[i] : false;
+                        if (!bd) { allDone = false; break; }
+                    }
+                }
                 if (allDone)
                     ImGui::TextColored(ImVec4(0.35f, 0.82f, 0.35f, 1.0f), "%s", wingName.c_str());
                 else
@@ -10735,13 +10739,14 @@ void AddonRender() {
                             ImGui::EndChild();
                             ImGui::EndTabItem();
                         }
-                        if (ImGui::BeginTabItem("Hero Challenges")) {
-                            g_SelectedTab = 2;
-                            ImGui::BeginChild("HeroChallengeScroll", ImVec2(0, 0), false);
-                            RenderHeroChallengesPanel(ch);
-                            ImGui::EndChild();
-                            ImGui::EndTabItem();
-                        }
+                        // Hero Challenges tab hidden — GW2 API /heropoints returns [] for all characters (upstream bug)
+                        // if (ImGui::BeginTabItem("Hero Challenges")) {
+                        //     g_SelectedTab = 2;
+                        //     ImGui::BeginChild("HeroChallengeScroll", ImVec2(0, 0), false);
+                        //     RenderHeroChallengesPanel(ch);
+                        //     ImGui::EndChild();
+                        //     ImGui::EndTabItem();
+                        // }
                         ImGui::EndTabBar();
                     }
                 } else {
@@ -10925,7 +10930,7 @@ void AddonOptions() {
     ImGui::SameLine();
     ImGui::TextColored(ImVec4(0.5f, 0.5f, 0.5f, 1.0f), "|");
     ImGui::SameLine();
-    if (ImGui::SmallButton("Ko-fi")) {
+    if (ImGui::SmallButton("Buy me a coffee!")) {
         ShellExecuteA(NULL, "open", "https://ko-fi.com/pieorcake", NULL, NULL, SW_SHOWNORMAL);
     }
     ImGui::Separator();

@@ -618,12 +618,19 @@ namespace AlterEgo {
         }
 
         if (resp->status != HOARD_STATUS_OK) {
-            if (s_api) s_api->Log(LOGL_WARNING, "AlterEgo", "Sub-endpoint fetch failed");
-            std::lock_guard<std::mutex> lock(s_mutex);
-            s_fetch_message = "Failed to fetch character data";
-            s_fetch_status = FetchStatus::Error;
-            delete resp;
-            return;
+            if (phase == 6) {
+                // Heropoints is non-critical — skip and finalize character
+                if (s_api) s_api->Log(LOGL_WARNING, "AlterEgo", "Heropoints fetch failed (non-fatal), skipping");
+                delete resp;
+                // Fall through to "determine next action" which will finalize the character
+            } else {
+                if (s_api) s_api->Log(LOGL_WARNING, "AlterEgo", "Sub-endpoint fetch failed");
+                std::lock_guard<std::mutex> lock(s_mutex);
+                s_fetch_message = "Failed to fetch character data";
+                s_fetch_status = FetchStatus::Error;
+                delete resp;
+                return;
+            }
         }
 
         if (resp->truncated) {
@@ -682,11 +689,16 @@ namespace AlterEgo {
                     s_api->Log(LOGL_WARNING, "AlterEgo",
                         ("API error: " + cj["text"].get<std::string>()).c_str());
                 }
-                std::lock_guard<std::mutex> lock(s_mutex);
-                s_fetch_message = "API error: " + cj["text"].get<std::string>();
-                s_fetch_status = FetchStatus::Error;
-                delete resp;
-                return;
+                if (phase == 6) {
+                    // Heropoints is non-critical — skip and finalize character
+                    delete resp;
+                } else {
+                    std::lock_guard<std::mutex> lock(s_mutex);
+                    s_fetch_message = "API error: " + cj["text"].get<std::string>();
+                    s_fetch_status = FetchStatus::Error;
+                    delete resp;
+                    return;
+                }
             }
 
             switch (phase) {
