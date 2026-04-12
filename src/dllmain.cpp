@@ -10109,6 +10109,9 @@ void AddonRender() {
             }
 
             const auto& characters = AlterEgo::GW2API::GetCharacters();
+            // Also check pending names from a list-only fetch (new user, no full data yet)
+            const auto& pendingNames = AlterEgo::GW2API::GetPendingCharNames();
+
             if (!characters.empty()) {
                 // Rebuild display order when character count changes
                 if (characters.size() != g_LastCharCount) {
@@ -10752,6 +10755,48 @@ void AddonRender() {
                 } else {
                     ImGui::TextColored(ImVec4(0.5f, 0.5f, 0.5f, 1.0f), "Select a character from the list.");
                 }
+                ImGui::EndChild();
+            } else {
+                // Empty state: no cached character data yet (new user)
+                ImGui::BeginChild("CharListEmpty", ImVec2(0, 0), true);
+
+                // Refresh button
+                bool refreshDisabled = scanning || !hoardReady;
+                if (refreshDisabled) ImGui::PushStyleVar(ImGuiStyleVar_Alpha, 0.5f);
+                if (ImGui::Button("Refresh", ImVec2(-1, 0)) && !refreshDisabled) {
+                    g_RefreshListFetching = true;
+                    AlterEgo::GW2API::RequestCharacterList();
+                }
+                if (refreshDisabled) ImGui::PopStyleVar();
+
+                // Status messages
+                if (fetchStatus == AlterEgo::FetchStatus::InProgress) {
+                    ImGui::TextColored(ImVec4(1.0f, 0.85f, 0.0f, 1.0f), "%s",
+                        AlterEgo::GW2API::GetFetchStatusMessage().c_str());
+                } else if (fetchStatus == AlterEgo::FetchStatus::Error) {
+                    ImGui::TextColored(ImVec4(1.0f, 0.3f, 0.3f, 1.0f), "%s",
+                        AlterEgo::GW2API::GetFetchStatusMessage().c_str());
+                } else if (hoardReady) {
+                    ImGui::TextColored(ImVec4(0.6f, 0.6f, 0.6f, 1.0f),
+                        "Click Refresh to load your characters.");
+                } else if (hoardStatus == AlterEgo::HoardStatus::Unknown) {
+                    ImGui::TextColored(ImVec4(0.6f, 0.6f, 0.6f, 1.0f),
+                        "Waiting for Hoard & Seek...");
+                } else {
+                    ImGui::TextColored(ImVec4(0.6f, 0.6f, 0.6f, 1.0f),
+                        "Hoard & Seek required for character data.");
+                }
+
+                // Show pending character names if available from a list-only fetch
+                if (!pendingNames.empty()) {
+                    ImGui::Separator();
+                    ImGui::TextColored(ImVec4(0.7f, 0.7f, 0.7f, 1.0f),
+                        "%d characters found:", (int)pendingNames.size());
+                    for (const auto& name : pendingNames) {
+                        ImGui::TextColored(ImVec4(0.6f, 0.6f, 0.6f, 1.0f), "  %s", name.c_str());
+                    }
+                }
+
                 ImGui::EndChild();
             }
 
