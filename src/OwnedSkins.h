@@ -24,6 +24,9 @@ namespace Skinventory {
         // Set data directory for disk cache
         static void SetDataDirectory(const std::string& dir);
 
+        // Set account name for multi-account H&S v3 queries
+        static void SetAccountName(const std::string& name);
+
         // Ping H&S to check availability
         static void PingHoardAndSeek();
 
@@ -89,6 +92,7 @@ namespace Skinventory {
         static size_t s_batch_index;
         static std::atomic<bool> s_batch_pending; // deferred to next Tick()
         static void SendNextBatch();
+        static std::string s_account_name; // for multi-account H&S v3 queries
     };
 
 }

@@ -25,6 +25,7 @@ namespace Skinventory {
     std::vector<uint32_t> OwnedSkins::s_pending_ids;
     size_t OwnedSkins::s_batch_index = 0;
     std::atomic<bool> OwnedSkins::s_batch_pending{false};
+    std::string OwnedSkins::s_account_name;
 
     #define SKINVENTORY_REQUESTER "Skinventory"
     #define EV_SKINVENTORY_SKINS_RESPONSE "EV_SKINVENTORY_SKINS_RESPONSE"
@@ -72,10 +73,23 @@ namespace Skinventory {
         s_API->Events_Raise(EV_HOARD_PING, nullptr);
     }
 
+    void OwnedSkins::SetAccountName(const std::string& name) {
+        std::lock_guard<std::mutex> lock(s_mutex);
+        if (s_account_name == name) return;
+        s_account_name = name;
+        // Clear stale data from previous account
+        s_owned_skins.clear();
+        s_queried_skins.clear();
+        s_locally_marked.clear();
+        s_has_data = false;
+        s_generation++;
+        s_status_message = "Click Refresh Owned to query skins";
+    }
+
     void OwnedSkins::OnPong(void* eventArgs) {
         if (!eventArgs) return;
         auto* pong = (HoardPongPayload*)eventArgs;
-        if (pong->api_version != HOARD_API_VERSION) return;
+        if (pong->api_version < 2) return;
 
         s_hs_available = true;
         {
@@ -112,11 +126,18 @@ namespace Skinventory {
             s_status_message = "Querying /v2/account/skins...";
         }
 
+        std::string acctName;
+        {
+            std::lock_guard<std::mutex> lock(s_mutex);
+            acctName = s_account_name;
+        }
         HoardQueryApiRequest req{};
         req.api_version = HOARD_API_VERSION;
         strncpy(req.requester, SKINVENTORY_REQUESTER, sizeof(req.requester));
         strncpy(req.endpoint, "/v2/account/skins", sizeof(req.endpoint));
         strncpy(req.response_event, EV_SKINVENTORY_API_RESPONSE, sizeof(req.response_event));
+        if (!acctName.empty())
+            strncpy(req.account_name, acctName.c_str(), sizeof(req.account_name) - 1);
 
         s_API->Events_Raise(EV_HOARD_QUERY_API, &req);
     }
@@ -129,7 +150,6 @@ namespace Skinventory {
             std::lock_guard<std::mutex> lock(s_mutex);
             s_status_message = "Permission denied by Hoard & Seek";
             s_querying = false;
-            delete resp;
             return;
         }
 
@@ -137,18 +157,16 @@ namespace Skinventory {
             std::lock_guard<std::mutex> lock(s_mutex);
             s_status_message = "Waiting for Hoard & Seek permission approval...";
             s_querying = false;
-            delete resp;
             return;
         }
 
         if (resp->status == HOARD_STATUS_OK) {
             // Check if truncated — if so, data is incomplete
-            // Also check json_length vs buffer: /v2/account/skins can exceed 32KB
+            // Also check json_length vs buffer: /v2/account/skins can exceed 64KB
             if (resp->truncated || resp->json_length >= sizeof(resp->json)) {
                 std::lock_guard<std::mutex> lock(s_mutex);
                 s_status_message = "API response truncated, falling back to batch query...";
                 s_querying = false;
-                delete resp;
                 // Caller should fall back to RequestOwnedSkins()
                 return;
             }
@@ -180,8 +198,6 @@ namespace Skinventory {
             // Save to disk cache
             SaveToCache();
         }
-
-        delete resp;
     }
 
     void OwnedSkins::RequestOwnedSkins(const std::vector<uint32_t>& skin_ids) {
@@ -228,6 +244,8 @@ namespace Skinventory {
             req.api_version = HOARD_API_VERSION;
             strncpy(req.requester, SKINVENTORY_REQUESTER, sizeof(req.requester));
             strncpy(req.response_event, EV_SKINVENTORY_SKINS_RESPONSE, sizeof(req.response_event));
+            if (!s_account_name.empty())
+                strncpy(req.account_name, s_account_name.c_str(), sizeof(req.account_name) - 1);
 
             req.id_count = 0;
             for (size_t i = s_batch_index; i < end; i++) {
@@ -249,7 +267,6 @@ namespace Skinventory {
             std::lock_guard<std::mutex> lock(s_mutex);
             s_status_message = "Permission denied by Hoard & Seek";
             s_querying = false;
-            delete resp;
             return;
         }
 
@@ -257,7 +274,6 @@ namespace Skinventory {
             std::lock_guard<std::mutex> lock(s_mutex);
             s_status_message = "Waiting for H&S permission approval...";
             s_querying = false;
-            delete resp;
             return;
         }
 
@@ -278,8 +294,6 @@ namespace Skinventory {
             // (H&S delivers events synchronously inside Events_Raise)
             s_batch_pending = true;
         }
-
-        delete resp;
     }
 
     bool OwnedSkins::IsOwned(uint32_t skin_id) {

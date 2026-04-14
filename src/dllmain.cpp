@@ -5,6 +5,7 @@
 #include <cstring>
 #include <sstream>
 #include <algorithm>
+#include <numeric>
 #include <unordered_set>
 #include <set>
 #include <mutex>
@@ -12,6 +13,7 @@
 #include <fstream>
 #include <filesystem>
 #include <chrono>
+#include <atomic>
 
 #include "nexus/Nexus.h"
 #include "imgui.h"
@@ -30,8 +32,8 @@
 // Version constants
 #define V_MAJOR 0
 #define V_MINOR 9
-#define V_BUILD 3
-#define V_REVISION 3
+#define V_BUILD 4
+#define V_REVISION 0
 
 // Quick Access icon identifiers
 #define QA_ID "QA_ALTER_EGO"
@@ -468,6 +470,7 @@ static ClearEntry g_WeeklyStrikes;                 // ach 9125
 static std::mutex g_ClearsMutex;
 static bool g_ClearsFetching = false;
 static bool g_ClearsFetched = false;
+static bool g_ClearsNeedRequery = false;      // deferred requery on account change
 static std::string g_ClearsStatusMsg;
 
 // Reset time tracking
@@ -568,6 +571,11 @@ static std::string g_AchSelectedGroupId;   // currently selected group UUID
 static uint32_t g_AchSelectedCatId = 0;    // currently selected category ID
 static bool g_AchCatFetching = false;      // fetching defs for selected category
 static bool g_AchProgressFetching = false; // fetching account progress
+static bool g_AchNeedRequery = false;      // deferred requery on account change
+static std::atomic<uint32_t> g_AchCatProgressPending{0}; // catId needing progress query (set by bg thread)
+static std::atomic<bool> g_AchRetryPending{false};       // PENDING retry for ach progress
+static std::atomic<bool> g_ClearsRetryPending{false};    // PENDING retry for clears
+static std::atomic<bool> g_ClearsQueryPending{false};    // clears initial fetch done, needs H&S query
 static uint64_t g_AchProgressGen = 0;      // incremented when progress updates, triggers popout cache rebuild
 static char g_AchSearchBuf[128] = "";
 static bool g_AchPopoutVisible = false;    // popout tracker window visibility
@@ -739,25 +747,23 @@ static void OnEvAlertSkinUnlocked(void* eventArgs) {
 
 #define EV_ALERT_ACHIEVEMENT_COMPLETED "EV_ALERT:AchievementCompleted"
 
-// When H&S becomes available, query pinned achievement progress + clears completion
+// When H&S becomes available, signal render thread to query progress + clears.
+// This handler may run on H&S's thread — never call Events_Raise here.
 static void OnHoardPongForAch(void* eventArgs) {
     if (!eventArgs) return;
     auto* pong = (HoardPongPayload*)eventArgs;
-    if (pong->api_version != HOARD_API_VERSION) return;
+    if (pong->api_version < 2) return;
 
-    // Query pinned achievement progress (once per session)
+    // Signal render thread to query pinned achievement progress (once per session)
     if (!g_AchPinnedBootQueried) {
         g_AchPinnedBootQueried = true;
-        std::lock_guard<std::recursive_mutex> lock(g_AchMutex);
-        if (!g_AchPinned.empty()) {
-            SendAchProgressQuery(g_AchPinned);
-        }
+        g_AchRetryPending = true;  // render thread will pick up pinned + selected cat
     }
 
-    // Query clears completion (once per session, only if we have cached defs)
+    // Signal render thread to query clears completion (once per session)
     if (!g_ClearsBootQueried && g_ClearsFetched && !g_ClearsFetching) {
         g_ClearsBootQueried = true;
-        SendClearsAchQuery();
+        g_ClearsQueryPending = true;
     }
 }
 
@@ -919,14 +925,46 @@ static void RebuildCharDisplayOrder() {
             break;
         }
     }
+    // Multi-account: group by account (current account first), preserve sort within each group
+    if (AlterEgo::GW2API::IsMultiAccount()) {
+        const std::string& currentAcct = AlterEgo::GW2API::GetCurrentAccountName();
+        // Build ordered account list: current account first, then others in encounter order
+        std::vector<std::string> acctOrder;
+        if (!currentAcct.empty()) acctOrder.push_back(currentAcct);
+        for (const auto& acct : AlterEgo::GW2API::GetAccounts()) {
+            if (acct.name != currentAcct)
+                acctOrder.push_back(acct.name);
+        }
+        // Stable sort by account group — preserves the per-sort-key ordering within each group
+        std::unordered_map<std::string, int> acctRank;
+        for (int i = 0; i < (int)acctOrder.size(); i++) acctRank[acctOrder[i]] = i;
+        std::stable_sort(g_CharDisplayOrder.begin(), g_CharDisplayOrder.end(),
+            [&](int a, int b) {
+                const std::string& aa = chars[a].account_name;
+                const std::string& ba = chars[b].account_name;
+                if (aa == ba) return false; // preserve existing sort within same account
+                int ra = acctRank.count(aa) ? acctRank[aa] : 999;
+                int rb = acctRank.count(ba) ? acctRank[ba] : 999;
+                return ra < rb;
+            });
+    }
     g_LastCharCount = chars.size();
 }
 
 // Character refresh selection popup state
 static bool g_RefreshPopupOpen = false;
 static bool g_RefreshListFetching = false;     // waiting for char list from H&S
+static bool g_AutoCharListRequested = false;   // auto-fetched char list on H&S connect
 static std::vector<std::string> g_RefreshNames; // all character names from API
 static std::vector<bool> g_RefreshSelection;    // parallel checkbox state
+
+// Multi-account selector state
+static std::string g_SelectedAccountFilter;    // empty = "All Accounts", else specific account_name
+
+// Returns the account name to use for per-account queries (dropdown selection only)
+static std::string GetEffectiveAccountName() {
+    return g_SelectedAccountFilter;
+}
 
 // Gear customization dialog state
 static bool g_GearDialogOpen = false;
@@ -1216,6 +1254,9 @@ static void SaveSession() {
         j["lib_selected_id"] = builds[g_LibSelectedIdx].id;
     j["lib_filter"] = g_LibFilterMode;
 
+    // Account selector
+    j["selected_account"] = g_SelectedAccountFilter;
+
     // Skinventory state
     j["skin_active_tab"] = g_SkinActiveTab;
     j["skin_type"] = g_SkinSelectedType;
@@ -1255,6 +1296,10 @@ static void LoadSession() {
             }
         }
         if (j.contains("lib_filter")) g_LibFilterMode = j["lib_filter"].get<int>();
+
+        // Account selector
+        if (j.contains("selected_account"))
+            g_SelectedAccountFilter = j["selected_account"].get<std::string>();
 
         // Skinventory
         if (j.contains("skin_active_tab")) g_SkinActiveTab = j["skin_active_tab"].get<int>();
@@ -2117,12 +2162,8 @@ static void FetchAchCategoryDefs(uint32_t catId) {
         g_AchCatFetching = false;
         SaveAchDefCache();
 
-        // Now fetch progress for this category
-        std::lock_guard<std::recursive_mutex> lock(g_AchMutex);
-        auto it = g_AchCategories.find(catId);
-        if (it != g_AchCategories.end()) {
-            SendAchProgressQuery(it->second.achievements);
-        }
+        // Signal render thread to query progress (Events_Raise must be on render thread)
+        g_AchCatProgressPending = catId;
     }).detach();
 }
 
@@ -2130,10 +2171,13 @@ static void SendAchProgressQuery(const std::vector<uint32_t>& ids) {
     if (ids.empty() || !APIDefs) return;
 
     // Send via H&S achievement query (same mechanism as Clears)
+    std::string acctName = GetEffectiveAccountName();
     HoardQueryAchievementRequest req{};
     req.api_version = HOARD_API_VERSION;
     strncpy(req.requester, "Alter Ego", sizeof(req.requester) - 1);
     strncpy(req.response_event, EV_AE_ACH_PROGRESS_RESPONSE, sizeof(req.response_event) - 1);
+    if (!acctName.empty())
+        strncpy(req.account_name, acctName.c_str(), sizeof(req.account_name) - 1);
 
     // Batch into chunks of 200 (H&S limit)
     for (size_t start = 0; start < ids.size(); start += 200) {
@@ -2150,22 +2194,13 @@ static void SendAchProgressQuery(const std::vector<uint32_t>& ids) {
 static void OnAchProgressResponse(void* eventArgs) {
     if (!eventArgs) return;
     auto* resp = (HoardQueryAchievementResponse*)eventArgs;
-    if (resp->api_version != HOARD_API_VERSION) { delete resp; return; }
+    if (resp->api_version < 2) { return; }
 
     if (resp->status != HOARD_STATUS_OK) {
         if (resp->status == HOARD_STATUS_PENDING) {
-            // H&S is prompting user for API key — retry
-            std::vector<uint32_t> retryIds;
-            for (uint32_t i = 0; i < resp->entry_count; i++) {
-                retryIds.push_back(resp->entries[i].id);
-            }
-            std::thread([retryIds]() {
-                std::this_thread::sleep_for(std::chrono::seconds(3));
-                SendAchProgressQuery(retryIds);
-            }).detach();
+            g_AchRetryPending = true;
         }
         g_AchProgressFetching = false;
-        delete resp;
         return;
     }
 
@@ -2219,7 +2254,6 @@ static void OnAchProgressResponse(void* eventArgs) {
         g_AchProgressGen++;
     }
     g_AchProgressFetching = false;
-    delete resp;
 }
 
 static void FetchAchNameIndex() {
@@ -6792,21 +6826,16 @@ static void RenderBuildLibrary() {
         ImGui::Separator();
     }
 
-    if (builds.empty() && !g_LibShowImport) {
-        ImGui::Spacing();
-        ImGui::TextColored(ImVec4(0.5f, 0.5f, 0.5f, 1.0f),
-            "No saved builds. Click '+ Import Build' to add one from a chat link.");
-        return;
-    }
-
     ImGui::Spacing();
 
     // Filter + Search
-    ImGui::SetNextItemWidth(80.0f);
-    ImGui::Combo("##lib_filter", &g_LibFilterMode, GameModeNames, IM_ARRAYSIZE(GameModeNames));
-    ImGui::SameLine();
-    ImGui::SetNextItemWidth(150.0f);
-    ImGui::InputTextWithHint("##lib_search", "Search...", g_LibSearchBuf, sizeof(g_LibSearchBuf));
+    if (!builds.empty()) {
+        ImGui::SetNextItemWidth(80.0f);
+        ImGui::Combo("##lib_filter", &g_LibFilterMode, GameModeNames, IM_ARRAYSIZE(GameModeNames));
+        ImGui::SameLine();
+        ImGui::SetNextItemWidth(150.0f);
+        ImGui::InputTextWithHint("##lib_search", "Search...", g_LibSearchBuf, sizeof(g_LibSearchBuf));
+    }
 
     // Left panel: build list, Right panel: preview
     float libAvailW = ImGui::GetContentRegionAvail().x;
@@ -6814,6 +6843,10 @@ static void RenderBuildLibrary() {
 
     ImGui::BeginChild("LibList", ImVec2(g_LibListWidth, 0), true);
     {
+        if (builds.empty()) {
+            ImGui::TextColored(ImVec4(0.5f, 0.5f, 0.5f, 1.0f),
+                "No saved builds.\nClick '+ Import Build'\nto add one from a\nchat link.");
+        }
         struct LibItemRect { float yMin, yMax; int buildIdx; };
         std::vector<LibItemRect> libItemRects;
 
@@ -7276,6 +7309,8 @@ void AddonLoad(AddonAPI_t* aApi) {
     APIDefs->Events_Subscribe(EV_AE_ITEM_LOC_RESP, AlterEgo::GW2API::OnItemLocationResponse);
     APIDefs->Events_Subscribe(EV_AE_CLEARS_ACH_RESPONSE, OnClearsAchResponse);
     APIDefs->Events_Subscribe(EV_AE_ACH_PROGRESS_RESPONSE, OnAchProgressResponse);
+    APIDefs->Events_Subscribe(EV_AE_ACCOUNTS_RESP, AlterEgo::GW2API::OnAccountsResponse);
+    APIDefs->Events_Subscribe(EV_HOARD_ACCOUNTS_CHANGED, AlterEgo::GW2API::OnAccountsChanged);
 
     // Register render functions
     APIDefs->GUI_Register(RT_Render, AddonRender);
@@ -7384,6 +7419,8 @@ void AddonUnload() {
     APIDefs->Events_Unsubscribe(EV_AE_ITEM_LOC_RESP, AlterEgo::GW2API::OnItemLocationResponse);
     APIDefs->Events_Unsubscribe(EV_AE_CLEARS_ACH_RESPONSE, OnClearsAchResponse);
     APIDefs->Events_Unsubscribe(EV_AE_ACH_PROGRESS_RESPONSE, OnAchProgressResponse);
+    APIDefs->Events_Unsubscribe(EV_AE_ACCOUNTS_RESP, AlterEgo::GW2API::OnAccountsResponse);
+    APIDefs->Events_Unsubscribe(EV_HOARD_ACCOUNTS_CHANGED, AlterEgo::GW2API::OnAccountsChanged);
 
     // Shutdown Skinventory subsystems
     Skinventory::WikiImage::Shutdown();
@@ -7433,12 +7470,22 @@ static void LoadLoginTimestamps() {
 void OnMumbleIdentityUpdated(void* eventArgs) {
     if (!eventArgs) return;
     const MumbleIdentity* id = (const MumbleIdentity*)eventArgs;
-    std::string newName(id->Name);
-    if (!newName.empty() && newName != g_CurrentCharName) {
+    char buf[20] = {};
+    memcpy(buf, id->Name, 19);
+    std::string newName(buf);
+    // Validate: GW2 character names contain only letters, spaces, hyphens, accented chars
+    for (unsigned char c : newName) {
+        if (c == ' ' || c == '-' || isalpha(c) || c >= 0x80) continue;
+        return; // invalid — likely garbage data from uninitialized MumbleLink
+    }
+    if (newName.empty()) return;
+    if (newName != g_CurrentCharName) {
         g_LoginTimestamps[newName] = (int64_t)std::time(nullptr);
         g_LoginTimestampsDirty = true;
+        g_CurrentCharName = newName;
+        // Resolve which account this character belongs to
+        AlterEgo::GW2API::SetCurrentAccountFromCharacter(newName);
     }
-    g_CurrentCharName = newName;
 }
 
 void ProcessKeybind(const char* aIdentifier, bool aIsRelease) {
@@ -7547,10 +7594,13 @@ static void SendClearsAchQuery() {
     }
     if (allIds.empty() || !APIDefs) return;
 
+    std::string acctName = GetEffectiveAccountName();
     HoardQueryAchievementRequest req{};
     req.api_version = HOARD_API_VERSION;
     strncpy(req.requester, "Alter Ego", sizeof(req.requester) - 1);
     strncpy(req.response_event, EV_AE_CLEARS_ACH_RESPONSE, sizeof(req.response_event) - 1);
+    if (!acctName.empty())
+        strncpy(req.account_name, acctName.c_str(), sizeof(req.account_name) - 1);
     req.id_count = (uint32_t)std::min(allIds.size(), (size_t)200);
     for (uint32_t i = 0; i < req.id_count; i++) {
         req.ids[i] = allIds[i];
@@ -7562,17 +7612,14 @@ static void SendClearsAchQuery() {
 static void OnClearsAchResponse(void* eventArgs) {
     if (!eventArgs) return;
     auto* resp = (HoardQueryAchievementResponse*)eventArgs;
-    if (resp->api_version != HOARD_API_VERSION) { delete resp; return; }
+    if (resp->api_version < 2) { return; }
 
     if (resp->status != HOARD_STATUS_OK) {
         std::lock_guard<std::mutex> lock(g_ClearsMutex);
         if (resp->status == HOARD_STATUS_PENDING) {
             g_ClearsStatusMsg = "Waiting for H&S permission...";
-            // Retry after a delay — user is being prompted by H&S
-            std::thread([]() {
-                std::this_thread::sleep_for(std::chrono::seconds(3));
-                SendClearsAchQuery();
-            }).detach();
+            // Signal render thread to retry (Events_Raise must be on render thread)
+            g_ClearsRetryPending = true;
         } else {
             if (resp->status == HOARD_STATUS_DENIED)
                 g_ClearsStatusMsg = "H&S permission denied";
@@ -7580,7 +7627,6 @@ static void OnClearsAchResponse(void* eventArgs) {
                 g_ClearsStatusMsg = "H&S error";
             g_ClearsFetching = false;
         }
-        delete resp;
         return;
     }
 
@@ -7642,8 +7688,6 @@ static void OnClearsAchResponse(void* eventArgs) {
 
     // Persist to disk
     SaveClearsCache();
-
-    delete resp;
 }
 
 // Helper: fetch a category's achievement IDs from public API
@@ -7785,8 +7829,9 @@ static void FetchClears() {
             g_ClearsStatusMsg = "Querying completion...";
         }
 
-        // Step 3: Query H&S for completion
-        SendClearsAchQuery();
+        // Background fetch done — allow render thread to send H&S completion query
+        g_ClearsFetching = false;
+        g_ClearsQueryPending = true;
     }).detach();
 }
 
@@ -8747,6 +8792,32 @@ static void RenderClears() {
         FetchClears();
     }
 
+    // Deferred requery on account change
+    if (g_ClearsNeedRequery && g_ClearsFetched && !g_ClearsFetching) {
+        g_ClearsNeedRequery = false;
+        {
+            std::lock_guard<std::mutex> lock(g_ClearsMutex);
+            // Clear stale completion from previous account
+            for (auto& e : g_DailyFractals) { e.done = false; e.current = 0; e.bitDone.assign(e.bitDone.size(), false); }
+            for (auto& e : g_DailyBounties) { e.done = false; e.current = 0; e.bitDone.assign(e.bitDone.size(), false); }
+            for (auto& e : g_WeeklyWings)   { e.done = false; e.current = 0; e.bitDone.assign(e.bitDone.size(), false); }
+            g_WeeklyStrikes.done = false; g_WeeklyStrikes.current = 0;
+            g_WeeklyStrikes.bitDone.assign(g_WeeklyStrikes.bitDone.size(), false);
+            g_ClearsStatusMsg = "Refreshing completion for new account...";
+        }
+        SendClearsAchQuery();
+    }
+
+    // Consume deferred clears query from bg thread (FetchClears step 3)
+    if (g_ClearsQueryPending.exchange(false) && !g_ClearsFetching) {
+        SendClearsAchQuery();
+    }
+
+    // Consume deferred PENDING retry for clears
+    if (g_ClearsRetryPending.exchange(false) && !g_ClearsFetching) {
+        SendClearsAchQuery();
+    }
+
     // Auto re-query completion every 10 minutes (if we have data and not currently fetching)
     auto steadyNow = std::chrono::steady_clock::now();
     if (g_ClearsFetched && !g_ClearsFetching &&
@@ -9248,6 +9319,60 @@ static void RenderAchievements() {
     }
     if (g_AchGroupsFetched && !g_AchActiveEventFetched && !g_AchActiveEventFetching) {
         FetchActiveSpecialEvent();
+    }
+
+    // Deferred requery on account change
+    if (g_AchNeedRequery && !g_AchProgressFetching) {
+        g_AchNeedRequery = false;
+        std::vector<uint32_t> pinnedCopy;
+        {
+            std::lock_guard<std::recursive_mutex> lock(g_AchMutex);
+            g_AchProgress.clear();        // discard stale progress from previous account
+            g_AchOptimisticTime.clear();
+            g_AchProgressGen++;
+            pinnedCopy = g_AchPinned;
+        }
+        if (!pinnedCopy.empty()) {
+            SendAchProgressQuery(pinnedCopy);
+        }
+        if (g_AchSelectedCatId > 0) {
+            std::lock_guard<std::recursive_mutex> lock(g_AchMutex);
+            auto it = g_AchCategories.find(g_AchSelectedCatId);
+            if (it != g_AchCategories.end()) {
+                SendAchProgressQuery(it->second.achievements);
+            }
+        }
+    }
+
+    // Consume deferred progress query from bg thread (FetchAchCategoryDefs)
+    {
+        uint32_t pendingCat = g_AchCatProgressPending.exchange(0);
+        if (pendingCat > 0 && !g_AchProgressFetching) {
+            std::lock_guard<std::recursive_mutex> lock(g_AchMutex);
+            auto it = g_AchCategories.find(pendingCat);
+            if (it != g_AchCategories.end()) {
+                SendAchProgressQuery(it->second.achievements);
+            }
+        }
+    }
+
+    // Consume deferred PENDING retry for achievement progress
+    if (g_AchRetryPending.exchange(false) && !g_AchProgressFetching) {
+        std::vector<uint32_t> retryIds;
+        {
+            std::lock_guard<std::recursive_mutex> lock(g_AchMutex);
+            retryIds = g_AchPinned;
+            if (g_AchSelectedCatId > 0) {
+                auto it = g_AchCategories.find(g_AchSelectedCatId);
+                if (it != g_AchCategories.end()) {
+                    retryIds.insert(retryIds.end(), it->second.achievements.begin(),
+                                    it->second.achievements.end());
+                }
+            }
+        }
+        if (!retryIds.empty()) {
+            SendAchProgressQuery(retryIds);
+        }
     }
 
     // Toolbar: search + popout toggle + refresh
@@ -9924,6 +10049,9 @@ static void RenderAchPopout() {
 }
 
 static void RenderSkinventory() {
+    // Keep OwnedSkins account in sync with dropdown selection
+    Skinventory::OwnedSkins::SetAccountName(GetEffectiveAccountName());
+
     auto cacheStatus = Skinventory::SkinCache::GetStatus();
 
     if (cacheStatus == Skinventory::CacheStatus::Loading ||
@@ -9958,29 +10086,15 @@ static void RenderSkinventory() {
         }
         if (!canRefresh) ImGui::PopStyleVar();
 
-        // Kick off batch query when requested
+        // Kick off query when requested — use API proxy (single request, 64KB buffer)
         if (g_SkinRefreshOwned && canRefresh) {
             g_SkinRefreshOwned = false;
             s_refreshPending = true;
 
-            std::vector<uint32_t> allIds;
-            auto collectAll = [&](const std::string& type, const std::string& subtype,
-                                   const std::string& weight) {
-                auto ids = Skinventory::SkinCache::GetSkinsByCategory(type, subtype, weight);
-                allIds.insert(allIds.end(), ids.begin(), ids.end());
-            };
-            for (const auto& wc : Skinventory::SkinCache::GetArmorWeights()) {
-                for (const auto& slot : Skinventory::SkinCache::GetArmorSlots(wc)) {
-                    collectAll("Armor", slot, wc);
-                }
-            }
-            for (const auto& wt : Skinventory::SkinCache::GetWeaponTypes()) {
-                collectAll("Weapon", wt, "");
-            }
-            collectAll("Back", "", "");
-            if (!allIds.empty()) {
-                Skinventory::OwnedSkins::RequestOwnedSkins(allIds);
-            }
+            // Update account for the query
+            Skinventory::OwnedSkins::SetAccountName(GetEffectiveAccountName());
+
+            Skinventory::OwnedSkins::RequestOwnedSkinsViaApi();
         }
 
         // Detect when query finishes
@@ -10107,11 +10221,67 @@ void AddonRender() {
         ImGui::TextColored(ImVec4(1.0f, 0.3f, 0.3f, 1.0f), "H&S permission denied. Enable in H&S settings.");
     }
 
+    // Auto-query accounts when H&S becomes available (multi-account)
+    {
+        static bool s_accountsQuerySent = false;
+        if (hoardReady && !s_accountsQuerySent) {
+            s_accountsQuerySent = true;
+            AlterEgo::GW2API::QueryAccounts();
+        }
+    }
+
+    // Account selector (only when multi-account)
+    static bool g_ForceCharactersTab = false;
+    if (AlterEgo::GW2API::IsMultiAccount()) {
+        const auto& accounts = AlterEgo::GW2API::GetAccounts();
+        // Find current display label
+        std::string currentLabel = "All Accounts";
+        for (const auto& acct : accounts) {
+            if (acct.name == g_SelectedAccountFilter) {
+                currentLabel = acct.display_name;
+                break;
+            }
+        }
+        float comboWidth = 180.0f;
+        float avail = ImGui::GetContentRegionAvail().x;
+        ImGui::SameLine(avail - comboWidth);
+        ImGui::SetNextItemWidth(comboWidth);
+        if (ImGui::BeginCombo("##AccountSelect", currentLabel.c_str())) {
+            std::string prevFilter = g_SelectedAccountFilter;
+            if (ImGui::Selectable("All Accounts", g_SelectedAccountFilter.empty())) {
+                g_SelectedAccountFilter.clear();
+                // If on an account-scoped tab, switch to Characters
+                if (g_MainTab >= 2) g_ForceCharactersTab = true;
+            }
+            for (const auto& acct : accounts) {
+                bool selected = (g_SelectedAccountFilter == acct.name);
+                if (ImGui::Selectable(acct.display_name.c_str(), selected)) {
+                    g_SelectedAccountFilter = acct.name;
+                }
+            }
+            // When selection changes to a specific account, set flags for deferred requery
+            // (each tab handles its own H&S queries when it renders — avoids synchronous
+            //  Events_Raise calls during the dropdown handler which can freeze/crash)
+            if (g_SelectedAccountFilter != prevFilter && !g_SelectedAccountFilter.empty()) {
+                Skinventory::OwnedSkins::SetAccountName(g_SelectedAccountFilter);
+                g_SkinRefreshOwned = true;
+                g_ClearsNeedRequery = true;
+                g_AchNeedRequery = true;
+            }
+            ImGui::EndCombo();
+        }
+    }
+
     ImGui::Separator();
 
     // Top-level tab bar: Characters | Build Library
     if (ImGui::BeginTabBar("##main_tabs")) {
-        if (ImGui::BeginTabItem("Characters")) {
+        ImGuiTabItemFlags charTabFlags = 0;
+        if (g_ForceCharactersTab) {
+            charTabFlags = ImGuiTabItemFlags_SetSelected;
+            g_ForceCharactersTab = false;
+        }
+        if (ImGui::BeginTabItem("Characters", nullptr, charTabFlags)) {
             g_MainTab = 0;
 
             // Re-trigger detail fetch when character data finishes loading
@@ -10127,9 +10297,21 @@ void AddonRender() {
             // Also check pending names from a list-only fetch (new user, no full data yet)
             const auto& pendingNames = AlterEgo::GW2API::GetPendingCharNames();
 
+            // Auto-fetch character list when H&S first becomes ready and we have no data
+            // Wait for accounts data so we get characters from ALL accounts
+            if (!g_AutoCharListRequested && hoardReady && !scanning &&
+                characters.empty() && pendingNames.empty() &&
+                AlterEgo::GW2API::HasAccountsData()) {
+                g_AutoCharListRequested = true;
+                AlterEgo::GW2API::RequestCharacterList();
+            }
+
             if (!characters.empty()) {
-                // Rebuild display order when character count changes
-                if (characters.size() != g_LastCharCount) {
+                // Rebuild display order when character count or current account changes
+                static std::string s_lastCurrentAcct;
+                const std::string& curAcct = AlterEgo::GW2API::GetCurrentAccountName();
+                if (characters.size() != g_LastCharCount || curAcct != s_lastCurrentAcct) {
+                    s_lastCurrentAcct = curAcct;
                     RebuildCharDisplayOrder();
                 }
 
@@ -10280,7 +10462,7 @@ void AddonRender() {
                 }
 
                 // Collect item rects for insertion-line drag-and-drop
-                struct CharItemRect { float yMin, yMax; };
+                struct CharItemRect { float yMin, yMax; int di; std::string acctName; };
                 std::vector<CharItemRect> itemRects;
                 itemRects.reserve(g_CharDisplayOrder.size());
 
@@ -10295,10 +10477,23 @@ void AddonRender() {
                                    charSearchLower.begin(), ::tolower);
                 }
 
+                // Build account display name lookup for headers
+                bool showAcctHeaders = AlterEgo::GW2API::IsMultiAccount();
+                std::unordered_map<std::string, std::string> acctDisplayNames;
+                if (showAcctHeaders) {
+                    for (const auto& acct : AlterEgo::GW2API::GetAccounts())
+                        acctDisplayNames[acct.name] = acct.display_name;
+                }
+                std::string lastAcctHeader;
+
                 for (int di = 0; di < (int)g_CharDisplayOrder.size(); di++) {
                     int realIdx = g_CharDisplayOrder[di];
                     if (realIdx < 0 || realIdx >= (int)characters.size()) continue;
                     const auto& ch = characters[realIdx];
+
+                    // Apply account filter
+                    if (!g_SelectedAccountFilter.empty() && ch.account_name != g_SelectedAccountFilter)
+                        continue;
 
                     // Apply search filter
                     if (!charSearchLower.empty()) {
@@ -10310,6 +10505,17 @@ void AddonRender() {
                             profLower.find(charSearchLower) == std::string::npos)
                             continue;
                     }
+
+                    // Account group header
+                    if (showAcctHeaders && ch.account_name != lastAcctHeader) {
+                        lastAcctHeader = ch.account_name;
+                        auto it = acctDisplayNames.find(ch.account_name);
+                        const char* label = it != acctDisplayNames.end() ? it->second.c_str() : ch.account_name.c_str();
+                        if (di > 0) ImGui::Spacing();
+                        ImGui::TextColored(ImVec4(0.7f, 0.7f, 0.5f, 1.0f), "%s", label);
+                        ImGui::Separator();
+                    }
+
                     ImGui::PushID(di);
 
                     bool selected = (g_SelectedCharIdx == di);
@@ -10380,7 +10586,7 @@ void AddonRender() {
                     ImVec2 rMin = ImGui::GetItemRectMin();
                     ImVec2 rMax = ImGui::GetItemRectMax();
 
-                    itemRects.push_back({ rMin.y, rMax.y });
+                    itemRects.push_back({ rMin.y, rMax.y, di, ch.account_name });
 
                     // Drag source for Custom sort mode
                     if (g_CharSortMode == Sort_Custom) {
@@ -10586,53 +10792,80 @@ void AddonRender() {
                 // Custom sort: draw insertion line and handle drop
                 if (g_CharSortMode == Sort_Custom && g_CharDragIdx >= 0 &&
                     ImGui::GetDragDropPayload() != nullptr) {
-                    float mouseY = ImGui::GetMousePos().y;
-                    int insertIdx = (int)itemRects.size(); // default: end
-                    float bestLineY = 0;
+                    // Find source account for constraining drops
+                    std::string srcAcct;
+                    {
+                        int srcReal = (g_CharDragIdx >= 0 && g_CharDragIdx < (int)g_CharDisplayOrder.size())
+                            ? g_CharDisplayOrder[g_CharDragIdx] : -1;
+                        if (srcReal >= 0 && srcReal < (int)characters.size())
+                            srcAcct = characters[srcReal].account_name;
+                    }
 
-                    for (int di = 0; di < (int)itemRects.size(); di++) {
-                        float midY = (itemRects[di].yMin + itemRects[di].yMax) * 0.5f;
-                        if (mouseY < midY) {
-                            insertIdx = di;
-                            bestLineY = itemRects[di].yMin;
-                            break;
+                    // Find the range of itemRects indices belonging to the same account
+                    int acctFirst = -1, acctLast = -1;
+                    for (int i = 0; i < (int)itemRects.size(); i++) {
+                        if (itemRects[i].acctName == srcAcct) {
+                            if (acctFirst < 0) acctFirst = i;
+                            acctLast = i;
                         }
                     }
-                    if (insertIdx == (int)itemRects.size() && !itemRects.empty())
-                        bestLineY = itemRects.back().yMax;
+
+                    float mouseY = ImGui::GetMousePos().y;
+                    int insertIdx = -1;
+                    float bestLineY = 0;
+
+                    if (acctFirst >= 0) {
+                        // Clamp insertion to within the account group
+                        insertIdx = acctLast + 1; // default: end of account group
+                        for (int i = acctFirst; i <= acctLast; i++) {
+                            float midY = (itemRects[i].yMin + itemRects[i].yMax) * 0.5f;
+                            if (mouseY < midY) {
+                                insertIdx = i;
+                                bestLineY = itemRects[i].yMin;
+                                break;
+                            }
+                        }
+                        if (insertIdx == acctLast + 1)
+                            bestLineY = itemRects[acctLast].yMax;
+                    }
 
                     // Draw insertion line
-                    ImDrawList* dl = ImGui::GetWindowDrawList();
-                    float xMin = ImGui::GetWindowPos().x + 2;
-                    float xMax = xMin + ImGui::GetWindowContentRegionMax().x - 4;
-                    dl->AddLine(ImVec2(xMin, bestLineY), ImVec2(xMax, bestLineY),
-                        IM_COL32(100, 180, 255, 220), 2.0f);
+                    if (insertIdx >= 0) {
+                        ImDrawList* dl = ImGui::GetWindowDrawList();
+                        float xMin = ImGui::GetWindowPos().x + 2;
+                        float xMax = xMin + ImGui::GetWindowContentRegionMax().x - 4;
+                        dl->AddLine(ImVec2(xMin, bestLineY), ImVec2(xMax, bestLineY),
+                            IM_COL32(100, 180, 255, 220), 2.0f);
+                    }
 
-                    // Handle drop anywhere in the list area
+                    // Handle drop
                     if (ImGui::IsMouseReleased(0)) {
-                        int srcDi = g_CharDragIdx;
-                        // Adjust insert index if dragging from before the insertion point
-                        int targetDi = insertIdx;
-                        if (srcDi < targetDi) targetDi--;
-                        if (srcDi != targetDi && srcDi >= 0 && srcDi < (int)g_CharDisplayOrder.size()) {
-                            int movedIdx = g_CharDisplayOrder[srcDi];
-                            g_CharDisplayOrder.erase(g_CharDisplayOrder.begin() + srcDi);
-                            int finalPos = (srcDi < insertIdx) ? insertIdx - 1 : insertIdx;
-                            if (finalPos > (int)g_CharDisplayOrder.size())
-                                finalPos = (int)g_CharDisplayOrder.size();
-                            g_CharDisplayOrder.insert(g_CharDisplayOrder.begin() + finalPos, movedIdx);
-                            // Update custom order
-                            g_CustomCharOrder.clear();
-                            for (int idx : g_CharDisplayOrder)
-                                g_CustomCharOrder.push_back(characters[idx].name);
-                            // Fix selection
-                            if (g_SelectedCharIdx == srcDi)
-                                g_SelectedCharIdx = finalPos;
-                            else if (srcDi < finalPos && g_SelectedCharIdx > srcDi && g_SelectedCharIdx <= finalPos)
-                                g_SelectedCharIdx--;
-                            else if (srcDi > finalPos && g_SelectedCharIdx >= finalPos && g_SelectedCharIdx < srcDi)
-                                g_SelectedCharIdx++;
-                            SaveCharSortConfig();
+                        if (insertIdx >= 0) {
+                            // Map itemRects indices back to display-order indices
+                            int srcDi = g_CharDragIdx;
+                            int dstDi = (insertIdx < (int)itemRects.size()) ? itemRects[insertIdx].di
+                                : (itemRects[acctLast].di + 1);
+
+                            if (srcDi != dstDi && srcDi >= 0 && srcDi < (int)g_CharDisplayOrder.size()) {
+                                int movedIdx = g_CharDisplayOrder[srcDi];
+                                g_CharDisplayOrder.erase(g_CharDisplayOrder.begin() + srcDi);
+                                int finalPos = (srcDi < dstDi) ? dstDi - 1 : dstDi;
+                                if (finalPos > (int)g_CharDisplayOrder.size())
+                                    finalPos = (int)g_CharDisplayOrder.size();
+                                g_CharDisplayOrder.insert(g_CharDisplayOrder.begin() + finalPos, movedIdx);
+                                // Update custom order
+                                g_CustomCharOrder.clear();
+                                for (int idx : g_CharDisplayOrder)
+                                    g_CustomCharOrder.push_back(characters[idx].name);
+                                // Fix selection
+                                if (g_SelectedCharIdx == srcDi)
+                                    g_SelectedCharIdx = finalPos;
+                                else if (srcDi < finalPos && g_SelectedCharIdx > srcDi && g_SelectedCharIdx <= finalPos)
+                                    g_SelectedCharIdx--;
+                                else if (srcDi > finalPos && g_SelectedCharIdx >= finalPos && g_SelectedCharIdx < srcDi)
+                                    g_SelectedCharIdx++;
+                                SaveCharSortConfig();
+                            }
                         }
                         g_CharDragIdx = -1;
                     }
@@ -10773,16 +11006,22 @@ void AddonRender() {
                 ImGui::EndChild();
             } else {
                 // Empty state: no cached character data yet (new user)
-                ImGui::BeginChild("CharListEmpty", ImVec2(0, 0), true);
+                // Use same width as normal character list panel
+                float availW = ImGui::GetContentRegionAvail().x;
+                g_CharListWidth = (g_CharListWidth < 120.0f) ? 120.0f : (g_CharListWidth > availW - 200.0f) ? availW - 200.0f : g_CharListWidth;
 
-                // Refresh button
-                bool refreshDisabled = scanning || !hoardReady;
-                if (refreshDisabled) ImGui::PushStyleVar(ImGuiStyleVar_Alpha, 0.5f);
-                if (ImGui::Button("Refresh", ImVec2(-1, 0)) && !refreshDisabled) {
-                    g_RefreshListFetching = true;
-                    AlterEgo::GW2API::RequestCharacterList();
+                ImGui::BeginChild("CharListEmpty", ImVec2(g_CharListWidth, 0), true);
+
+                // Refresh button (opens the standard refresh popup when names are available)
+                {
+                    bool refreshDisabled = scanning || !hoardReady;
+                    if (refreshDisabled) ImGui::PushStyleVar(ImGuiStyleVar_Alpha, 0.5f);
+                    if (ImGui::Button("Refresh", ImVec2(-1, 0)) && !refreshDisabled) {
+                        g_RefreshListFetching = true;
+                        AlterEgo::GW2API::RequestCharacterList();
+                    }
+                    if (refreshDisabled) ImGui::PopStyleVar();
                 }
-                if (refreshDisabled) ImGui::PopStyleVar();
 
                 // Status messages
                 if (fetchStatus == AlterEgo::FetchStatus::InProgress) {
@@ -10791,9 +11030,12 @@ void AddonRender() {
                 } else if (fetchStatus == AlterEgo::FetchStatus::Error) {
                     ImGui::TextColored(ImVec4(1.0f, 0.3f, 0.3f, 1.0f), "%s",
                         AlterEgo::GW2API::GetFetchStatusMessage().c_str());
+                } else if (!pendingNames.empty()) {
+                    ImGui::TextColored(ImVec4(0.6f, 0.6f, 0.6f, 1.0f),
+                        "Click Refresh to fetch full data.");
                 } else if (hoardReady) {
                     ImGui::TextColored(ImVec4(0.6f, 0.6f, 0.6f, 1.0f),
-                        "Click Refresh to load your characters.");
+                        "Loading character list...");
                 } else if (hoardStatus == AlterEgo::HoardStatus::Unknown) {
                     ImGui::TextColored(ImVec4(0.6f, 0.6f, 0.6f, 1.0f),
                         "Waiting for Hoard & Seek...");
@@ -10802,16 +11044,55 @@ void AddonRender() {
                         "Hoard & Seek required for character data.");
                 }
 
-                // Show pending character names if available from a list-only fetch
-                if (!pendingNames.empty()) {
+                // Show pending character names grouped by account
+                if (!pendingNames.empty() && AlterEgo::GW2API::IsMultiAccount()) {
                     ImGui::Separator();
-                    ImGui::TextColored(ImVec4(0.7f, 0.7f, 0.7f, 1.0f),
-                        "%d characters found:", (int)pendingNames.size());
-                    for (const auto& name : pendingNames) {
-                        ImGui::TextColored(ImVec4(0.6f, 0.6f, 0.6f, 1.0f), "  %s", name.c_str());
+                    const auto& accounts = AlterEgo::GW2API::GetAccounts();
+                    // Sort so current account appears first
+                    const std::string& currentAcct = AlterEgo::GW2API::GetCurrentAccountName();
+                    std::vector<int> acctOrder(accounts.size());
+                    std::iota(acctOrder.begin(), acctOrder.end(), 0);
+                    std::stable_partition(acctOrder.begin(), acctOrder.end(),
+                        [&](int i) { return accounts[i].name == currentAcct; });
+                    for (int ai : acctOrder) {
+                        const auto& acct = accounts[ai];
+                        if (!g_SelectedAccountFilter.empty() && acct.name != g_SelectedAccountFilter)
+                            continue;
+                        // Collect chars for this account
+                        bool hasChars = false;
+                        for (size_t i = 0; i < pendingNames.size(); i++) {
+                            if (AlterEgo::GW2API::GetAccountForCharacter(pendingNames[i]) == acct.name) {
+                                if (!hasChars) {
+                                    hasChars = true;
+                                    ImGui::TextColored(ImVec4(0.7f, 0.7f, 0.5f, 1.0f), "%s", acct.display_name.c_str());
+                                }
+                                ImGui::PushID((int)i);
+                                ImGui::Selectable(pendingNames[i].c_str(), false, 0, ImVec2(0, 20.0f));
+                                ImGui::PopID();
+                            }
+                        }
+                    }
+                } else if (!pendingNames.empty()) {
+                    ImGui::Separator();
+                    for (size_t i = 0; i < pendingNames.size(); i++) {
+                        ImGui::PushID((int)i);
+                        ImGui::Selectable(pendingNames[i].c_str(), false, 0, ImVec2(0, 20.0f));
+                        ImGui::PopID();
                     }
                 }
 
+                ImGui::EndChild();
+
+                // Detail panel placeholder (right side)
+                ImGui::SameLine();
+                ImGui::BeginChild("CharDetailEmpty", ImVec2(0, 0), true);
+                if (!pendingNames.empty()) {
+                    ImGui::TextColored(ImVec4(0.5f, 0.5f, 0.5f, 1.0f),
+                        "Click Refresh and select characters to fetch their data.");
+                } else {
+                    ImGui::TextColored(ImVec4(0.5f, 0.5f, 0.5f, 1.0f),
+                        "Waiting for character list...");
+                }
                 ImGui::EndChild();
             }
 
@@ -10821,16 +11102,25 @@ void AddonRender() {
                 g_RefreshListFetching = false;
                 const auto& names = AlterEgo::GW2API::GetPendingCharNames();
                 if (!names.empty()) {
-                    g_RefreshNames = names;
-                    g_RefreshSelection.assign(names.size(), false);
+                    // Filter by selected account if applicable
+                    if (!g_SelectedAccountFilter.empty()) {
+                        g_RefreshNames.clear();
+                        for (const auto& n : names) {
+                            if (AlterEgo::GW2API::GetAccountForCharacter(n) == g_SelectedAccountFilter)
+                                g_RefreshNames.push_back(n);
+                        }
+                    } else {
+                        g_RefreshNames = names;
+                    }
+                    g_RefreshSelection.assign(g_RefreshNames.size(), false);
                     const auto& chars = AlterEgo::GW2API::GetCharacters();
                     std::string currentName;
                     if (g_SelectedCharIdx >= 0 && g_SelectedCharIdx < (int)g_CharDisplayOrder.size()) {
                         int ri = g_CharDisplayOrder[g_SelectedCharIdx];
                         if (ri >= 0 && ri < (int)chars.size()) currentName = chars[ri].name;
                     }
-                    for (size_t i = 0; i < names.size(); i++) {
-                        if (names[i] == currentName)
+                    for (size_t i = 0; i < g_RefreshNames.size(); i++) {
+                        if (g_RefreshNames[i] == currentName)
                             g_RefreshSelection[i] = true;
                     }
                     g_RefreshPopupOpen = true;
@@ -10945,24 +11235,46 @@ void AddonRender() {
             ImGui::EndTabItem();
         }
 
+        // Disable account-scoped tabs when viewing "All Accounts"
+        bool acctTabsDisabled = AlterEgo::GW2API::IsMultiAccount() && g_SelectedAccountFilter.empty();
+        const char* acctTabTooltip = "Select a specific account to use this tab.";
+
         ImGuiTabItemFlags skinTabFlags = 0;
-        if (g_SwitchToSkinventory) {
+        if (g_SwitchToSkinventory && !acctTabsDisabled) {
             skinTabFlags = ImGuiTabItemFlags_SetSelected;
             g_SwitchToSkinventory = false;
         }
-        if (g_SkinInitialized && ImGui::BeginTabItem("Skinventory", nullptr, skinTabFlags)) {
+        if (acctTabsDisabled) {
+            ImGui::PushStyleVar(ImGuiStyleVar_Alpha, 0.4f);
+            ImGui::TabItemButton("Skinventory", ImGuiTabItemFlags_NoReorder);
+            ImGui::PopStyleVar();
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("%s", acctTabTooltip);
+        } else if (g_SkinInitialized && ImGui::BeginTabItem("Skinventory", nullptr, skinTabFlags)) {
             g_MainTab = 2;
             RenderSkinventory();
             ImGui::EndTabItem();
         }
 
-        if (ImGui::BeginTabItem("Clears")) {
+        if (acctTabsDisabled) {
+            ImGui::PushStyleVar(ImGuiStyleVar_Alpha, 0.4f);
+            ImGui::TabItemButton("Clears", ImGuiTabItemFlags_NoReorder);
+            ImGui::PopStyleVar();
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("%s", acctTabTooltip);
+        } else if (ImGui::BeginTabItem("Clears")) {
             g_MainTab = 3;
             RenderClears();
             ImGui::EndTabItem();
         }
 
-        if (ImGui::BeginTabItem("Achievements")) {
+        if (acctTabsDisabled) {
+            ImGui::PushStyleVar(ImGuiStyleVar_Alpha, 0.4f);
+            ImGui::TabItemButton("Achievements", ImGuiTabItemFlags_NoReorder);
+            ImGui::PopStyleVar();
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("%s", acctTabTooltip);
+        } else if (ImGui::BeginTabItem("Achievements")) {
             g_MainTab = 4;
             RenderAchievements();
             ImGui::EndTabItem();

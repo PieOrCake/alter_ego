@@ -58,6 +58,11 @@ namespace AlterEgo {
     HoardStatus GW2API::s_hoard_status = HoardStatus::Unknown;
     FetchStatus GW2API::s_fetch_status = FetchStatus::Idle;
     std::string GW2API::s_fetch_message;
+    uint32_t GW2API::s_account_count = 0;
+    std::vector<AccountInfo> GW2API::s_accounts;
+    std::string GW2API::s_current_account_name;
+    std::unordered_map<std::string, std::string> GW2API::s_char_to_account;
+    bool GW2API::s_accounts_queried = false;
     std::vector<Character> GW2API::s_characters;
     bool GW2API::s_has_character_data = false;
     time_t GW2API::s_last_updated = 0;
@@ -67,6 +72,7 @@ namespace AlterEgo {
     std::string GW2API::s_priority_char_name;
     int GW2API::s_pending_char_idx = 0;
     bool GW2API::s_list_only_mode = false;
+    int GW2API::s_multi_acct_list_idx = -1;
     Character GW2API::s_current_char;
     int GW2API::s_fetch_phase = 0;
     std::vector<int> GW2API::s_equip_tab_ids;
@@ -152,26 +158,35 @@ namespace AlterEgo {
     void GW2API::OnHoardPong(void* eventArgs) {
         if (!eventArgs) return;
         auto* pong = (HoardPongPayload*)eventArgs;
-        if (pong->api_version != HOARD_API_VERSION) return;
+        if (pong->api_version < 2) return; // accept v2+ pongs
 
         std::lock_guard<std::mutex> lock(s_mutex);
         s_hoard_status = HoardStatus::Available;
+        if (pong->api_version >= 3) {
+            s_account_count = pong->account_count;
+        }
         if (s_api) {
-            s_api->Log(LOGL_INFO, "AlterEgo",
-                pong->has_data ? "Hoard & Seek is available (has data)" :
-                                 "Hoard & Seek is available (no data yet)");
+            std::string msg = pong->has_data ? "Hoard & Seek is available (has data)" :
+                                               "Hoard & Seek is available (no data yet)";
+            if (pong->api_version >= 3 && pong->account_count > 1) {
+                msg += " [" + std::to_string(pong->account_count) + " accounts]";
+            }
+            s_api->Log(LOGL_INFO, "AlterEgo", msg.c_str());
         }
     }
 
     void GW2API::OnHoardDataUpdated(void* eventArgs) {
         if (!eventArgs) return;
         auto* payload = (HoardDataReadyPayload*)eventArgs;
-        if (payload->api_version != HOARD_API_VERSION) return;
+        if (payload->api_version < 2) return; // accept v2+ payloads
 
         // H&S refreshed its data — auto-refresh our character data
         std::lock_guard<std::mutex> lock(s_mutex);
         if (s_hoard_status == HoardStatus::Available || s_hoard_status == HoardStatus::Ready) {
             s_hoard_status = HoardStatus::Ready;
+        }
+        if (payload->api_version >= 3) {
+            s_account_count = payload->account_count;
         }
         if (s_api) {
             s_api->Log(LOGL_INFO, "AlterEgo", "H&S data updated, refreshing characters...");
@@ -202,12 +217,19 @@ namespace AlterEgo {
         // Batch in groups of 200 (H&S limit)
         // NOTE: EV_HOARD_QUERY_SKINS is synchronous — response handler runs
         // inline before Events_Raise returns. Do NOT hold s_mutex here.
+        std::string acctName;
+        {
+            std::lock_guard<std::mutex> lock(s_mutex);
+            acctName = s_current_account_name;
+        }
         const size_t BATCH = 200;
         for (size_t i = 0; i < to_query.size(); i += BATCH) {
             HoardQuerySkinsRequest req{};
             req.api_version = HOARD_API_VERSION;
             strncpy(req.requester, "Alter Ego", sizeof(req.requester) - 1);
             strncpy(req.response_event, EV_AE_SKIN_UNLOCK_RESP, sizeof(req.response_event) - 1);
+            if (!acctName.empty())
+                strncpy(req.account_name, acctName.c_str(), sizeof(req.account_name) - 1);
             req.id_count = (uint32_t)std::min(BATCH, to_query.size() - i);
             for (uint32_t j = 0; j < req.id_count; j++)
                 req.ids[j] = to_query[i + j];
@@ -218,9 +240,8 @@ namespace AlterEgo {
     void GW2API::OnSkinUnlocksResponse(void* eventArgs) {
         if (!eventArgs) return;
         auto* resp = (HoardQuerySkinsResponse*)eventArgs;
-        if (resp->api_version != HOARD_API_VERSION) return;
+        if (resp->api_version < 2) return;
         if (resp->status != HOARD_STATUS_OK) {
-            delete resp;
             return;
         }
 
@@ -228,7 +249,6 @@ namespace AlterEgo {
         for (uint32_t i = 0; i < resp->entry_count; i++) {
             s_skin_unlocks[resp->entries[i].id] = (resp->entries[i].unlocked != 0);
         }
-        delete resp;
     }
 
     void GW2API::QueryItemLocation(uint32_t item_id) {
@@ -246,9 +266,8 @@ namespace AlterEgo {
     void GW2API::OnItemLocationResponse(void* eventArgs) {
         if (!eventArgs) return;
         auto* resp = (HoardQueryItemResponse*)eventArgs;
-        if (resp->api_version != HOARD_API_VERSION) return;
+        if (resp->api_version < 2) return;
         if (resp->status != HOARD_STATUS_OK) {
-            delete resp;
             return;
         }
 
@@ -256,11 +275,12 @@ namespace AlterEgo {
         result.item_id = resp->item_id;
         result.name = resp->name;
         result.total_count = resp->total_count;
-        for (uint32_t i = 0; i < resp->location_count && i < 32; i++) {
+        for (uint32_t i = 0; i < resp->location_count && i < 64; i++) {
             ItemLocationEntry entry;
             entry.location = resp->locations[i].location;
             entry.sublocation = resp->locations[i].sublocation;
             entry.count = resp->locations[i].count;
+            entry.account_name = resp->locations[i].account_name;
             result.locations.push_back(entry);
         }
 
@@ -268,7 +288,6 @@ namespace AlterEgo {
             std::lock_guard<std::mutex> lock(s_mutex);
             s_item_locations[resp->item_id] = std::move(result);
         }
-        delete resp;
     }
 
     bool GW2API::IsSkinUnlocked(uint32_t skin_id) {
@@ -293,6 +312,124 @@ namespace AlterEgo {
         return (it != s_item_locations.end()) ? &it->second : nullptr;
     }
 
+    // --- Multi-account management ---
+
+    void GW2API::QueryAccounts() {
+        if (!s_api) return;
+
+        s_api->Log(LOGL_INFO, "AlterEgo", "QueryAccounts: sending EV_HOARD_QUERY_ACCOUNTS");
+        HoardQueryAccountsRequest req{};
+        req.api_version = HOARD_API_VERSION;
+        strncpy(req.requester, "Alter Ego", sizeof(req.requester) - 1);
+        strncpy(req.response_event, EV_AE_ACCOUNTS_RESP, sizeof(req.response_event) - 1);
+        s_api->Events_Raise(EV_HOARD_QUERY_ACCOUNTS, &req);
+        s_api->Log(LOGL_INFO, "AlterEgo", "QueryAccounts: event raised");
+    }
+
+    void GW2API::OnAccountsResponse(void* eventArgs) {
+        if (!eventArgs) { if (s_api) s_api->Log(LOGL_WARNING, "AlterEgo", "OnAccountsResponse: null eventArgs"); return; }
+        auto* resp = (HoardQueryAccountsResponse*)eventArgs;
+        if (s_api) s_api->Log(LOGL_INFO, "AlterEgo",
+            ("OnAccountsResponse: status=" + std::to_string(resp->status) +
+             " account_count=" + std::to_string(resp->account_count)).c_str());
+        if (resp->status != HOARD_STATUS_OK) {
+            if (s_api) s_api->Log(LOGL_WARNING, "AlterEgo",
+                ("OnAccountsResponse: non-OK status " + std::to_string(resp->status)).c_str());
+            return;
+        }
+
+        std::lock_guard<std::mutex> lock(s_mutex);
+        s_accounts.clear();
+        s_char_to_account.clear();
+        s_accounts_queried = true;
+
+        for (uint32_t i = 0; i < resp->account_count && i < 16; i++) {
+            AccountInfo acct;
+            acct.name = resp->accounts[i].account_name;
+            acct.label = resp->accounts[i].label;
+            acct.display_name = (acct.label.empty() || acct.label[0] == '\0') ? acct.name : acct.label;
+            acct.last_updated = resp->accounts[i].last_updated;
+            acct.validated = resp->accounts[i].validated != 0;
+            for (uint32_t c = 0; c < resp->accounts[i].character_count && c < 80; c++) {
+                std::string charName(resp->accounts[i].characters[c]);
+                if (!charName.empty()) {
+                    acct.characters.push_back(charName);
+                    s_char_to_account[charName] = acct.name;
+                }
+            }
+            s_accounts.push_back(std::move(acct));
+        }
+        s_account_count = (uint32_t)s_accounts.size();
+
+        if (s_api) {
+            size_t totalChars = 0;
+            for (const auto& a : s_accounts) totalChars += a.characters.size();
+            s_api->Log(LOGL_INFO, "AlterEgo",
+                ("Accounts received: " + std::to_string(s_accounts.size()) +
+                 ", total chars: " + std::to_string(totalChars)).c_str());
+            for (uint32_t i = 0; i < resp->account_count && i < 16; i++) {
+                s_api->Log(LOGL_INFO, "AlterEgo",
+                    ("  Account[" + std::to_string(i) + "]: name='" +
+                     std::string(resp->accounts[i].account_name) +
+                     "' char_count=" + std::to_string(resp->accounts[i].character_count)).c_str());
+            }
+        }
+    }
+
+    void GW2API::OnAccountsChanged(void* /*eventArgs*/) {
+        // Re-query accounts when H&S notifies us of changes
+        QueryAccounts();
+    }
+
+    uint32_t GW2API::GetAccountCount() {
+        std::lock_guard<std::mutex> lock(s_mutex);
+        return s_account_count;
+    }
+
+    const std::vector<AccountInfo>& GW2API::GetAccounts() {
+        return s_accounts;
+    }
+
+    const std::string& GW2API::GetCurrentAccountName() {
+        return s_current_account_name;
+    }
+
+    void GW2API::SetCurrentAccountFromCharacter(const std::string& charName) {
+        std::lock_guard<std::mutex> lock(s_mutex);
+        auto it = s_char_to_account.find(charName);
+        if (it != s_char_to_account.end()) {
+            s_current_account_name = it->second;
+        }
+    }
+
+    bool GW2API::IsMultiAccount() {
+        std::lock_guard<std::mutex> lock(s_mutex);
+        return s_account_count > 1;
+    }
+
+    bool GW2API::HasAccountsData() {
+        std::lock_guard<std::mutex> lock(s_mutex);
+        return s_accounts_queried;
+    }
+
+    std::vector<std::string> GW2API::GetAllCharacterNamesFromAccounts(const std::string& accountFilter) {
+        std::lock_guard<std::mutex> lock(s_mutex);
+        std::vector<std::string> result;
+        for (const auto& acct : s_accounts) {
+            if (!accountFilter.empty() && acct.name != accountFilter) continue;
+            for (const auto& ch : acct.characters) {
+                result.push_back(ch);
+            }
+        }
+        return result;
+    }
+
+    std::string GW2API::GetAccountForCharacter(const std::string& charName) {
+        std::lock_guard<std::mutex> lock(s_mutex);
+        auto it = s_char_to_account.find(charName);
+        return (it != s_char_to_account.end()) ? it->second : std::string();
+    }
+
     // --- Character data fetch via H&S API proxy ---
 
     void GW2API::RequestCharacterRefresh(const std::string& priorityChar) {
@@ -311,41 +448,108 @@ namespace AlterEgo {
                 return;
             }
             s_fetch_status = FetchStatus::InProgress;
-            s_fetch_message = "Requesting character list from H&S...";
             s_pending_char_names.clear();
             s_pending_char_idx = 0;
             s_chars_fetched = 0;
             s_chars_total = 0;
             s_priority_char_name = priorityChar;
             s_list_only_mode = false;
+            s_fetch_message = "Requesting character list from H&S...";
         }
 
-        // Request character list via H&S API proxy
+        // Fetch character list first (multi-account or single), then OnCharListResponse
+        // will start the per-character data fetch.
+        // But we need list_only_mode=false so the response handler knows to start data fetch.
+        std::string acctName;
+        {
+            std::lock_guard<std::mutex> lock(s_mutex);
+            acctName = s_current_account_name;
+        }
         HoardQueryApiRequest req{};
         req.api_version = HOARD_API_VERSION;
         strncpy(req.requester, "Alter Ego", sizeof(req.requester) - 1);
         strncpy(req.endpoint, "/v2/characters", sizeof(req.endpoint) - 1);
         strncpy(req.response_event, EV_AE_CHAR_LIST_RESP, sizeof(req.response_event) - 1);
+        if (!acctName.empty())
+            strncpy(req.account_name, acctName.c_str(), sizeof(req.account_name) - 1);
         s_api->Events_Raise(EV_HOARD_QUERY_API, &req);
     }
 
     void GW2API::RequestCharacterList() {
         if (!s_api) return;
 
+        std::string acctName;
+        bool needsFetch = false;
         {
             std::lock_guard<std::mutex> lock(s_mutex);
+            s_api->Log(LOGL_INFO, "AlterEgo",
+                ("RequestCharacterList: fetch_status=" + std::to_string((int)s_fetch_status) +
+                 " hoard_status=" + std::to_string((int)s_hoard_status) +
+                 " accounts_queried=" + std::to_string(s_accounts_queried) +
+                 " accounts_size=" + std::to_string(s_accounts.size())).c_str());
             if (s_fetch_status == FetchStatus::InProgress &&
-                s_hoard_status != HoardStatus::PermPending) return;
+                s_hoard_status != HoardStatus::PermPending) {
+                s_api->Log(LOGL_INFO, "AlterEgo", "RequestCharacterList: blocked (InProgress)");
+                return;
+            }
             if (s_hoard_status != HoardStatus::Available &&
                 s_hoard_status != HoardStatus::Ready &&
                 s_hoard_status != HoardStatus::PermPending) {
+                s_api->Log(LOGL_WARNING, "AlterEgo", "RequestCharacterList: H&S not available");
                 s_fetch_message = "Hoard & Seek not available";
                 s_fetch_status = FetchStatus::Error;
                 return;
             }
-            s_fetch_status = FetchStatus::InProgress;
-            s_fetch_message = "Fetching character list...";
+
             s_list_only_mode = true;
+            s_multi_acct_list_idx = -1;
+
+            if (s_accounts_queried && !s_accounts.empty()) {
+                // Hybrid: use chars from accounts that have them, fallback for the rest
+                s_pending_char_names.clear();
+                int firstMissing = -1;
+
+                for (int i = 0; i < (int)s_accounts.size(); i++) {
+                    if (!s_accounts[i].characters.empty()) {
+                        for (const auto& ch : s_accounts[i].characters) {
+                            s_pending_char_names.push_back(ch);
+                            // s_char_to_account already populated by OnAccountsResponse
+                        }
+                    } else if (firstMissing < 0) {
+                        firstMissing = i;
+                    }
+                }
+
+                if (firstMissing < 0) {
+                    // All accounts have chars — fast path
+                    s_hoard_status = HoardStatus::Ready;
+                    s_fetch_message = "Character list received";
+                    s_fetch_status = FetchStatus::Success;
+                    s_api->Log(LOGL_INFO, "AlterEgo",
+                        ("RequestCharacterList: fast path, " +
+                         std::to_string(s_pending_char_names.size()) + " chars from accounts").c_str());
+                    return;
+                }
+
+                // Some accounts need fallback — start multi-account fetch for missing ones
+                s_fetch_status = FetchStatus::InProgress;
+                s_multi_acct_list_idx = firstMissing;
+                acctName = s_accounts[firstMissing].name;
+                needsFetch = true;
+                s_fetch_message = "Fetching character list...";
+                s_api->Log(LOGL_INFO, "AlterEgo",
+                    ("RequestCharacterList: hybrid mode, " +
+                     std::to_string(s_pending_char_names.size()) + " chars from accounts, " +
+                     "fallback starting at account " + std::to_string(firstMissing) +
+                     ": " + acctName).c_str());
+            } else {
+                // No accounts data — single-account fallback
+                s_fetch_status = FetchStatus::InProgress;
+                acctName = s_current_account_name;
+                needsFetch = true;
+                s_fetch_message = "Fetching character list...";
+                s_api->Log(LOGL_INFO, "AlterEgo", "RequestCharacterList: single-account mode");
+            }
         }
 
         HoardQueryApiRequest req{};
@@ -353,6 +557,8 @@ namespace AlterEgo {
         strncpy(req.requester, "Alter Ego", sizeof(req.requester) - 1);
         strncpy(req.endpoint, "/v2/characters", sizeof(req.endpoint) - 1);
         strncpy(req.response_event, EV_AE_CHAR_LIST_RESP, sizeof(req.response_event) - 1);
+        if (!acctName.empty())
+            strncpy(req.account_name, acctName.c_str(), sizeof(req.account_name) - 1);
         s_api->Events_Raise(EV_HOARD_QUERY_API, &req);
     }
 
@@ -372,6 +578,7 @@ namespace AlterEgo {
             // Start fetching the first character
             s_current_char = Character{};
             s_current_char.name = s_pending_char_names[0];
+            { auto ait = s_char_to_account.find(s_current_char.name); if (ait != s_char_to_account.end()) s_current_char.account_name = ait->second; }
             s_fetch_phase = 0;
             s_equip_tab_ids.clear();
             s_equip_tab_idx = 0;
@@ -393,8 +600,7 @@ namespace AlterEgo {
             return;
         }
         auto* resp = (HoardQueryApiResponse*)eventArgs;
-        if (resp->api_version != HOARD_API_VERSION) {
-            delete resp;
+        if (resp->api_version < 2) {
             return;
         }
 
@@ -410,7 +616,6 @@ namespace AlterEgo {
             s_hoard_status = HoardStatus::PermPending;
             s_fetch_message = "Waiting for H&S permission approval...";
             s_fetch_status = FetchStatus::InProgress;
-            delete resp;
             return;
         }
         if (resp->status == HOARD_STATUS_DENIED) {
@@ -418,33 +623,95 @@ namespace AlterEgo {
             s_hoard_status = HoardStatus::PermDenied;
             s_fetch_message = "H&S permission denied. Enable in H&S settings.";
             s_fetch_status = FetchStatus::Error;
-            delete resp;
             return;
         }
         if (resp->status != HOARD_STATUS_OK || resp->truncated) {
             std::lock_guard<std::mutex> lock(s_mutex);
             s_fetch_message = resp->truncated ? "Character list truncated" : "H&S returned error";
             s_fetch_status = FetchStatus::Error;
-            delete resp;
             return;
         }
 
         // Parse character names from JSON array (use json_length!)
         try {
             json j = json::parse(resp->json, resp->json + resp->json_length);
-            if (!j.is_array() || j.empty()) {
+            if (!j.is_array()) {
+                std::lock_guard<std::mutex> lock(s_mutex);
+                s_fetch_message = "Invalid character list response";
+                s_fetch_status = FetchStatus::Error;
+                return;
+            }
+            // Empty array is OK during multi-account chaining (account may have 0 chars)
+            if (j.empty() && s_multi_acct_list_idx < 0) {
                 std::lock_guard<std::mutex> lock(s_mutex);
                 s_fetch_message = "No characters found";
                 s_fetch_status = FetchStatus::Error;
-                delete resp;
                 return;
             }
 
             {
-                std::lock_guard<std::mutex> lock(s_mutex);
+                std::unique_lock<std::mutex> lock(s_mutex);
                 s_hoard_status = HoardStatus::Ready;
 
-                // Collect ALL character names
+                // Multi-account char list mode: append names, chain to next account
+                if (s_multi_acct_list_idx >= 0 && s_list_only_mode) {
+                    std::string currentAcctName;
+                    if (s_multi_acct_list_idx < (int)s_accounts.size())
+                        currentAcctName = s_accounts[s_multi_acct_list_idx].name;
+
+                    for (const auto& name : j) {
+                        std::string charName = name.get<std::string>();
+                        s_pending_char_names.push_back(charName);
+                        if (!currentAcctName.empty())
+                            s_char_to_account[charName] = currentAcctName;
+                    }
+
+                    s_multi_acct_list_idx++;
+                    // Skip accounts that already have character lists from the accounts response
+                    while (s_multi_acct_list_idx < (int)s_accounts.size() &&
+                           !s_accounts[s_multi_acct_list_idx].characters.empty()) {
+                        s_multi_acct_list_idx++;
+                    }
+                    bool chainNext = (s_multi_acct_list_idx < (int)s_accounts.size());
+                    std::string nextAcct;
+                    if (chainNext) {
+                        nextAcct = s_accounts[s_multi_acct_list_idx].name;
+                        s_fetch_message = "Fetching character list (account " +
+                            std::to_string(s_multi_acct_list_idx + 1) + "/" +
+                            std::to_string(s_accounts.size()) + ")...";
+                    } else {
+                        // All accounts done
+                        s_multi_acct_list_idx = -1;
+                        s_list_only_mode = false;
+                        s_fetch_message = "Character list received";
+                        s_fetch_status = FetchStatus::Success;
+                    }
+                    size_t totalSoFar = s_pending_char_names.size();
+
+                    // Release lock (scope exit) before Events_Raise
+                    lock.unlock();
+
+                    if (chainNext) {
+                        if (s_api) s_api->Log(LOGL_INFO, "AlterEgo",
+                            ("OnCharListResponse: chaining to account " +
+                             std::to_string(s_multi_acct_list_idx) + ": " + nextAcct +
+                             " (total chars so far: " + std::to_string(totalSoFar) + ")").c_str());
+                        HoardQueryApiRequest nextReq{};
+                        nextReq.api_version = HOARD_API_VERSION;
+                        strncpy(nextReq.requester, "Alter Ego", sizeof(nextReq.requester) - 1);
+                        strncpy(nextReq.endpoint, "/v2/characters", sizeof(nextReq.endpoint) - 1);
+                        strncpy(nextReq.response_event, EV_AE_CHAR_LIST_RESP, sizeof(nextReq.response_event) - 1);
+                        strncpy(nextReq.account_name, nextAcct.c_str(), sizeof(nextReq.account_name) - 1);
+                        s_api->Events_Raise(EV_HOARD_QUERY_API, &nextReq);
+                    } else {
+                        if (s_api) s_api->Log(LOGL_INFO, "AlterEgo",
+                            ("OnCharListResponse: all accounts done, total chars: " +
+                             std::to_string(totalSoFar)).c_str());
+                    }
+                    return;
+                }
+
+                // Single-account: collect ALL character names
                 s_pending_char_names.clear();
                 for (const auto& name : j) {
                     s_pending_char_names.push_back(name.get<std::string>());
@@ -455,7 +722,6 @@ namespace AlterEgo {
                     s_list_only_mode = false;
                     s_fetch_message = "Character list received";
                     s_fetch_status = FetchStatus::Success;
-                    delete resp;
                     return;
                 }
 
@@ -477,6 +743,7 @@ namespace AlterEgo {
                 // Initialize sub-endpoint fetch for the first character
                 s_current_char = Character{};
                 s_current_char.name = s_pending_char_names[0];
+                { auto ait = s_char_to_account.find(s_current_char.name); if (ait != s_char_to_account.end()) s_current_char.account_name = ait->second; }
                 s_fetch_phase = 0;
                 s_equip_tab_ids.clear();
                 s_equip_tab_idx = 0;
@@ -498,19 +765,23 @@ namespace AlterEgo {
             s_fetch_message = "Failed to parse character list";
             s_fetch_status = FetchStatus::Error;
         }
-
-        delete resp;
     }
 
     void GW2API::FetchCharacterPhase() {
         if (!s_api) return;
 
         std::string char_name;
+        std::string acctName;
         int phase;
         {
             std::lock_guard<std::mutex> lock(s_mutex);
             char_name = s_current_char.name;
             phase = s_fetch_phase;
+            // Look up which account owns this character (not the MumbleLink account)
+            auto it = s_char_to_account.find(char_name);
+            if (it != s_char_to_account.end()) {
+                acctName = it->second;
+            }
         }
 
         // Phase 0: /core
@@ -571,6 +842,8 @@ namespace AlterEgo {
         strncpy(req.endpoint, endpoint.c_str(), sizeof(req.endpoint) - 1);
         req.endpoint[sizeof(req.endpoint) - 1] = '\0';
         strncpy(req.response_event, EV_AE_CHAR_DATA_RESP, sizeof(req.response_event) - 1);
+        if (!acctName.empty())
+            strncpy(req.account_name, acctName.c_str(), sizeof(req.account_name) - 1);
         s_api->Events_Raise(EV_HOARD_QUERY_API, &req);
     }
 
@@ -598,8 +871,7 @@ namespace AlterEgo {
             return;
         }
         auto* resp = (HoardQueryApiResponse*)eventArgs;
-        if (resp->api_version != HOARD_API_VERSION) {
-            delete resp;
+        if (resp->api_version < 2) {
             return;
         }
 
@@ -621,14 +893,12 @@ namespace AlterEgo {
             if (phase == 6) {
                 // Heropoints is non-critical — skip and finalize character
                 if (s_api) s_api->Log(LOGL_WARNING, "AlterEgo", "Heropoints fetch failed (non-fatal), skipping");
-                delete resp;
                 // Fall through to "determine next action" which will finalize the character
             } else {
                 if (s_api) s_api->Log(LOGL_WARNING, "AlterEgo", "Sub-endpoint fetch failed");
                 std::lock_guard<std::mutex> lock(s_mutex);
                 s_fetch_message = "Failed to fetch character data";
                 s_fetch_status = FetchStatus::Error;
-                delete resp;
                 return;
             }
         }
@@ -691,12 +961,10 @@ namespace AlterEgo {
                 }
                 if (phase == 6) {
                     // Heropoints is non-critical — skip and finalize character
-                    delete resp;
                 } else {
                     std::lock_guard<std::mutex> lock(s_mutex);
                     s_fetch_message = "API error: " + cj["text"].get<std::string>();
                     s_fetch_status = FetchStatus::Error;
-                    delete resp;
                     return;
                 }
             }
@@ -871,8 +1139,6 @@ namespace AlterEgo {
             }
         }
 
-        delete resp;
-
         // Determine next action
         bool done = false;
         {
@@ -939,6 +1205,7 @@ namespace AlterEgo {
                         // More characters to fetch — start the next one
                         s_current_char = Character{};
                         s_current_char.name = s_pending_char_names[s_pending_char_idx];
+                        { auto ait = s_char_to_account.find(s_current_char.name); if (ait != s_char_to_account.end()) s_current_char.account_name = ait->second; }
                         s_fetch_phase = 0;
                         s_equip_tab_ids.clear();
                         s_equip_tab_idx = 0;
@@ -1936,6 +2203,9 @@ namespace AlterEgo {
                 if (!ch.heropoints.empty()) {
                     cj["heropoints"] = ch.heropoints;
                 }
+                if (!ch.account_name.empty()) {
+                    cj["account_name"] = ch.account_name;
+                }
 
                 chars_arr.push_back(cj);
             }
@@ -2073,6 +2343,7 @@ namespace AlterEgo {
                             if (hp.is_string()) ch.heropoints.push_back(hp.get<std::string>());
                         }
                     }
+                    ch.account_name = cj.value("account_name", "");
 
                     s_characters.push_back(ch);
                 }

@@ -13,7 +13,10 @@ If an LLM creating software upsets you, then perhaps this repo isn't for you. Mo
 - **GW2-Themed UI** — Custom dark slate and gold accent theme with rounded corners, gradient section headers, and polished spacing
   - Profession-colored accent bars and glow effects on character and build list items
   - Scoped to Alter Ego only — won't affect other Nexus addons
-- **Character List** — All characters on your account with profession icons, level, and birthday countdown
+- **Multi-Account Support** — Seamlessly switch between GW2 accounts with a single dropdown
+  - Per-account data for characters, skins, clears, and achievements
+  - Account selection persisted across sessions
+- **Character List** — All characters across your accounts with profession icons, level, and birthday countdown
   - Sort by name, class, level, age, or birthday — or drag to reorder
   - Compact mode option for denser lists
   - Profession-colored accent bars with hover glow effects
@@ -43,18 +46,18 @@ If an LLM creating software upsets you, then perhaps this repo isn't for you. Mo
   - **Chat Build Detection** — Automatically detects AE2 build codes in GW2 chat
     - Toast notification with one-click import to your build library
     - Works across all chat channels (party, squad, whisper, etc.)
-- **Skinventory** — Browse all skins in the game, track which you own
+- **Skinventory** — Browse all skins in the game, track which you own per account
   - Filter by type, subtype, weight class
   - Skin detail panel with wiki images, TP prices, vendor prices
   - Shopping list for tracking skins you want to acquire
-- **Clears** — Track daily and weekly completion across game modes
+- **Clears** — Track daily and weekly completion per account
   - Daily Fractals grouped by tier with completion status
   - Daily Raid Bounties
   - Weekly Strike Missions (per-encounter tracking)
   - Weekly Raids (per-wing, per-encounter tracking)
-  - Auto-refreshes at daily/weekly reset times and every 10 minutes
+  - Auto-refreshes on account switch, at daily/weekly reset times, and every 10 minutes
   - Data cached to disk for instant display on addon load
-- **Achievements** — Browse and track GW2 achievements
+- **Achievements** — Browse and track GW2 achievements per account
   - Full achievement group and category tree with search across 8000+ achievements
   - Pin up to 20 achievements for tracking
   - Expandable sub-objectives (bits) with completion status
@@ -68,7 +71,7 @@ If an LLM creating software upsets you, then perhaps this repo isn't for you. Mo
   - Build template links
   - Skin links
   - Right-click context menu for copying links
-- **Hoard & Seek Integration** — Uses [Hoard & Seek](https://github.com/PieOrCake/hoard_and_seek) as a data source for account-wide character, equipment, and achievement data
+- **Hoard & Seek Integration** — Uses [Hoard & Seek](https://github.com/PieOrCake/hoard_and_seek) as a data source for multi-account character, equipment, skin ownership, and achievement data
 
 ## Screenshots
 

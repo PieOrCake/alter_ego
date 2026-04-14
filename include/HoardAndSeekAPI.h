@@ -4,14 +4,14 @@
  * Include this header in your addon to communicate with Hoard & Seek
  * via Nexus events. No link-time dependency is required.
  *
- * Version: 2
+ * Version: 3
  */
 
 #pragma once
 
 #include <cstdint>
 
-#define HOARD_API_VERSION 2
+#define HOARD_API_VERSION 3
 #define HOARD_REFRESH_COOLDOWN 300  // Minimum seconds between refreshes (5 minutes)
 
 // Response status codes
@@ -74,7 +74,8 @@
 //
 // 4. Response payloads (e.g. HoardQuerySkinsResponse*) are valid only for
 //    the duration of your event handler callback. Copy any data you need
-//    before returning from the handler, then delete the response.
+//    before returning from the handler. Do NOT delete the response pointer
+//    — H&S manages the payload lifetime.
 //
 // 5. If you batch requests (e.g. querying 10,000 skins in groups of 200)
 //    and your response handler immediately sends the next batch, this
@@ -170,6 +171,16 @@
 //           inside your Events_Raise call; copy needed data, then delete).
 #define EV_HOARD_QUERY_API "EV_HOARD_QUERY_API"
 
+// Query the list of configured accounts.
+// Payload: HoardQueryAccountsRequest* (stack-allocated)
+// Response: H&S raises `response_event` with HoardQueryAccountsResponse* (delivered synchronously).
+#define EV_HOARD_QUERY_ACCOUNTS "EV_HOARD_QUERY_ACCOUNTS"
+
+// Broadcast: accounts have been added or removed.
+// Payload: nullptr
+// Re-query EV_HOARD_QUERY_ACCOUNTS to refresh your cached account list.
+#define EV_HOARD_ACCOUNTS_CHANGED "EV_HOARD_ACCOUNTS_CHANGED"
+
 // Register a custom right-click context menu item on H&S search results.
 // Payload: HoardContextMenuRegister* (stack-allocated)
 // Requires permission approval. If pending, the registration is queued and
@@ -198,6 +209,8 @@ struct HoardDataReadyPayload {
     uint32_t currency_count;    // Number of wallet currencies tracked
     int64_t  last_updated;      // Unix timestamp of last successful fetch (0 if never)
     int64_t  refresh_available_at; // Unix timestamp when next refresh is allowed
+    char account_name[64];      // Which account was updated (empty = all accounts)
+    uint32_t account_count;     // Total number of configured accounts
 };
 
 // Broadcast: pong response
@@ -206,6 +219,7 @@ struct HoardPongPayload {
     int64_t  last_updated;         // Unix timestamp of last successful fetch (0 if never)
     int64_t  refresh_available_at; // Unix timestamp when next refresh is allowed (0 = now)
     uint8_t  has_data;             // 1 if account data is loaded, 0 otherwise
+    uint32_t account_count;        // Number of configured accounts
 };
 
 // Broadcast: fetch error
@@ -227,6 +241,7 @@ struct HoardQueryItemRequest {
     char requester[64];         // Addon name (used for permission checks)
     uint32_t item_id;           // GW2 item ID
     char response_event[64];    // Event name H&S will raise with the response
+    char account_filter[64];    // Filter to one account, or empty for all accounts
 };
 
 // A single location entry in the response
@@ -234,6 +249,7 @@ struct HoardItemLocationEntry {
     char location[64];          // e.g. "Bank", "Material Storage", character name
     char sublocation[64];       // e.g. "Bag", "Equipped", "Category 37"
     int32_t count;
+    char account_name[64];      // Which account this location belongs to
 };
 
 // Response: item query result
@@ -246,7 +262,7 @@ struct HoardQueryItemResponse {
     char type[32];
     int32_t total_count;
     uint32_t location_count;
-    HoardItemLocationEntry locations[32]; // Up to 32 locations
+    HoardItemLocationEntry locations[64]; // Up to 64 locations
 };
 
 // Request: query wallet currency
@@ -255,6 +271,7 @@ struct HoardQueryWalletRequest {
     char requester[64];         // Addon name (used for permission checks)
     uint32_t currency_id;       // GW2 currency ID (NOT the synthetic WALLET_ID_BASE | id)
     char response_event[64];    // Event name H&S will raise with the response
+    char account_filter[64];    // Filter to one account, or empty for sum across all
 };
 
 // Response: wallet query result
@@ -274,6 +291,7 @@ struct HoardQueryAchievementRequest {
     uint32_t ids[200];          // Achievement IDs to query
     uint32_t id_count;          // Number of IDs (1-200)
     char response_event[64];    // Event name H&S will raise with the response
+    char account_name[64];      // Which account to query (empty = first account)
 };
 
 // A single achievement entry in the response
@@ -290,6 +308,7 @@ struct HoardAchievementEntry {
 struct HoardQueryAchievementResponse {
     uint32_t api_version;       // HOARD_API_VERSION
     uint8_t status;             // HOARD_STATUS_OK, HOARD_STATUS_DENIED, or HOARD_STATUS_PENDING
+    char account_name[64];      // Which account this data belongs to
     uint32_t entry_count;       // Number of entries returned
     HoardAchievementEntry entries[200];
 };
@@ -301,6 +320,7 @@ struct HoardQueryMasteryRequest {
     uint32_t ids[200];          // Mastery IDs to query
     uint32_t id_count;          // Number of IDs (1-200)
     char response_event[64];    // Event name H&S will raise with the response
+    char account_name[64];      // Which account to query (empty = first account)
 };
 
 // A single mastery entry in the response
@@ -313,6 +333,7 @@ struct HoardMasteryEntry {
 struct HoardQueryMasteryResponse {
     uint32_t api_version;       // HOARD_API_VERSION
     uint8_t status;             // HOARD_STATUS_OK, HOARD_STATUS_DENIED, or HOARD_STATUS_PENDING
+    char account_name[64];      // Which account this data belongs to
     uint32_t entry_count;       // Number of entries returned
     HoardMasteryEntry entries[200];
 };
@@ -324,6 +345,7 @@ struct HoardQuerySkinsRequest {
     uint32_t ids[200];          // Skin IDs to check
     uint32_t id_count;          // Number of IDs (1-200)
     char response_event[64];    // Event name H&S will raise with the response
+    char account_name[64];      // Which account to query (empty = first account)
 };
 
 // A single skin entry in the response
@@ -336,6 +358,7 @@ struct HoardSkinEntry {
 struct HoardQuerySkinsResponse {
     uint32_t api_version;       // HOARD_API_VERSION
     uint8_t status;             // HOARD_STATUS_OK, HOARD_STATUS_DENIED, or HOARD_STATUS_PENDING
+    char account_name[64];      // Which account this data belongs to
     uint32_t entry_count;       // Number of entries returned
     HoardSkinEntry entries[200];
 };
@@ -347,6 +370,7 @@ struct HoardQueryRecipesRequest {
     uint32_t ids[200];          // Recipe IDs to check
     uint32_t id_count;          // Number of IDs (1-200)
     char response_event[64];    // Event name H&S will raise with the response
+    char account_name[64];      // Which account to query (empty = first account)
 };
 
 // A single recipe entry in the response
@@ -359,6 +383,7 @@ struct HoardRecipeEntry {
 struct HoardQueryRecipesResponse {
     uint32_t api_version;       // HOARD_API_VERSION
     uint8_t status;             // HOARD_STATUS_OK, HOARD_STATUS_DENIED, or HOARD_STATUS_PENDING
+    char account_name[64];      // Which account this data belongs to
     uint32_t entry_count;       // Number of entries returned
     HoardRecipeEntry entries[200];
 };
@@ -369,6 +394,7 @@ struct HoardQueryWizardsVaultRequest {
     char requester[64];         // Addon name (used for permission checks)
     uint8_t type;               // 0 = daily, 1 = weekly, 2 = special
     char response_event[64];    // Event name H&S will raise with the response
+    char account_name[64];      // Which account to query (empty = first account)
 };
 
 // A single Wizard's Vault objective
@@ -386,6 +412,7 @@ struct HoardWizardsVaultObjective {
 struct HoardQueryWizardsVaultResponse {
     uint32_t api_version;       // HOARD_API_VERSION
     uint8_t status;             // HOARD_STATUS_OK, HOARD_STATUS_DENIED, or HOARD_STATUS_PENDING
+    char account_name[64];      // Which account this data belongs to
     uint8_t type;               // 0 = daily, 1 = weekly, 2 = special
     int32_t meta_progress_current;
     int32_t meta_progress_complete;
@@ -401,6 +428,7 @@ struct HoardQueryApiRequest {
     char requester[64];         // Addon name (used for permission checks)
     char endpoint[256];         // GW2 API path, e.g. "/v2/account/dyes"
     char response_event[64];    // Event name H&S will raise with the response
+    char account_name[64];      // Which account's API key to use (empty = first account)
 };
 
 // Response: generic API proxy result (raw JSON)
@@ -408,9 +436,35 @@ struct HoardQueryApiResponse {
     uint32_t api_version;       // HOARD_API_VERSION
     uint8_t status;             // HOARD_STATUS_OK, HOARD_STATUS_DENIED, or HOARD_STATUS_PENDING
     char endpoint[256];         // Echo of the requested endpoint
+    char account_name[64];      // Which account was queried
     uint32_t json_length;       // Actual length of the JSON data (may exceed buffer if truncated)
     uint8_t truncated;          // 1 if response was truncated to fit buffer, 0 otherwise
-    char json[32768];           // Raw JSON response (up to 32KB, null-terminated)
+    char json[65536];           // Raw JSON response (up to 64KB, null-terminated)
+};
+
+// A single account entry in the accounts response
+struct HoardAccountEntry {
+    char account_name[64];      // GW2 account name (e.g. "PieOrCake.7635")
+    char label[64];             // User-assigned friendly name (e.g. "Main", "Alt")
+    int64_t last_updated;       // Unix timestamp of last data fetch
+    uint8_t validated;          // 1 if API key is validated
+    uint32_t character_count;   // Number of characters on this account
+    char characters[80][32];    // Up to 80 character names (GW2 max is 72, names up to 31 chars)
+};
+
+// Request: query configured accounts
+struct HoardQueryAccountsRequest {
+    uint32_t api_version;       // HOARD_API_VERSION
+    char requester[64];         // Addon name (used for permission checks)
+    char response_event[64];    // Event name H&S will raise with the response
+};
+
+// Response: account list
+struct HoardQueryAccountsResponse {
+    uint32_t api_version;       // HOARD_API_VERSION
+    uint8_t status;             // HOARD_STATUS_OK, HOARD_STATUS_DENIED, or HOARD_STATUS_PENDING
+    uint32_t account_count;     // Number of accounts returned
+    HoardAccountEntry accounts[16]; // Up to 16 accounts
 };
 
 // Register a custom right-click context menu item

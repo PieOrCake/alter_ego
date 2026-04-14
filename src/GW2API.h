@@ -212,6 +212,7 @@ namespace AlterEgo {
         int active_build_tab = 0;
         int active_equipment_tab = 0;
         std::vector<std::string> heropoints;    // Completed hero challenge IDs (e.g. "0-29")
+        std::string account_name;              // Which H&S account owns this character
     };
 
     // Item location result from H&S cache query
@@ -219,6 +220,17 @@ namespace AlterEgo {
         std::string location;       // e.g. "Bank", character name
         std::string sublocation;    // e.g. "Bag", "Equipped"
         int count = 0;
+        std::string account_name;   // Which account this location belongs to
+    };
+
+    // Account info from H&S v3
+    struct AccountInfo {
+        std::string name;           // GW2 account name (e.g. "PieOrCake.7635")
+        std::string label;          // User-assigned friendly name (e.g. "Main")
+        std::string display_name;   // label if non-empty, else name
+        int64_t last_updated = 0;
+        bool validated = false;
+        std::vector<std::string> characters; // Character names on this account
     };
 
     struct ItemLocationResult {
@@ -267,6 +279,7 @@ namespace AlterEgo {
     #define EV_AE_CHAR_DATA_RESP   "EV_ALTER_EGO_CHAR_DATA"
     #define EV_AE_SKIN_UNLOCK_RESP "EV_ALTER_EGO_SKIN_UNLOCKS"
     #define EV_AE_ITEM_LOC_RESP    "EV_ALTER_EGO_ITEM_LOC"
+    #define EV_AE_ACCOUNTS_RESP    "EV_ALTER_EGO_ACCOUNTS"
 
     class GW2API {
     public:
@@ -295,6 +308,19 @@ namespace AlterEgo {
         static void OnCharDataResponse(void* eventArgs);
         static void OnSkinUnlocksResponse(void* eventArgs);
         static void OnItemLocationResponse(void* eventArgs);
+        static void OnAccountsResponse(void* eventArgs);
+        static void OnAccountsChanged(void* eventArgs);
+
+        // --- Multi-account ---
+        static void QueryAccounts();                     // Fetch account list from H&S
+        static uint32_t GetAccountCount();               // Number of configured accounts (0 = unknown)
+        static const std::vector<AccountInfo>& GetAccounts();
+        static const std::string& GetCurrentAccountName(); // Account for the logged-in character
+        static void SetCurrentAccountFromCharacter(const std::string& charName); // Map character to account
+        static bool IsMultiAccount();                    // account_count > 1
+        static bool HasAccountsData();                   // true if accounts have been queried
+        static std::vector<std::string> GetAllCharacterNamesFromAccounts(const std::string& accountFilter = "");
+        static std::string GetAccountForCharacter(const std::string& charName);
 
         // --- Fetch state ---
         static FetchStatus GetFetchStatus();
@@ -371,6 +397,13 @@ namespace AlterEgo {
         static FetchStatus s_fetch_status;
         static std::string s_fetch_message;
 
+        // Multi-account state
+        static uint32_t s_account_count;                 // from pong/data_updated
+        static std::vector<AccountInfo> s_accounts;      // from QueryAccounts
+        static std::string s_current_account_name;       // resolved from MumbleLink char
+        static std::unordered_map<std::string, std::string> s_char_to_account; // char name -> account_name
+        static bool s_accounts_queried;                  // have we queried accounts at least once
+
         static std::vector<Character> s_characters;
         static bool s_has_character_data;
         static time_t s_last_updated;
@@ -382,6 +415,7 @@ namespace AlterEgo {
         static std::string s_priority_char_name;
         static int s_pending_char_idx; // index into s_pending_char_names for next char to fetch
         static bool s_list_only_mode;  // true = just fetch name list, don't start char data fetch
+        static int s_multi_acct_list_idx;  // index into s_accounts for multi-account char list fetch (-1 = not active)
 
         // Sub-endpoint fetch state
         // Phase 0: /core
