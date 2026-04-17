@@ -60,6 +60,8 @@ namespace AlterEgo {
         uint32_t rune_id = 0;       // Rune item ID (for compact encoding)
         std::string sigil;          // Sigil name (weapon only)
         uint32_t sigil_id = 0;      // Sigil item ID (for compact encoding)
+        std::string sigil2;         // Second sigil name (two-handed weapons)
+        uint32_t sigil2_id = 0;     // Second sigil item ID
         std::string infusion;       // Infusion name
         std::string weapon_type;    // "Axe", "Sword", etc. (weapon slots only)
     };

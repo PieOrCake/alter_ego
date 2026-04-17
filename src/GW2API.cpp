@@ -2493,6 +2493,8 @@ namespace AlterEgo {
                         if (gs.rune_id != 0) gsj["rune_id"] = gs.rune_id;
                         if (!gs.sigil.empty()) gsj["sigil"] = gs.sigil;
                         if (gs.sigil_id != 0) gsj["sigil_id"] = gs.sigil_id;
+                        if (!gs.sigil2.empty()) gsj["sigil2"] = gs.sigil2;
+                        if (gs.sigil2_id != 0) gsj["sigil2_id"] = gs.sigil2_id;
                         if (!gs.infusion.empty()) gsj["infusion"] = gs.infusion;
                         if (!gs.weapon_type.empty()) gsj["weapon_type"] = gs.weapon_type;
                         gearJ[slot] = gsj;
@@ -2602,6 +2604,8 @@ namespace AlterEgo {
                             gs.rune_id = it.value().value("rune_id", (uint32_t)0);
                             gs.sigil = it.value().value("sigil", "");
                             gs.sigil_id = it.value().value("sigil_id", (uint32_t)0);
+                            gs.sigil2 = it.value().value("sigil2", "");
+                            gs.sigil2_id = it.value().value("sigil2_id", (uint32_t)0);
                             gs.infusion = it.value().value("infusion", "");
                             gs.weapon_type = it.value().value("weapon_type", "");
                             b.gear[gs.slot] = gs;

@@ -33,7 +33,7 @@
 #define V_MAJOR 0
 #define V_MINOR 9
 #define V_BUILD 4
-#define V_REVISION 0
+#define V_REVISION 1
 
 // Quick Access icon identifiers
 #define QA_ID "QA_ALTER_EGO"
@@ -596,6 +596,38 @@ static std::vector<uint32_t> g_AchActiveEventCatIds;  // category IDs for the ac
 static bool g_AchActiveEventFetched = false;
 static bool g_AchActiveEventFetching = false;
 
+// Festival daily category IDs (hidden from Daily group when their festival is not active)
+static const std::unordered_set<uint32_t> FESTIVAL_DAILY_CAT_IDS = {
+    79,  // Halloween Daily
+    98,  // Wintersday Daily
+    102, // Lunar New Year Dailies
+    162, // Daily Super Adventure Festival
+    201, // Daily Lunar New Year
+    213, // Daily Festival of the Four Winds
+    233, // Daily Dragon Bash
+};
+
+// Mapping: festival daily category ID -> keyword to match full festival categories in Historical
+static const std::unordered_map<uint32_t, std::string> FESTIVAL_CAT_KEYWORDS = {
+    {79,  "Mad King"},          // Shadow of the Mad King, Halloween Rituals, Lunatic Wardrobe
+    {98,  "Wintersday"},        // Wintersday Traditions, Toymaker Tixx, etc.
+    {102, "Lunar New Year"},
+    {162, "Super Adventure Box"},
+    {201, "Lunar New Year"},
+    {213, "Four Winds"},        // Festival of the Four Winds, Bazaar, Queen's Gauntlet
+    {233, "Dragon Bash"},
+};
+// Additional keywords for festivals that use broader matching
+static const std::unordered_map<uint32_t, std::vector<std::string>> FESTIVAL_CAT_EXTRA_KEYWORDS = {
+    {79,  {"Halloween", "Lunatic"}},
+    {98,  {"Toymaker Tixx", "Winter's Presence"}},
+    {213, {"Queen's Gauntlet", "Bazaar"}},
+};
+
+// Resolved full festival category IDs from Historical group for the active event
+static std::vector<uint32_t> g_AchActiveFestivalCatIds;
+static std::string g_AchActiveFestivalName;
+
 // Optimistic update grace period — protects alert-based increments from stale API snapback
 static std::unordered_map<uint32_t, std::chrono::steady_clock::time_point> g_AchOptimisticTime;
 
@@ -972,7 +1004,8 @@ static std::string g_GearDialogSlot;          // Which slot is being edited
 static std::string g_GearDialogBuildId;       // Which saved build
 static char g_GearStatSearch[128] = "";       // Search filter for stat combos
 static uint32_t g_GearSelectedStatId = 0;     // Currently selected stat in dialog
-static int g_GearSelectorTab = 0;             // 0 = Stats, 1 = Rune/Sigil
+static int g_GearSelectorTab = 0;             // 0 = Stats, 1 = Rune/Sigil, 2 = Weapon Type
+static bool g_GearEditingSigil2 = false;      // true = editing second sigil slot (two-handed)
 
 // Save to Library dialog state
 static bool g_SaveLibDialogOpen = false;
@@ -1588,11 +1621,12 @@ static void LoadAchGroupCache() {
     try {
         auto j = nlohmann::json::parse(file);
 
-        // Check staleness (refresh weekly)
+        // Check staleness — daily categories change each reset, so invalidate on daily reset
         int64_t fetchEpoch = j.value("fetch_time", (int64_t)0);
+        auto fetchTime = std::chrono::system_clock::from_time_t((time_t)fetchEpoch);
         auto now = std::chrono::system_clock::now();
-        auto elapsed = now - std::chrono::system_clock::from_time_t((time_t)fetchEpoch);
-        if (elapsed > std::chrono::hours(7 * 24)) return; // stale
+        auto dailyReset = CalcLastDailyReset(now);
+        if (fetchTime < dailyReset) return; // stale — daily categories have rotated
 
         std::lock_guard<std::recursive_mutex> lock(g_AchMutex);
 
@@ -2039,16 +2073,22 @@ static void FetchActiveSpecialEvent() {
     g_AchActiveEventFetching = true;
     std::thread([]() {
         std::string json = Skinventory::HttpClient::Get("https://api.guildwars2.com/v2/achievements/daily");
+        if (json.empty()) {
+            // API failed — don't mark as fetched so we can retry
+            g_AchActiveEventFetching = false;
+            return;
+        }
         std::vector<uint32_t> specialAchIds;
-        if (!json.empty()) {
-            try {
-                auto j = nlohmann::json::parse(json);
-                if (j.contains("special") && j["special"].is_array()) {
-                    for (const auto& entry : j["special"]) {
-                        if (entry.contains("id")) specialAchIds.push_back(entry["id"].get<uint32_t>());
-                    }
+        try {
+            auto j = nlohmann::json::parse(json);
+            if (j.contains("special") && j["special"].is_array()) {
+                for (const auto& entry : j["special"]) {
+                    if (entry.contains("id")) specialAchIds.push_back(entry["id"].get<uint32_t>());
                 }
-            } catch (...) {}
+            }
+        } catch (...) {
+            g_AchActiveEventFetching = false;
+            return;
         }
 
         // Resolve achievement IDs to category IDs via reverse lookup
@@ -2064,9 +2104,51 @@ static void FetchActiveSpecialEvent() {
             }
         }
 
+        // Resolve full festival categories from Historical group by keyword matching
+        std::vector<uint32_t> festivalCatIds;
+        std::string festivalName;
+        {
+            std::lock_guard<std::recursive_mutex> lock(g_AchMutex);
+
+            // Collect keywords from active daily categories
+            std::vector<std::string> keywords;
+            for (uint32_t cid : catIds) {
+                auto kwIt = FESTIVAL_CAT_KEYWORDS.find(cid);
+                if (kwIt != FESTIVAL_CAT_KEYWORDS.end()) {
+                    keywords.push_back(kwIt->second);
+                    if (festivalName.empty()) festivalName = kwIt->second;
+                }
+                auto exIt = FESTIVAL_CAT_EXTRA_KEYWORDS.find(cid);
+                if (exIt != FESTIVAL_CAT_EXTRA_KEYWORDS.end()) {
+                    for (const auto& kw : exIt->second) keywords.push_back(kw);
+                }
+            }
+
+            // Search Historical group for matching categories
+            if (!keywords.empty()) {
+                for (const auto& grp : g_AchGroups) {
+                    if (grp.name != "Historical") continue;
+                    for (uint32_t cid : grp.categories) {
+                        auto catIt = g_AchCategories.find(cid);
+                        if (catIt == g_AchCategories.end()) continue;
+                        const auto& name = catIt->second.name;
+                        for (const auto& kw : keywords) {
+                            if (name.find(kw) != std::string::npos) {
+                                festivalCatIds.push_back(cid);
+                                break;
+                            }
+                        }
+                    }
+                    break;
+                }
+            }
+        }
+
         {
             std::lock_guard<std::recursive_mutex> lock(g_AchMutex);
             g_AchActiveEventCatIds = std::move(catIds);
+            g_AchActiveFestivalCatIds = std::move(festivalCatIds);
+            g_AchActiveFestivalName = std::move(festivalName);
             g_AchActiveEventFetched = true;
             g_AchActiveEventFetching = false;
         }
@@ -4073,6 +4155,7 @@ static nlohmann::json ExportBuildToJson(const AlterEgo::SavedBuild& build) {
             if (!gs.stat_name.empty()) s["stat"] = gs.stat_name;
             if (!gs.rune.empty()) s["rune"] = gs.rune;
             if (!gs.sigil.empty()) s["sigil"] = gs.sigil;
+            if (!gs.sigil2.empty()) s["sigil2"] = gs.sigil2;
             if (!gs.infusion.empty()) s["infusion"] = gs.infusion;
             if (!gs.weapon_type.empty()) s["weapon"] = gs.weapon_type;
             if (!s.empty()) gear[slot] = s;
@@ -4247,12 +4330,17 @@ static std::string ExportBuildToAE2(const AlterEgo::SavedBuild& build) {
         runeId = AlterEgo::GW2API::FindItemIdByName(build.rune_name);
 
     std::map<std::string, uint32_t> resolvedSigilIds;
+    std::map<std::string, uint32_t> resolvedSigil2Ids;
     for (const auto& [slot, gs] : build.gear) {
         if (slot.find("Weapon") == 0) {
             uint32_t sid = gs.sigil_id;
             if (sid == 0 && !gs.sigil.empty())
                 sid = AlterEgo::GW2API::FindItemIdByName(gs.sigil);
             resolvedSigilIds[slot] = sid;
+            uint32_t sid2 = gs.sigil2_id;
+            if (sid2 == 0 && !gs.sigil2.empty())
+                sid2 = AlterEgo::GW2API::FindItemIdByName(gs.sigil2);
+            resolvedSigil2Ids[slot] = sid2;
         }
     }
 
@@ -4269,7 +4357,7 @@ static std::string ExportBuildToAE2(const AlterEgo::SavedBuild& build) {
     if (hasRelic) flags |= (1 << 5);
 
     // Header
-    buf.push_back(2); // version
+    buf.push_back(3); // version (3 = added sigil2 per weapon slot)
     buf.push_back(flags);
     buf.push_back((uint8_t)linkBytes.size());
     buf.insert(buf.end(), linkBytes.begin(), linkBytes.end());
@@ -4310,6 +4398,10 @@ static std::string ExportBuildToAE2(const AlterEgo::SavedBuild& build) {
                 uint32_t sigilId = (sigilIt != resolvedSigilIds.end()) ? sigilIt->second : 0;
                 PushU32LE(buf, sigilId);
                 PushU16LE(buf, WeaponTypeToId(it->second.weapon_type));
+                // Second sigil for two-handed weapons
+                auto sigil2It = resolvedSigil2Ids.find(slotName);
+                uint32_t sigil2Id = (sigil2It != resolvedSigil2Ids.end()) ? sigil2It->second : 0;
+                PushU32LE(buf, sigil2Id);
             }
         }
     }
@@ -4329,7 +4421,7 @@ static bool ImportBuildFromAE2(const std::string& ae2code, AlterEgo::SavedBuild&
 
     size_t pos = 0;
     uint8_t version = data[pos++];
-    if (version != 2) { error = "Unsupported AE2 version."; return false; }
+    if (version != 2 && version != 3) { error = "Unsupported AE2 version."; return false; }
 
     uint8_t flags = data[pos++];
     uint8_t gameMode = flags & 0x07;
@@ -4418,13 +4510,17 @@ static bool ImportBuildFromAE2(const std::string& ae2code, AlterEgo::SavedBuild&
         // Read sigils + weapon types for weapon slots
         for (int i = AE2_SLOT_WeaponA1; i <= AE2_SLOT_WeaponB2; i++) {
             if (!(gearMask & (1 << i))) continue;
-            if (pos + 6 > data.size()) break; // 4 (sigil) + 2 (weapon type)
+            size_t needed = (version >= 3) ? 10 : 6; // v3: +4 for sigil2
+            if (pos + needed > data.size()) break;
             uint32_t sigilId = ReadU32LE(&data[pos]); pos += 4;
             uint16_t weaponTypeId = ReadU16LE(&data[pos]); pos += 2;
+            uint32_t sigil2Id = 0;
+            if (version >= 3) { sigil2Id = ReadU32LE(&data[pos]); pos += 4; }
             const char* slotName = AE2SlotName(i);
             auto it = out.gear.find(slotName);
             if (it != out.gear.end()) {
                 it->second.sigil_id = sigilId;
+                it->second.sigil2_id = sigil2Id;
                 const char* wt = WeaponTypeFromId(weaponTypeId);
                 if (wt[0]) it->second.weapon_type = wt;
             }
@@ -4436,6 +4532,7 @@ static bool ImportBuildFromAE2(const std::string& ae2code, AlterEgo::SavedBuild&
         if (out.relic_id != 0) fetchIds.push_back(out.relic_id);
         for (const auto& [slot, gs] : out.gear) {
             if (gs.sigil_id != 0) fetchIds.push_back(gs.sigil_id);
+            if (gs.sigil2_id != 0) fetchIds.push_back(gs.sigil2_id);
         }
         if (!fetchIds.empty()) AlterEgo::GW2API::FetchItemDetails(fetchIds);
 
@@ -4459,6 +4556,12 @@ static bool ImportBuildFromAE2(const std::string& ae2code, AlterEgo::SavedBuild&
             }
             if (gs.sigil_id != 0 && !gs.sigil.empty())
                 AlterEgo::GW2API::CacheItemNameId(gs.sigil, gs.sigil_id);
+            if (gs.sigil2_id != 0 && gs.sigil2.empty()) {
+                const auto* sigil2Info = AlterEgo::GW2API::GetItemInfo(gs.sigil2_id);
+                if (sigil2Info) gs.sigil2 = sigil2Info->name;
+            }
+            if (gs.sigil2_id != 0 && !gs.sigil2.empty())
+                AlterEgo::GW2API::CacheItemNameId(gs.sigil2, gs.sigil2_id);
         }
         // Set rune name on armor gear slots
         if (!out.rune_name.empty()) {
@@ -4551,6 +4654,7 @@ static bool ImportSharedBuild(const std::string& input, AlterEgo::SavedBuild& ou
                 if (gs_json.contains("stat")) gs.stat_name = gs_json["stat"].get<std::string>();
                 if (gs_json.contains("rune")) gs.rune = gs_json["rune"].get<std::string>();
                 if (gs_json.contains("sigil")) gs.sigil = gs_json["sigil"].get<std::string>();
+                if (gs_json.contains("sigil2")) gs.sigil2 = gs_json["sigil2"].get<std::string>();
                 if (gs_json.contains("infusion")) gs.infusion = gs_json["infusion"].get<std::string>();
                 if (gs_json.contains("weapon")) gs.weapon_type = gs_json["weapon"].get<std::string>();
                 out.gear[slot] = gs;
@@ -5286,6 +5390,13 @@ static bool IsTrinketSlot(const std::string& s) {
     return s == "Backpack" || s == "Accessory1" || s == "Accessory2" ||
            s == "Amulet" || s == "Ring1" || s == "Ring2";
 }
+static bool IsWeaponTwoHanded(const std::string& profession, const std::string& weaponType) {
+    if (weaponType.empty()) return false;
+    const auto* profWeapons = AlterEgo::GW2API::GetProfessionWeapons(profession);
+    if (!profWeapons) return false;
+    auto it = profWeapons->find(weaponType);
+    return it != profWeapons->end() && it->second.two_handed;
+}
 
 // Profession -> armor weight class
 static int GetArmorWeight(const std::string& profession) {
@@ -5372,6 +5483,7 @@ static void OpenGearDialog(const std::string& buildId, const std::string& slot,
     g_GearSelectedStatId = current.stat_id;
     bool isWeaponSlot = (slot.find("Weapon") == 0);
     g_GearSelectorTab = isWeaponSlot ? 2 : 0;
+    g_GearEditingSigil2 = false;
     memset(g_GearStatSearch, 0, sizeof(g_GearStatSearch));
 }
 
@@ -5612,35 +5724,56 @@ static void RenderGearCustomizeDialog() {
 
         // Rune/Sigil area (clickable to switch to rune/sigil tab)
         if (isArmor || isWeapon) {
-            const char* upgradeLabel = isArmor ? "Rune" : "Sigil";
-            const std::string& upgradeName = isArmor ? gs.rune : gs.sigil;
+            bool isTwoHand = isWeapon && editBuild && IsWeaponTwoHanded(editBuild->profession, gs.weapon_type);
+            int sigilCount = (isWeapon && isTwoHand) ? 2 : 1;
 
-            ImVec2 p = ImGui::GetCursorScreenPos();
-            float w = ImGui::GetContentRegionAvail().x;
-            float h = 30.0f;
-            ImU32 bg = (g_GearSelectorTab == 1) ? IM_COL32(50, 60, 70, 200) : IM_COL32(35, 35, 40, 150);
-            ImGui::GetWindowDrawList()->AddRectFilled(p, ImVec2(p.x + w, p.y + h), bg, 3.0f);
-            ImGui::GetWindowDrawList()->AddRect(p, ImVec2(p.x + w, p.y + h),
-                (g_GearSelectorTab == 1) ? IM_COL32(100, 160, 220, 255) : IM_COL32(60, 60, 60, 180), 3.0f);
+            for (int sigilIdx = 0; sigilIdx < sigilCount; sigilIdx++) {
+                const char* upgradeLabel;
+                const std::string* upgradeName;
+                if (isArmor) {
+                    upgradeLabel = "Rune";
+                    upgradeName = &gs.rune;
+                } else if (sigilIdx == 0) {
+                    upgradeLabel = isTwoHand ? "Sigil 1" : "Sigil";
+                    upgradeName = &gs.sigil;
+                } else {
+                    upgradeLabel = "Sigil 2";
+                    upgradeName = &gs.sigil2;
+                }
 
-            ImGui::SetCursorScreenPos(p);
-            if (ImGui::InvisibleButton("##upgradeArea", ImVec2(w, h))) {
-                g_GearSelectorTab = 1;
-                memset(g_GearStatSearch, 0, sizeof(g_GearStatSearch));
+                bool isActiveCard = (g_GearSelectorTab == 1) &&
+                    (isArmor || (!g_GearEditingSigil2 && sigilIdx == 0) || (g_GearEditingSigil2 && sigilIdx == 1));
+
+                ImVec2 p = ImGui::GetCursorScreenPos();
+                float w = ImGui::GetContentRegionAvail().x;
+                float h = 30.0f;
+                ImU32 bg = isActiveCard ? IM_COL32(50, 60, 70, 200) : IM_COL32(35, 35, 40, 150);
+                ImGui::GetWindowDrawList()->AddRectFilled(p, ImVec2(p.x + w, p.y + h), bg, 3.0f);
+                ImGui::GetWindowDrawList()->AddRect(p, ImVec2(p.x + w, p.y + h),
+                    isActiveCard ? IM_COL32(100, 160, 220, 255) : IM_COL32(60, 60, 60, 180), 3.0f);
+
+                char btnId[32];
+                snprintf(btnId, sizeof(btnId), "##upgradeArea%d", sigilIdx);
+                ImGui::SetCursorScreenPos(p);
+                if (ImGui::InvisibleButton(btnId, ImVec2(w, h))) {
+                    g_GearSelectorTab = 1;
+                    g_GearEditingSigil2 = (sigilIdx == 1);
+                    memset(g_GearStatSearch, 0, sizeof(g_GearStatSearch));
+                }
+
+                ImVec2 tp(p.x + 6, p.y + 3);
+                if (!upgradeName->empty()) {
+                    char buf[256];
+                    snprintf(buf, sizeof(buf), "%s: %s", upgradeLabel, upgradeName->c_str());
+                    ImGui::GetWindowDrawList()->AddText(tp, IM_COL32(200, 180, 255, 255), buf);
+                } else {
+                    char buf[64];
+                    snprintf(buf, sizeof(buf), "%s: (click to select)", upgradeLabel);
+                    ImGui::GetWindowDrawList()->AddText(tp, IM_COL32(120, 120, 120, 200), buf);
+                }
+                tp.y += 14.0f;
+                ImGui::SetCursorScreenPos(ImVec2(p.x, p.y + h + 4));
             }
-
-            ImVec2 tp(p.x + 6, p.y + 3);
-            if (!upgradeName.empty()) {
-                char buf[256];
-                snprintf(buf, sizeof(buf), "%s: %s", upgradeLabel, upgradeName.c_str());
-                ImGui::GetWindowDrawList()->AddText(tp, IM_COL32(200, 180, 255, 255), buf);
-            } else {
-                char buf[64];
-                snprintf(buf, sizeof(buf), "%s: (click to select)", upgradeLabel);
-                ImGui::GetWindowDrawList()->AddText(tp, IM_COL32(120, 120, 120, 200), buf);
-            }
-            tp.y += 14.0f;
-            ImGui::SetCursorScreenPos(ImVec2(p.x, p.y + h + 4));
         }
 
         ImGui::Spacing();
@@ -5844,7 +5977,8 @@ static void RenderGearCustomizeDialog() {
                     }
 
                     ImGui::PushID(i);
-                    bool isSel = (gs.sigil == SIGIL_LIST[i].name);
+                    const std::string& activeSigil = g_GearEditingSigil2 ? gs.sigil2 : gs.sigil;
+                    bool isSel = (activeSigil == SIGIL_LIST[i].name);
 
                     ImVec2 cs = ImGui::GetCursorScreenPos();
                     float cw = ImGui::GetContentRegionAvail().x;
@@ -5856,8 +5990,14 @@ static void RenderGearCustomizeDialog() {
 
                     ImGui::SetCursorScreenPos(cs);
                     if (ImGui::InvisibleButton("##ssel", ImVec2(cw, ch))) {
-                        gs.sigil = SIGIL_LIST[i].name;
-                        gs.sigil_id = AlterEgo::GW2API::FindItemIdByName(SIGIL_LIST[i].name);
+                        uint32_t sid = AlterEgo::GW2API::FindItemIdByName(SIGIL_LIST[i].name);
+                        if (g_GearEditingSigil2) {
+                            gs.sigil2 = SIGIL_LIST[i].name;
+                            gs.sigil2_id = sid;
+                        } else {
+                            gs.sigil = SIGIL_LIST[i].name;
+                            gs.sigil_id = sid;
+                        }
                         AlterEgo::GW2API::SaveBuildLibrary();
                     }
 
@@ -6086,9 +6226,12 @@ static void RenderSaveToLibraryDialog() {
                                 gs.rune = upName;
                                 gs.rune_id = eq.upgrades[ui];
                                 if (sharedRune.empty()) sharedRune = upName;
-                            } else if (isWeapon) {
+                            } else if (isWeapon && ui == 0) {
                                 gs.sigil = upName;
                                 gs.sigil_id = eq.upgrades[ui];
+                            } else if (isWeapon && ui == 1) {
+                                gs.sigil2 = upName;
+                                gs.sigil2_id = eq.upgrades[ui];
                             }
                         }
 
@@ -6146,6 +6289,16 @@ static void RenderSaveToLibraryDialog() {
 
 // Render a single gear slot with icon for the build gear panel
 static void RenderBuildGearSlot(AlterEgo::SavedBuild& build, const char* slot) {
+    // Check if off-hand is blocked by a two-handed main hand
+    bool disabled = false;
+    if (strcmp(slot, "WeaponA2") == 0 || strcmp(slot, "WeaponB2") == 0) {
+        const char* mainSlot = (strcmp(slot, "WeaponA2") == 0) ? "WeaponA1" : "WeaponB1";
+        auto mhIt = build.gear.find(mainSlot);
+        if (mhIt != build.gear.end() && !mhIt->second.weapon_type.empty()) {
+            disabled = IsWeaponTwoHanded(build.profession, mhIt->second.weapon_type);
+        }
+    }
+
     auto it = build.gear.find(slot);
     bool hasStat = (it != build.gear.end() && it->second.stat_id != 0);
     bool hasWeaponType = (it != build.gear.end() && !it->second.weapon_type.empty());
@@ -6183,8 +6336,8 @@ static void RenderBuildGearSlot(AlterEgo::SavedBuild& build, const char* slot) {
         ImGui::Image(tex->Resource, ImVec2(iconSz, iconSz));
     } else {
         // Fallback: colored placeholder with slot initial
-        ImU32 bgCol = hasData ? IM_COL32(50, 45, 30, 200) : IM_COL32(40, 40, 40, 180);
-        ImU32 borderCol = hasData ? IM_COL32(255, 200, 60, 200) : IM_COL32(80, 80, 80, 200);
+        ImU32 bgCol = disabled ? IM_COL32(30, 30, 30, 120) : (hasData ? IM_COL32(50, 45, 30, 200) : IM_COL32(40, 40, 40, 180));
+        ImU32 borderCol = disabled ? IM_COL32(50, 50, 50, 120) : (hasData ? IM_COL32(255, 200, 60, 200) : IM_COL32(80, 80, 80, 200));
         ImGui::GetWindowDrawList()->AddRectFilled(
             pos, ImVec2(pos.x + iconSz, pos.y + iconSz), bgCol);
         ImGui::GetWindowDrawList()->AddRect(
@@ -6206,52 +6359,81 @@ static void RenderBuildGearSlot(AlterEgo::SavedBuild& build, const char* slot) {
         else if (strcmp(slot, "Relic") == 0) initial = "Re";
 
         ImVec2 textSz = ImGui::CalcTextSize(initial);
+        ImU32 textCol = disabled ? IM_COL32(60, 60, 60, 120) : (hasData ? IM_COL32(255, 210, 80, 200) : IM_COL32(100, 100, 100, 180));
         ImGui::GetWindowDrawList()->AddText(
             ImVec2(pos.x + (iconSz - textSz.x) * 0.5f, pos.y + (iconSz - textSz.y) * 0.5f),
-            hasData ? IM_COL32(255, 210, 80, 200) : IM_COL32(100, 100, 100, 180), initial);
+            textCol, initial);
         ImGui::Dummy(ImVec2(iconSz, iconSz));
     }
 
     // Invisible button over icon area (overlaid on top for click handling)
     ImGui::SetCursorScreenPos(pos);
-    if (ImGui::InvisibleButton("##icon", ImVec2(iconSz, iconSz))) {
+    if (disabled) {
+        ImGui::Dummy(ImVec2(iconSz, iconSz));
+    } else if (ImGui::InvisibleButton("##icon", ImVec2(iconSz, iconSz))) {
         AlterEgo::BuildGearSlot current;
         if (it != build.gear.end()) current = it->second;
         current.slot = slot;
         OpenGearDialog(build.id, slot, current);
     }
-    bool hovered = ImGui::IsItemHovered();
+    bool hovered = !disabled && ImGui::IsItemHovered();
 
-    // Name text next to icon
+    // Name text next to icon — draw directly so lines fit within icon height
     bool isRelicSlot = (strcmp(slot, "Relic") == 0);
-    ImGui::SameLine();
-    ImGui::BeginGroup();
-    ImGui::AlignTextToFramePadding();
+    float lineH = ImGui::GetTextLineHeight();
+    float textX = pos.x + iconSz + 4.0f;
+    float textY = pos.y;
+    auto* dl = ImGui::GetWindowDrawList();
+
+    // Line 1: stat/slot name
+    char line1[256] = {};
+    ImU32 line1Col;
     if (isRelicSlot) {
         if (!build.relic_name.empty()) {
-            ImGui::TextColored(ImVec4(0.5f, 0.8f, 0.8f, 1.0f), "%s", build.relic_name.c_str());
+            snprintf(line1, sizeof(line1), "%s", build.relic_name.c_str());
+            line1Col = IM_COL32(128, 204, 204, 255);
         } else {
-            ImGui::TextColored(ImVec4(0.5f, 0.5f, 0.5f, 1.0f), "Relic");
+            snprintf(line1, sizeof(line1), "Relic");
+            line1Col = IM_COL32(128, 128, 128, 255);
         }
     } else if (hasStat && hasWeaponType) {
-        ImGui::TextColored(ImVec4(1.0f, 0.8f, 0.2f, 1.0f), "%s %s",
-            it->second.stat_name.c_str(), WeaponDisplayName(it->second.weapon_type));
+        snprintf(line1, sizeof(line1), "%s %s", it->second.stat_name.c_str(), WeaponDisplayName(it->second.weapon_type));
+        line1Col = IM_COL32(255, 204, 51, 255);
     } else if (hasStat) {
-        ImGui::TextColored(ImVec4(1.0f, 0.8f, 0.2f, 1.0f), "%s %s",
-            it->second.stat_name.c_str(), GearSlotDisplayName(slot));
+        snprintf(line1, sizeof(line1), "%s %s", it->second.stat_name.c_str(), GearSlotDisplayName(slot));
+        line1Col = IM_COL32(255, 204, 51, 255);
     } else if (hasWeaponType) {
-        ImGui::TextColored(ImVec4(0.8f, 0.75f, 0.5f, 1.0f), "%s %s",
-            WeaponDisplayName(it->second.weapon_type), GearSlotDisplayName(slot));
+        snprintf(line1, sizeof(line1), "%s %s", WeaponDisplayName(it->second.weapon_type), GearSlotDisplayName(slot));
+        line1Col = IM_COL32(204, 191, 128, 255);
+    } else if (disabled) {
+        snprintf(line1, sizeof(line1), "%s (2H equipped)", GearSlotDisplayName(slot));
+        line1Col = IM_COL32(89, 89, 89, 153);
     } else {
-        ImGui::TextColored(ImVec4(0.5f, 0.5f, 0.5f, 1.0f), "%s", GearSlotDisplayName(slot));
+        snprintf(line1, sizeof(line1), "%s", GearSlotDisplayName(slot));
+        line1Col = IM_COL32(128, 128, 128, 255);
     }
-    if (!isRelicSlot && it != build.gear.end() && !it->second.rune.empty()) {
-        ImGui::TextColored(ImVec4(0.6f, 0.6f, 1.0f, 1.0f), "%s", it->second.rune.c_str());
+    dl->AddText(ImVec2(textX, textY), line1Col, line1);
+    textY += lineH;
+
+    // Line 2: rune or sigil
+    if (!isRelicSlot && it != build.gear.end()) {
+        if (!it->second.rune.empty()) {
+            dl->AddText(ImVec2(textX, textY), IM_COL32(153, 153, 255, 255), it->second.rune.c_str());
+            textY += lineH;
+        }
+        if (!it->second.sigil.empty()) {
+            dl->AddText(ImVec2(textX, textY), IM_COL32(153, 153, 255, 255), it->second.sigil.c_str());
+            textY += lineH;
+        }
+        // Line 3: second sigil (two-handed weapons)
+        if (!it->second.sigil2.empty()) {
+            dl->AddText(ImVec2(textX, textY), IM_COL32(153, 153, 255, 255), it->second.sigil2.c_str());
+            textY += lineH;
+        }
     }
-    if (!isRelicSlot && it != build.gear.end() && !it->second.sigil.empty()) {
-        ImGui::TextColored(ImVec4(0.6f, 0.6f, 1.0f, 1.0f), "%s", it->second.sigil.c_str());
-    }
-    ImGui::EndGroup();
+
+    // Advance cursor past the icon
+    ImGui::SetCursorScreenPos(ImVec2(pos.x, pos.y + iconSz + 2.0f));
 
     // Tooltip
     if (hovered && isRelicSlot && !build.relic_name.empty()) {
@@ -9506,21 +9688,38 @@ static void RenderAchievements() {
     {
         std::lock_guard<std::recursive_mutex> lock(g_AchMutex);
 
-        // Current Bonus Event — shown at top when /v2/achievements/daily has special entries
-        if (!g_AchActiveEventCatIds.empty()) {
-            static const std::string kActiveEventGroupId = "__active_event__";
-            bool forceOpenEvent = g_AchRestoreScroll && (g_AchSelectedGroupId == kActiveEventGroupId);
+        // Festivals — shown at top when a festival/bonus event is active
+        if (!g_AchActiveEventCatIds.empty() || !g_AchActiveFestivalCatIds.empty()) {
+            static const std::string kFestivalGroupId = "__active_event__";
+            bool forceOpenEvent = g_AchRestoreScroll && (g_AchSelectedGroupId == kFestivalGroupId);
             if (forceOpenEvent) ImGui::SetNextItemOpen(true);
             else if (!g_AchRestoreScroll) ImGui::SetNextItemOpen(true, ImGuiCond_Once);
-            if (ImGui::TreeNode("Current Bonus Event")) {
-                for (uint32_t catId : g_AchActiveEventCatIds) {
+
+            std::string festLabel = g_AchActiveFestivalName.empty() ? "Current Event" : g_AchActiveFestivalName;
+            if (ImGui::TreeNode(festLabel.c_str())) {
+                // Full festival categories from Historical (e.g. SAB World 1, World 2, etc.)
+                for (uint32_t catId : g_AchActiveFestivalCatIds) {
                     auto it = g_AchCategories.find(catId);
                     if (it == g_AchCategories.end() || it->second.name.empty()) continue;
                     bool selected = (g_AchSelectedCatId == catId);
                     if (ImGui::Selectable(it->second.name.c_str(), selected)) {
                         if (g_AchSelectedCatId != catId) {
                             g_AchSelectedCatId = catId;
-                            g_AchSelectedGroupId = kActiveEventGroupId;
+                            g_AchSelectedGroupId = kFestivalGroupId;
+                            FetchAchCategoryDefs(catId);
+                        }
+                    }
+                }
+                // Non-festival bonus event categories (e.g. Roller Beetle Racing, Fractal Rush)
+                for (uint32_t catId : g_AchActiveEventCatIds) {
+                    if (FESTIVAL_DAILY_CAT_IDS.count(catId)) continue; // daily already in Daily group
+                    auto it = g_AchCategories.find(catId);
+                    if (it == g_AchCategories.end() || it->second.name.empty()) continue;
+                    bool selected = (g_AchSelectedCatId == catId);
+                    if (ImGui::Selectable(it->second.name.c_str(), selected)) {
+                        if (g_AchSelectedCatId != catId) {
+                            g_AchSelectedCatId = catId;
+                            g_AchSelectedGroupId = kFestivalGroupId;
                             FetchAchCategoryDefs(catId);
                         }
                     }
@@ -9540,9 +9739,14 @@ static void RenderAchievements() {
             if (forceOpen) ImGui::SetNextItemOpen(true);
             if (ImGui::TreeNode(group.name.c_str())) {
                 // Sort categories by order within the group, skipping hidden categories
+                bool isDaily = (group.name == "Daily");
                 std::vector<const AchCategoryDef*> sortedCats;
                 for (uint32_t catId : group.categories) {
                     if (g_AchHiddenCatIds.count(catId)) continue;
+                    // Hide inactive festival dailies from the Daily group (only after active event is known)
+                    if (isDaily && g_AchActiveEventFetched && FESTIVAL_DAILY_CAT_IDS.count(catId) &&
+                        std::find(g_AchActiveEventCatIds.begin(), g_AchActiveEventCatIds.end(), catId) == g_AchActiveEventCatIds.end())
+                        continue;
                     auto it = g_AchCategories.find(catId);
                     if (it != g_AchCategories.end() && !it->second.name.empty()) {
                         sortedCats.push_back(&it->second);
