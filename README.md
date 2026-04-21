@@ -4,74 +4,26 @@ A Guild Wars 2 addon for [Raidcore Nexus](https://raidcore.gg/Nexus) that lets y
 
 ## AI Notice
 
-This addon has been 100% created in [Windsurf](https://windsurf.com/) using Claude. I understand that some folks have a moral, financial or political objection to creating software using an LLM. I just wanted to make a useful tool for the GW2 community, and this was the only way I could do it.
+This addon has been mostly created in [Windsurf](https://windsurf.com/) using Claude. I understand that some folks have a moral, financial or political objection to creating software using an LLM. I just wanted to make a useful tool for the GW2 community, and this was the only way I could do it.
 
 If an LLM creating software upsets you, then perhaps this repo isn't for you. Move on, and enjoy your day.
 
 ## Features
 
-- **GW2-Themed UI** — Custom dark slate and gold accent theme with rounded corners, gradient section headers, and polished spacing
-  - Profession-colored accent bars and glow effects on character and build list items
-  - Scoped to Alter Ego only — won't affect other Nexus addons
-- **Multi-Account Support** — Seamlessly switch between GW2 accounts with a single dropdown
-  - Per-account data for characters, skins, clears, and achievements
-  - Account selection persisted across sessions
-- **Character List** — All characters across your accounts with profession icons, level, and birthday countdown
-  - Sort by name, class, level, age, or birthday — or drag to reorder
-  - Compact mode option for denser lists
-  - Profession-colored accent bars with hover glow effects
-- **Equipment Panel** — Full paper-doll layout for each character's equipment tabs
-  - Equipment icons with rarity-colored borders
-  - Skin/transmutation display with original item info
-  - Upgrade (sigil/rune) and infusion tooltips
-  - Dye color preview swatches
-  - Equipment tab switching
-  - Race concept art background with vignette fade
-  - Custom character portraits (see [Portraits](#character-portraits) below)
-- **Build Panel** — Specialization trait grids with animated marching-ant connection lines
-  - Specialization portrait and trait icons with tooltips
-  - Heal / Utility / Elite skill bar with icons
-  - Build tab switching
-  - Copy build template chat link to clipboard
-- **Build Library** — Import and manage build templates from chat links
-  - Full trait grid and skill bar preview
-  - Weapon skills display (with Elementalist attunement and Thief dual-wield support)
-  - Gear customization: stat combos, runes, sigils, weapon types
-  - Filter by profession and game mode, search by name
-  - **Shared Build Templates** — Export/import complete builds (traits + gear) via multiple formats
-    - `AE2:` compact binary codes — fits full builds in GW2's 199-char chat limit
-    - `AE1:` base64 JSON codes — for Discord/text sharing
-    - Raw JSON import/export
-    - [Spec for build websites →](docs/shared-build-spec.md)
-  - **Chat Build Detection** — Automatically detects AE2 build codes in GW2 chat
-    - Toast notification with one-click import to your build library
-    - Works across all chat channels (party, squad, whisper, etc.)
-- **Skinventory** — Browse all skins in the game, track which you own per account
-  - Filter by type, subtype, weight class
-  - Skin detail panel with wiki images, TP prices, vendor prices
-  - Shopping list for tracking skins you want to acquire
-- **Vault & Clears** — Track Wizard's Vault objectives and raid/fractal completion per account
-  - **Vault** sub-tab: daily, weekly, and special Wizard's Vault objectives
-    - Meta chest progress bar per period with reset countdown
-    - Per-objective status, acclaim reward, track tag (PvE/PvP/WvW), progress, and claimed state
-  - **Clears** sub-tab: Daily Fractals (by tier), Daily Raid Bounties, Weekly Strikes, Weekly Raids (per-wing, per-encounter)
-  - Auto-refreshes on account switch, at daily/weekly reset, and every 10 minutes
-  - Data cached to disk for instant display on addon load
-- **Achievements** — Browse and track GW2 achievements per account
-  - Full achievement group and category tree with search across 8000+ achievements
-  - Pin up to 20 achievements for tracking
-  - Expandable sub-objectives (bits) with completion status
-  - Floating Achievement Tracker popout window — always visible, independent of main window
-  - Skin-type bits link to Skinventory browser; sub-achievement bits navigate to parent
-  - Waypoint chat codes with click-to-copy
-  - Real-time completion detection via Events: Alerts integration
-  - Progress bars and completion indicators
-- **Chat Link Support** — Full import/export of GW2 chat links and build codes
-  - Item links (with skin, upgrades, infusions)
-  - Build template links
-  - Skin links
-  - Right-click context menu for copying links
-- **Hoard & Seek Integration** — Uses [Hoard & Seek](https://github.com/PieOrCake/hoard_and_seek) as a data source for multi-account character, equipment, skin ownership, and achievement data
+- **Multi-Account Support** — Switch between GW2 accounts from a single dropdown; all data is per-account
+- **Characters** — Full character list with profession, level, and birthday countdown; sortable and drag-to-reorder
+- **Equipment** — Paper-doll layout with rarity borders, sigil/rune/infusion tooltips, dye swatches, and custom portraits
+- **Builds** — Trait grid and skill bar viewer; copy build chat link to clipboard
+- **Build Library** — Save and manage builds with full trait/gear preview; filter by profession and game mode
+  - Share builds via `AE2:` compact codes ([spec →](docs/shared-build-spec.md)) or in-game chat links
+  - Online relay to share builds with the Alter Ego mobile app via short codes (coming soon)
+  - Detects AE2 codes in GW2 chat and offers one-click import
+- **Skinventory** — Browse all skins, track ownership per account, shopping list, wiki images and prices
+- **Vault & Clears** — Wizard's Vault objectives (daily/weekly/special) and raid/fractal completion tracking
+  - Vault: meta progress, per-objective acclaim, track, progress, and claimed state
+  - Clears: Daily Fractals by tier, Daily Bounties, Weekly Strikes, Weekly Raids per-encounter
+- **Achievements** — Full achievement tree with search, pin up to 20 for tracking, floating tracker window, waypoint copy, real-time completion alerts
+- **Hoard & Seek Integration** — All API data sourced via [Hoard & Seek](https://github.com/PieOrCake/hoard_and_seek)
 
 ## Screenshots
 
