@@ -15,8 +15,8 @@ If an LLM creating software upsets you, then perhaps this repo isn't for you. Mo
 - **Equipment** — Paper-doll layout with rarity borders, sigil/rune/infusion tooltips, dye swatches, and custom portraits
 - **Builds** — Trait grid and skill bar viewer; copy build chat link to clipboard
 - **Build Library** — Save and manage builds with full trait/gear preview; filter by profession and game mode
-  - Share builds via `AE2:` compact codes ([spec →](docs/shared-build-spec.md)) or in-game chat links
-  - Online relay to share builds with the Alter Ego mobile app via short codes (coming soon)
+  - Share full builds (including gear, runes, sigils) via `AE2:` compact codes ([spec →](docs/shared-build-spec.md)) or build-line using in-game chat links
+  - Online relay to share builds with the (upcoming) Alter Ego mobile app via short codes
   - Detects AE2 codes in GW2 chat and offers one-click import
 - **Skinventory** — Browse all skins, track ownership per account, shopping list, wiki images and prices
 - **Vault & Clears** — Wizard's Vault objectives (daily/weekly/special) and raid/fractal completion tracking
