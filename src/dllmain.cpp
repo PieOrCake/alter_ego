@@ -28,12 +28,14 @@
 #include "WikiImage.h"
 #include "HttpClient.h"
 #include <nlohmann/json.hpp>
+#include "AddonShared.h"
+#include "Clears.h"
 
 // Version constants
 #define V_MAJOR 0
 #define V_MINOR 9
-#define V_BUILD 4
-#define V_REVISION 1
+#define V_BUILD 5
+#define V_REVISION 0
 
 // Quick Access icon identifiers
 #define QA_ID "QA_ALTER_EGO"
@@ -440,44 +442,6 @@ struct SkinShopEntry {
 static std::vector<SkinShopEntry> g_SkinShopList;
 static bool g_SkinShopListDirty = true;
 
-// Clears tracker state
-#define EV_AE_CLEARS_ACH_RESPONSE "EV_ALTER_EGO_CLEARS_ACH_RESP"
-static void OnClearsAchResponse(void* eventArgs);
-static void SendClearsAchQuery();
-
-// Achievement categories: 88 = Daily Fractals, 475 = Daily Raid Bounties, 477 = Weekly Raids
-static const uint32_t CAT_DAILY_FRACTALS = 88;
-static const uint32_t CAT_DAILY_BOUNTIES = 475;
-static const uint32_t CAT_WEEKLY_RAIDS   = 477;
-static const uint32_t ACH_WEEKLY_STRIKES = 9125; // "Weekly Raid Encounters" — tracks all strikes
-
-struct ClearEntry {
-    uint32_t id = 0;
-    std::string name;
-    std::string tier;              // For fractals: "T1".."T4", "Rec"
-    bool done = false;
-    int32_t current = 0;
-    int32_t max = 0;
-    std::vector<std::string> bitNames;  // From API bits[].text
-    std::vector<bool> bitDone;          // Per-bit completion from H&S
-};
-
-static std::vector<ClearEntry> g_DailyFractals;   // cat 88
-static std::vector<ClearEntry> g_DailyBounties;   // cat 475
-static std::vector<ClearEntry> g_WeeklyWings;     // cat 477 per-wing achievements
-static ClearEntry g_WeeklyStrikes;                 // ach 9125
-
-static std::mutex g_ClearsMutex;
-static bool g_ClearsFetching = false;
-static bool g_ClearsFetched = false;
-static bool g_ClearsNeedRequery = false;      // deferred requery on account change
-static std::string g_ClearsStatusMsg;
-
-// Reset time tracking
-static std::chrono::system_clock::time_point g_LastDailyReset{};
-static std::chrono::system_clock::time_point g_LastWeeklyReset{};
-static std::chrono::steady_clock::time_point g_LastClearsCompletionQuery{};
-
 // =========================================================================
 // Achievement Tracker
 // =========================================================================
@@ -574,8 +538,6 @@ static bool g_AchProgressFetching = false; // fetching account progress
 static bool g_AchNeedRequery = false;      // deferred requery on account change
 static std::atomic<uint32_t> g_AchCatProgressPending{0}; // catId needing progress query (set by bg thread)
 static std::atomic<bool> g_AchRetryPending{false};       // PENDING retry for ach progress
-static std::atomic<bool> g_ClearsRetryPending{false};    // PENDING retry for clears
-static std::atomic<bool> g_ClearsQueryPending{false};    // clears initial fetch done, needs H&S query
 static uint64_t g_AchProgressGen = 0;      // incremented when progress updates, triggers popout cache rebuild
 static char g_AchSearchBuf[128] = "";
 static bool g_AchPopoutVisible = false;    // popout tracker window visibility
@@ -589,10 +551,11 @@ static float g_AchListScrollY = 0.0f;      // saved scroll position of right lis
 static bool g_AchRestoreScroll = false;     // flag to restore scroll positions on next frame
 static uint32_t g_AchNavigateToId = 0;     // pending navigation: jump to this achievement ID
 static bool g_AchPinnedBootQueried = false; // flag: have we queried pinned progress after H&S became available?
-static bool g_ClearsBootQueried = false;   // flag: have we queried clears completion after H&S became available?
 
 // Active special event detection (from /v2/achievements/daily "special" array)
-static std::vector<uint32_t> g_AchActiveEventCatIds;  // category IDs for the active event
+static std::vector<uint32_t> g_AchActiveMainCatIds;   // main/Historical categories for top of tree
+static std::vector<uint32_t> g_AchActiveDailyCatIds;   // daily categories for top of Daily group
+static std::string g_AchActiveEventName;                // display name for the active event node
 static bool g_AchActiveEventFetched = false;
 static bool g_AchActiveEventFetching = false;
 
@@ -607,26 +570,29 @@ static const std::unordered_set<uint32_t> FESTIVAL_DAILY_CAT_IDS = {
     233, // Daily Dragon Bash
 };
 
-// Mapping: festival daily category ID -> keyword to match full festival categories in Historical
-static const std::unordered_map<uint32_t, std::string> FESTIVAL_CAT_KEYWORDS = {
-    {79,  "Mad King"},          // Shadow of the Mad King, Halloween Rituals, Lunatic Wardrobe
-    {98,  "Wintersday"},        // Wintersday Traditions, Toymaker Tixx, etc.
-    {102, "Lunar New Year"},
-    {162, "Super Adventure Box"},
-    {201, "Lunar New Year"},
-    {213, "Four Winds"},        // Festival of the Four Winds, Bazaar, Queen's Gauntlet
-    {233, "Dragon Bash"},
+// Festival daily category -> display name + keywords to match Historical categories
+struct FestivalMapping {
+    std::string displayName;
+    std::vector<std::string> keywords;  // match Historical category names
 };
-// Additional keywords for festivals that use broader matching
-static const std::unordered_map<uint32_t, std::vector<std::string>> FESTIVAL_CAT_EXTRA_KEYWORDS = {
-    {79,  {"Halloween", "Lunatic"}},
-    {98,  {"Toymaker Tixx", "Winter's Presence"}},
-    {213, {"Queen's Gauntlet", "Bazaar"}},
+static const std::unordered_map<uint32_t, FestivalMapping> FESTIVAL_MAPPINGS = {
+    {79,  {"Shadow of the Mad King", {"Mad King", "Halloween", "Lunatic"}}},
+    {98,  {"Wintersday",             {"Wintersday", "Toymaker Tixx", "Winter's Presence"}}},
+    {102, {"Lunar New Year",         {"Lunar New Year"}}},
+    {162, {"Super Adventure Festival",{"Super Adventure Box"}}},
+    {201, {"Lunar New Year",         {"Lunar New Year"}}},
+    {213, {"Festival of the Four Winds", {"Four Winds", "Queen's Gauntlet", "Bazaar"}}},
+    {233, {"Dragon Bash",            {"Dragon Bash"}}},
 };
 
-// Resolved full festival category IDs from Historical group for the active event
-static std::vector<uint32_t> g_AchActiveFestivalCatIds;
-static std::string g_AchActiveFestivalName;
+// Categories from Bonus Events group that are always junk (never surfaced)
+static bool IsBonusEventJunk(const std::string& name) {
+    return name.find("Marshaling") != std::string::npos ||
+           name.find("Mobilization") != std::string::npos ||
+           name.find("Black Lion") != std::string::npos ||
+           name.find("Wizard's Vault") != std::string::npos ||
+           name.find("Adventure Guide") != std::string::npos;
+}
 
 // Optimistic update grace period — protects alert-based increments from stale API snapback
 static std::unordered_map<uint32_t, std::chrono::steady_clock::time_point> g_AchOptimisticTime;
@@ -691,6 +657,9 @@ static char g_LibEditName[128] = "";   // inline rename buffer
 static char g_LibEditNotes[512] = ""; // inline notes buffer
 static std::string g_LibEditBuildId;   // which build is being edited
 static int g_LibCtxDeleteIdx = -1;     // deferred delete from context menu
+static bool g_RelaySending = false;    // relay POST in progress
+static std::string g_RelayResultCode;  // 4-char code on success
+static std::string g_RelayResultError; // error message on failure
 
 // =========================================================================
 // Events: Chat integration — detect build links in game chat
@@ -793,8 +762,9 @@ static void OnHoardPongForAch(void* eventArgs) {
     }
 
     // Signal render thread to query clears completion (once per session)
-    if (!g_ClearsBootQueried && g_ClearsFetched && !g_ClearsFetching) {
-        g_ClearsBootQueried = true;
+    static bool s_clearsBootQueried = false;
+    if (!s_clearsBootQueried && g_ClearsFetched && !g_ClearsFetching) {
+        s_clearsBootQueried = true;
         g_ClearsQueryPending = true;
     }
 }
@@ -994,7 +964,7 @@ static std::vector<bool> g_RefreshSelection;    // parallel checkbox state
 static std::string g_SelectedAccountFilter;    // empty = "All Accounts", else specific account_name
 
 // Returns the account name to use for per-account queries (dropdown selection only)
-static std::string GetEffectiveAccountName() {
+std::string GetEffectiveAccountName() {
     return g_SelectedAccountFilter;
 }
 
@@ -1172,7 +1142,7 @@ static const char* GetCraftingIconUrl(const std::string& disc) {
 }
 
 // Copy text to Windows clipboard
-static void CopyToClipboard(const std::string& text) {
+void CopyToClipboard(const std::string& text) {
     if (!OpenClipboard(NULL)) return;
     EmptyClipboard();
     HGLOBAL hMem = GlobalAlloc(GMEM_MOVEABLE, text.size() + 1);
@@ -1345,169 +1315,6 @@ static void LoadSession() {
     } catch (...) {}
 }
 
-// Clears cache persistence (forward declarations for functions defined in Clears backend section)
-static std::chrono::system_clock::time_point CalcLastDailyReset(std::chrono::system_clock::time_point now);
-static std::chrono::system_clock::time_point CalcLastWeeklyReset(std::chrono::system_clock::time_point now);
-static void FetchClears();
-
-static void SaveClearsCache() {
-    std::string dir = AlterEgo::GW2API::GetDataDirectory();
-    std::filesystem::create_directories(dir);
-    std::string path = dir + "/clears_cache.json";
-
-    nlohmann::json j;
-    // Store fetch timestamp as seconds since epoch
-    auto epochSecs = std::chrono::duration_cast<std::chrono::seconds>(
-        std::chrono::system_clock::now().time_since_epoch()).count();
-    j["fetch_time"] = epochSecs;
-
-    auto serializeEntry = [](const ClearEntry& e) -> nlohmann::json {
-        nlohmann::json ej;
-        ej["id"] = e.id;
-        ej["name"] = e.name;
-        ej["tier"] = e.tier;
-        ej["done"] = e.done;
-        ej["current"] = e.current;
-        ej["max"] = e.max;
-        ej["bitNames"] = e.bitNames;
-        std::vector<int> bits;
-        for (bool b : e.bitDone) bits.push_back(b ? 1 : 0);
-        ej["bitDone"] = bits;
-        return ej;
-    };
-
-    // Snapshot data under lock to prevent concurrent modification
-    {
-        std::lock_guard<std::mutex> lock(g_ClearsMutex);
-
-        nlohmann::json fractals = nlohmann::json::array();
-        for (const auto& e : g_DailyFractals) fractals.push_back(serializeEntry(e));
-        j["dailyFractals"] = fractals;
-
-        nlohmann::json bounties = nlohmann::json::array();
-        for (const auto& e : g_DailyBounties) bounties.push_back(serializeEntry(e));
-        j["dailyBounties"] = bounties;
-
-        nlohmann::json wings = nlohmann::json::array();
-        for (const auto& e : g_WeeklyWings) wings.push_back(serializeEntry(e));
-        j["weeklyWings"] = wings;
-
-        j["weeklyStrikes"] = serializeEntry(g_WeeklyStrikes);
-    }
-
-    std::ofstream file(path);
-    if (file.is_open()) file << j.dump(2);
-}
-
-static void LoadClearsCache() {
-    std::string path = AlterEgo::GW2API::GetDataDirectory() + "/clears_cache.json";
-    std::ifstream file(path);
-    if (!file.is_open()) return;
-
-    auto deserializeEntry = [](const nlohmann::json& ej) -> ClearEntry {
-        ClearEntry e;
-        e.id = ej.value("id", 0u);
-        e.name = ej.value("name", "");
-        e.tier = ej.value("tier", "");
-        e.done = ej.value("done", false);
-        e.current = ej.value("current", 0);
-        e.max = ej.value("max", 0);
-        if (ej.contains("bitNames") && ej["bitNames"].is_array()) {
-            for (const auto& bn : ej["bitNames"]) e.bitNames.push_back(bn.get<std::string>());
-        }
-        if (ej.contains("bitDone") && ej["bitDone"].is_array()) {
-            for (const auto& bd : ej["bitDone"]) e.bitDone.push_back(bd.get<int>() != 0);
-        }
-        return e;
-    };
-
-    try {
-        auto j = nlohmann::json::parse(file);
-
-        int64_t fetchEpoch = j.value("fetch_time", (int64_t)0);
-        auto fetchTime = std::chrono::system_clock::from_time_t((time_t)fetchEpoch);
-
-        // Check if a reset has occurred since the cached data was fetched
-        // Add 60s buffer so we don't treat cache as stale before the API has updated
-        auto now = std::chrono::system_clock::now();
-        auto dailyReset = CalcLastDailyReset(now) + std::chrono::seconds(60);
-        auto weeklyReset = CalcLastWeeklyReset(now) + std::chrono::seconds(60);
-        bool dailyStale = fetchTime < dailyReset && now >= dailyReset;
-        bool weeklyStale = fetchTime < weeklyReset && now >= weeklyReset;
-
-        {
-            std::lock_guard<std::mutex> lock(g_ClearsMutex);
-
-            // Clear vectors before loading to prevent accumulation
-            g_DailyFractals.clear();
-            g_DailyBounties.clear();
-            g_WeeklyWings.clear();
-            g_WeeklyStrikes = ClearEntry{};
-
-            // Helper: deduplicate entries by ID
-            auto dedup = [](std::vector<ClearEntry>& vec) {
-                std::unordered_set<uint32_t> seen;
-                vec.erase(std::remove_if(vec.begin(), vec.end(),
-                    [&seen](const ClearEntry& e) {
-                        return !seen.insert(e.id).second;
-                    }), vec.end());
-            };
-
-            // Load daily data only if no daily reset has occurred since fetch
-            if (!dailyStale) {
-                if (j.contains("dailyFractals") && j["dailyFractals"].is_array()) {
-                    for (const auto& ej : j["dailyFractals"])
-                        g_DailyFractals.push_back(deserializeEntry(ej));
-                    dedup(g_DailyFractals);
-                }
-                if (j.contains("dailyBounties") && j["dailyBounties"].is_array()) {
-                    for (const auto& ej : j["dailyBounties"])
-                        g_DailyBounties.push_back(deserializeEntry(ej));
-                    dedup(g_DailyBounties);
-                }
-            }
-
-            // Load weekly data only if no weekly reset has occurred since fetch
-            if (!weeklyStale) {
-                if (j.contains("weeklyWings") && j["weeklyWings"].is_array()) {
-                    for (const auto& ej : j["weeklyWings"])
-                        g_WeeklyWings.push_back(deserializeEntry(ej));
-                    dedup(g_WeeklyWings);
-                    // Sort into canonical W1-W8 order
-                    static const std::unordered_map<uint32_t, int> wingOrder = {
-                        {9128, 1}, {9147, 2}, {9182, 3}, {9144, 4},
-                        {9111, 5}, {9120, 6}, {9156, 7}, {9181, 8},
-                    };
-                    std::sort(g_WeeklyWings.begin(), g_WeeklyWings.end(),
-                        [](const ClearEntry& a, const ClearEntry& b) {
-                            auto ai = wingOrder.find(a.id);
-                            auto bi = wingOrder.find(b.id);
-                            int ao = (ai != wingOrder.end()) ? ai->second : 99;
-                            int bo = (bi != wingOrder.end()) ? bi->second : 99;
-                            return ao < bo;
-                        });
-                }
-                if (j.contains("weeklyStrikes")) {
-                    g_WeeklyStrikes = deserializeEntry(j["weeklyStrikes"]);
-                }
-            }
-
-            // If we loaded any data, mark as fetched
-            if (!g_DailyFractals.empty() || !g_WeeklyWings.empty()) {
-                g_ClearsFetched = true;
-                g_LastClearsCompletionQuery = std::chrono::steady_clock::now();
-            }
-
-            g_LastDailyReset = dailyReset;
-            g_LastWeeklyReset = weeklyReset;
-        }
-
-        // If any data is stale, trigger a full re-fetch
-        if (dailyStale || weeklyStale) {
-            FetchClears();
-        }
-    } catch (...) {}
-}
 
 // =========================================================================
 // Achievement Tracker — Persistence
@@ -1668,7 +1475,7 @@ static void LoadAchGroupCache() {
             }
         }
 
-        // Build hidden category set
+        // Build hidden category set (only truly junk categories, not event-related)
         g_AchHiddenCatIds.clear();
         for (const auto& g : g_AchGroups) {
             if (g.name == "Character Adventure Guide") {
@@ -1677,13 +1484,7 @@ static void LoadAchGroupCache() {
                 for (uint32_t cid : g.categories) {
                     auto catIt = g_AchCategories.find(cid);
                     if (catIt == g_AchCategories.end()) continue;
-                    const auto& n = catIt->second.name;
-                    if (n.find("Marshaling") != std::string::npos ||
-                        n.find("Mobilization") != std::string::npos ||
-                        n.find("Black Lion") != std::string::npos ||
-                        n.find("Wizard's Vault") != std::string::npos ||
-                        n.find("Gnashbash") != std::string::npos ||
-                        n == "Fractal Incursion")
+                    if (IsBonusEventJunk(catIt->second.name))
                         g_AchHiddenCatIds.insert(cid);
                 }
             }
@@ -2047,13 +1848,7 @@ static void FetchAchGroups() {
                     for (uint32_t cid : g.categories) {
                         auto catIt = g_AchCategories.find(cid);
                         if (catIt == g_AchCategories.end()) continue;
-                        const auto& n = catIt->second.name;
-                        if (n.find("Marshaling") != std::string::npos ||
-                            n.find("Mobilization") != std::string::npos ||
-                            n.find("Black Lion") != std::string::npos ||
-                            n.find("Wizard's Vault") != std::string::npos ||
-                            n.find("Gnashbash") != std::string::npos ||
-                            n == "Fractal Incursion")
+                        if (IsBonusEventJunk(catIt->second.name))
                             g_AchHiddenCatIds.insert(cid);
                     }
                 }
@@ -2074,7 +1869,6 @@ static void FetchActiveSpecialEvent() {
     std::thread([]() {
         std::string json = Skinventory::HttpClient::Get("https://api.guildwars2.com/v2/achievements/daily");
         if (json.empty()) {
-            // API failed — don't mark as fetched so we can retry
             g_AchActiveEventFetching = false;
             return;
         }
@@ -2091,50 +1885,92 @@ static void FetchActiveSpecialEvent() {
             return;
         }
 
-        // Resolve achievement IDs to category IDs via reverse lookup
-        std::vector<uint32_t> catIds;
-        if (!specialAchIds.empty()) {
-            std::unordered_set<uint32_t> seen;
+        // Resolve special achievement IDs to their category IDs
+        std::unordered_set<uint32_t> triggerCatIds;
+        {
             std::lock_guard<std::recursive_mutex> lock(g_AchMutex);
             for (uint32_t achId : specialAchIds) {
                 auto it = g_AchIdToCategory.find(achId);
-                if (it != g_AchIdToCategory.end() && seen.insert(it->second).second) {
-                    catIds.push_back(it->second);
-                }
+                if (it != g_AchIdToCategory.end()) triggerCatIds.insert(it->second);
             }
         }
 
-        // Resolve full festival categories from Historical group by keyword matching
-        std::vector<uint32_t> festivalCatIds;
-        std::string festivalName;
+        // Build keyword list and classify trigger categories as daily or main
+        std::vector<std::string> keywords;
+        std::vector<uint32_t> dailyCats;
+        std::vector<uint32_t> mainCats;
+        std::string eventName;
         {
             std::lock_guard<std::recursive_mutex> lock(g_AchMutex);
 
-            // Collect keywords from active daily categories
-            std::vector<std::string> keywords;
-            for (uint32_t cid : catIds) {
-                auto kwIt = FESTIVAL_CAT_KEYWORDS.find(cid);
-                if (kwIt != FESTIVAL_CAT_KEYWORDS.end()) {
-                    keywords.push_back(kwIt->second);
-                    if (festivalName.empty()) festivalName = kwIt->second;
+            for (uint32_t cid : triggerCatIds) {
+                // Check if this is a known festival daily
+                auto festIt = FESTIVAL_MAPPINGS.find(cid);
+                if (festIt != FESTIVAL_MAPPINGS.end()) {
+                    dailyCats.push_back(cid);
+                    if (eventName.empty()) eventName = festIt->second.displayName;
+                    for (const auto& kw : festIt->second.keywords) keywords.push_back(kw);
+                    continue;
                 }
-                auto exIt = FESTIVAL_CAT_EXTRA_KEYWORDS.find(cid);
-                if (exIt != FESTIVAL_CAT_EXTRA_KEYWORDS.end()) {
-                    for (const auto& kw : exIt->second) keywords.push_back(kw);
+
+                // Non-festival: classify by category name
+                auto catIt = g_AchCategories.find(cid);
+                if (catIt == g_AchCategories.end()) continue;
+                const auto& name = catIt->second.name;
+
+                // Skip junk
+                if (IsBonusEventJunk(name)) continue;
+
+                if (name.find("Daily") != std::string::npos) {
+                    // Daily bonus event (e.g. "Daily Roller Beetle Racing")
+                    dailyCats.push_back(cid);
+                    // Derive keyword by stripping "Daily " prefix
+                    std::string kw = name;
+                    if (kw.substr(0, 6) == "Daily ") kw = kw.substr(6);
+                    keywords.push_back(kw);
+                    if (eventName.empty()) eventName = kw;
+                } else {
+                    // Main bonus event category (e.g. "Fractal Rush", "Gnashbash")
+                    mainCats.push_back(cid);
+                    keywords.push_back(name);
+                    if (eventName.empty()) eventName = name;
                 }
             }
 
-            // Search Historical group for matching categories
+            // Search Historical group for categories matching any keyword
             if (!keywords.empty()) {
                 for (const auto& grp : g_AchGroups) {
                     if (grp.name != "Historical") continue;
                     for (uint32_t cid : grp.categories) {
+                        if (triggerCatIds.count(cid)) continue; // already classified
                         auto catIt = g_AchCategories.find(cid);
                         if (catIt == g_AchCategories.end()) continue;
                         const auto& name = catIt->second.name;
                         for (const auto& kw : keywords) {
                             if (name.find(kw) != std::string::npos) {
-                                festivalCatIds.push_back(cid);
+                                mainCats.push_back(cid);
+                                break;
+                            }
+                        }
+                    }
+                    break;
+                }
+            }
+
+            // Also search Bonus Events group for non-daily, non-junk matching categories
+            if (!keywords.empty()) {
+                for (const auto& grp : g_AchGroups) {
+                    if (grp.name != "Bonus Events") continue;
+                    for (uint32_t cid : grp.categories) {
+                        if (triggerCatIds.count(cid)) continue; // already classified
+                        auto catIt = g_AchCategories.find(cid);
+                        if (catIt == g_AchCategories.end()) continue;
+                        const auto& name = catIt->second.name;
+                        if (IsBonusEventJunk(name)) continue;
+                        if (name.find("Daily") != std::string::npos) continue; // dailies handled above
+                        for (const auto& kw : keywords) {
+                            if (name.find(kw) != std::string::npos) {
+                                mainCats.push_back(cid);
                                 break;
                             }
                         }
@@ -2146,9 +1982,9 @@ static void FetchActiveSpecialEvent() {
 
         {
             std::lock_guard<std::recursive_mutex> lock(g_AchMutex);
-            g_AchActiveEventCatIds = std::move(catIds);
-            g_AchActiveFestivalCatIds = std::move(festivalCatIds);
-            g_AchActiveFestivalName = std::move(festivalName);
+            g_AchActiveMainCatIds = std::move(mainCats);
+            g_AchActiveDailyCatIds = std::move(dailyCats);
+            g_AchActiveEventName = std::move(eventName);
             g_AchActiveEventFetched = true;
             g_AchActiveEventFetching = false;
         }
@@ -2488,9 +2324,6 @@ void ProcessKeybind(const char* aIdentifier, bool aIsRelease);
 void AddonRender();
 void AddonOptions();
 void OnMumbleIdentityUpdated(void* eventArgs);
-
-// Forward declarations
-static void RenderSectionHeader(const char* label, ImVec4 color, const char* suffix = nullptr);
 
 // Icon size for item icons
 static const float ICON_SIZE = 40.0f;
@@ -4135,46 +3968,6 @@ static const char* GameModeLabel(AlterEgo::GameMode m) {
     }
 }
 
-// --- Shared Build Templates ---
-
-static nlohmann::json ExportBuildToJson(const AlterEgo::SavedBuild& build) {
-    nlohmann::json j;
-    j["v"] = 1;
-    j["name"] = build.name;
-    j["chat_link"] = build.chat_link;
-    j["profession"] = build.profession;
-    j["game_mode"] = GameModeLabel(build.game_mode);
-    if (!build.notes.empty()) j["notes"] = build.notes;
-
-    // Gear
-    if (!build.gear.empty()) {
-        nlohmann::json gear = nlohmann::json::object();
-        for (const auto& [slot, gs] : build.gear) {
-            nlohmann::json s;
-            if (gs.stat_id != 0) s["stat_id"] = gs.stat_id;
-            if (!gs.stat_name.empty()) s["stat"] = gs.stat_name;
-            if (!gs.rune.empty()) s["rune"] = gs.rune;
-            if (!gs.sigil.empty()) s["sigil"] = gs.sigil;
-            if (!gs.sigil2.empty()) s["sigil2"] = gs.sigil2;
-            if (!gs.infusion.empty()) s["infusion"] = gs.infusion;
-            if (!gs.weapon_type.empty()) s["weapon"] = gs.weapon_type;
-            if (!s.empty()) gear[slot] = s;
-        }
-        if (!gear.empty()) j["gear"] = gear;
-    }
-    if (!build.rune_name.empty()) j["rune"] = build.rune_name;
-    if (!build.relic_name.empty()) j["relic"] = build.relic_name;
-
-    return j;
-}
-
-static std::string ExportBuildToBase64(const AlterEgo::SavedBuild& build) {
-    std::string json = ExportBuildToJson(build).dump();
-    std::string b64 = AlterEgo::ChatLink::Base64Encode(
-        (const uint8_t*)json.data(), json.size());
-    return "AE1:" + b64;
-}
-
 // =========================================================================
 // AE2: Compact binary build format — fits in GW2 chat (~130-150 chars)
 // =========================================================================
@@ -4596,78 +4389,295 @@ static AlterEgo::GameMode GameModeFromLabel(const std::string& label) {
     return AlterEgo::GameMode::Other;
 }
 
-// Returns true if input is a shared build template (AE2, AE1, or JSON)
-// On success, populates 'out' with the imported build
-static bool ImportSharedBuild(const std::string& input, AlterEgo::SavedBuild& out, std::string& error) {
-    // Try AE2 compact binary format first
-    if (input.size() > 4 && input.substr(0, 4) == "AE2:") {
-        return ImportBuildFromAE2(input, out, error);
+// ---- Mobile relay import ----
+
+static bool IsRelayCode(const std::string& s) {
+    if (s.size() != 4) return false;
+    for (char c : s) {
+        if (!isalnum((unsigned char)c)) return false;
     }
+    return true;
+}
 
-    std::string jsonStr;
+// Cache the last relay response so a retry (e.g. waiting for palette data) doesn't
+// consume another single-use code.
+static std::string g_RelayCache_Code;
+static std::string g_RelayCache_Body;
 
-    // Detect format
-    if (input.size() > 4 && input.substr(0, 4) == "AE1:") {
-        // Base64 encoded shared build
-        auto bytes = AlterEgo::ChatLink::Base64Decode(input.substr(4));
-        if (bytes.empty()) { error = "Failed to decode shared build data."; return false; }
-        jsonStr.assign(bytes.begin(), bytes.end());
-    } else if (!input.empty() && input[0] == '{') {
-        // Raw JSON
-        jsonStr = input;
+static bool ImportBuildFromRelay(const std::string& code, AlterEgo::SavedBuild& out, std::string& error) {
+    std::string body;
+
+    // Use cached response if this is a retry for the same code
+    if (code == g_RelayCache_Code && !g_RelayCache_Body.empty()) {
+        body = g_RelayCache_Body;
     } else {
-        return false; // Not a shared build format
+        std::string url = "https://pie.rocks.cc/relay.php?code=" + code;
+        std::string headers = "X-App-Secret: ae-relay-v1\r\n";
+        auto resp = Skinventory::HttpClient::GetEx(url, headers);
+
+        if (resp.status_code == 0) {
+            error = "Network error — could not reach relay server.";
+            return false;
+        }
+        if (resp.status_code == 400) { error = "Invalid code format."; return false; }
+        if (resp.status_code == 403) { error = "Relay server rejected the request."; return false; }
+        if (resp.status_code == 404) { error = "Code not found or expired."; return false; }
+        if (resp.status_code != 200) {
+            error = "Relay error (HTTP " + std::to_string(resp.status_code) + ")";
+            return false;
+        }
+
+        body = resp.body;
+        // Cache for potential retry
+        g_RelayCache_Code = code;
+        g_RelayCache_Body = body;
     }
 
     try {
-        auto j = nlohmann::json::parse(jsonStr);
-        if (!j.contains("v") || !j.contains("chat_link") || !j.contains("name")) {
-            error = "Invalid shared build: missing required fields.";
+        auto j = nlohmann::json::parse(body);
+
+        std::string name = j.value("name", "Mobile Build");
+        std::string profession = j.value("profession", "");
+        std::string gameMode = j.value("gameMode", "PvE");
+        std::string chatLink = j.value("chatLink", "");
+
+        if (chatLink.empty()) {
+            error = "Relay response missing chat link.";
             return false;
         }
 
-        std::string chatLink = j["chat_link"].get<std::string>();
-        std::string name = j["name"].get<std::string>();
-        std::string profession = j.value("profession", "");
-        AlterEgo::GameMode mode = GameModeFromLabel(j.value("game_mode", "PvE"));
-
-        // Need palette data to decode the build
+        // Need palette data to resolve skills — kick off async fetch and ask user to retry
         if (!profession.empty() && !AlterEgo::GW2API::HasPaletteData(profession)) {
             AlterEgo::GW2API::FetchProfessionPaletteAsync(profession);
-            error = "Loading " + profession + " skill data... try again in a moment.";
+            error = "Loading " + profession + " skill data... click Import again in a moment.";
             return false;
         }
 
+        AlterEgo::GameMode mode = GameModeFromLabel(gameMode);
         if (!DecodeBuildLink(chatLink, name, mode, out)) {
-            error = "Failed to decode build chat link.";
+            error = "Failed to decode build from relay.";
             return false;
         }
 
-        if (j.contains("notes")) out.notes = j["notes"].get<std::string>();
+        // Parse gear from gearJson (JSON string within the response)
+        std::string gearJsonStr = j.value("gearJson", "");
+        if (!gearJsonStr.empty()) {
+            try {
+                auto gj = nlohmann::json::parse(gearJsonStr);
 
-        // Restore gear data
-        if (j.contains("gear")) {
-            for (auto& [slot, gs_json] : j["gear"].items()) {
-                AlterEgo::BuildGearSlot gs;
-                gs.slot = slot;
-                if (gs_json.contains("stat_id")) gs.stat_id = gs_json["stat_id"].get<uint32_t>();
-                if (gs_json.contains("stat")) gs.stat_name = gs_json["stat"].get<std::string>();
-                if (gs_json.contains("rune")) gs.rune = gs_json["rune"].get<std::string>();
-                if (gs_json.contains("sigil")) gs.sigil = gs_json["sigil"].get<std::string>();
-                if (gs_json.contains("sigil2")) gs.sigil2 = gs_json["sigil2"].get<std::string>();
-                if (gs_json.contains("infusion")) gs.infusion = gs_json["infusion"].get<std::string>();
-                if (gs_json.contains("weapon")) gs.weapon_type = gs_json["weapon"].get<std::string>();
-                out.gear[slot] = gs;
+                if (gj.contains("slots") && gj["slots"].is_object()) {
+                    for (auto& [slot, slotData] : gj["slots"].items()) {
+                        AlterEgo::BuildGearSlot gs;
+                        gs.slot = slot;
+                        gs.stat_id = slotData.value("statId", 0u);
+                        gs.stat_name = slotData.value("statName", "");
+                        gs.weapon_type = slotData.value("weaponType", "");
+                        gs.sigil_id = slotData.value("sigilId", 0u);
+                        gs.sigil2_id = slotData.value("sigil2Id", 0u);
+                        gs.rune_id = slotData.value("runeId", 0u);
+                        out.gear[slot] = gs;
+                    }
+                }
+
+                // Top-level rune/relic
+                out.rune_name = gj.value("rune", "");
+                out.rune_id = gj.value("runeId", 0u);
+                out.relic_name = gj.value("relic", "");
+                out.relic_id = gj.value("relicId", 0u);
+
+                // Fetch item details for rune/relic/sigils so names resolve
+                std::vector<uint32_t> fetchIds;
+                if (out.rune_id != 0) fetchIds.push_back(out.rune_id);
+                if (out.relic_id != 0) fetchIds.push_back(out.relic_id);
+                for (const auto& [slot, gs] : out.gear) {
+                    if (gs.sigil_id != 0) fetchIds.push_back(gs.sigil_id);
+                    if (gs.sigil2_id != 0) fetchIds.push_back(gs.sigil2_id);
+                }
+                if (!fetchIds.empty()) AlterEgo::GW2API::FetchItemDetails(fetchIds);
+
+                // Resolve names and populate name→ID cache
+                if (out.rune_id != 0 && out.rune_name.empty()) {
+                    const auto* info = AlterEgo::GW2API::GetItemInfo(out.rune_id);
+                    if (info) out.rune_name = info->name;
+                }
+                if (out.rune_id != 0 && !out.rune_name.empty())
+                    AlterEgo::GW2API::CacheItemNameId(out.rune_name, out.rune_id);
+                if (out.relic_id != 0 && out.relic_name.empty()) {
+                    const auto* info = AlterEgo::GW2API::GetItemInfo(out.relic_id);
+                    if (info) out.relic_name = info->name;
+                }
+                if (out.relic_id != 0 && !out.relic_name.empty())
+                    AlterEgo::GW2API::CacheItemNameId(out.relic_name, out.relic_id);
+                for (auto& [slot, gs] : out.gear) {
+                    if (gs.sigil_id != 0 && gs.sigil.empty()) {
+                        const auto* info = AlterEgo::GW2API::GetItemInfo(gs.sigil_id);
+                        if (info) gs.sigil = info->name;
+                    }
+                    if (gs.sigil_id != 0 && !gs.sigil.empty())
+                        AlterEgo::GW2API::CacheItemNameId(gs.sigil, gs.sigil_id);
+                    if (gs.sigil2_id != 0 && gs.sigil2.empty()) {
+                        const auto* info = AlterEgo::GW2API::GetItemInfo(gs.sigil2_id);
+                        if (info) gs.sigil2 = info->name;
+                    }
+                    if (gs.sigil2_id != 0 && !gs.sigil2.empty())
+                        AlterEgo::GW2API::CacheItemNameId(gs.sigil2, gs.sigil2_id);
+                }
+
+                // Set rune name on armor gear slots
+                if (!out.rune_name.empty()) {
+                    const char* armorSlots[] = {"Helm","Shoulders","Coat","Gloves","Leggings","Boots"};
+                    for (const char* s : armorSlots) {
+                        auto ait = out.gear.find(s);
+                        if (ait != out.gear.end()) {
+                            ait->second.rune = out.rune_name;
+                            ait->second.rune_id = out.rune_id;
+                        }
+                    }
+                }
+            } catch (...) {
+                // Gear parsing failed — build still usable without gear
             }
         }
-        if (j.contains("rune")) out.rune_name = j["rune"].get<std::string>();
-        if (j.contains("relic")) out.relic_name = j["relic"].get<std::string>();
+
+        // Clear cache on successful import
+        g_RelayCache_Code.clear();
+        g_RelayCache_Body.clear();
 
         return true;
     } catch (const std::exception& e) {
-        error = std::string("Failed to parse shared build: ") + e.what();
+        error = std::string("Failed to parse relay response: ") + e.what();
         return false;
     }
+}
+
+// Send a saved build to the relay server, returning the 4-char code or an error.
+static void SendBuildToRelay(const AlterEgo::SavedBuild& build) {
+    g_RelaySending = true;
+    g_RelayResultCode.clear();
+    g_RelayResultError.clear();
+
+    std::thread([build]() {
+        // Build the buildJson string (matches mobile app schema)
+        nlohmann::json bj;
+        {
+            nlohmann::json specs = nlohmann::json::array();
+            for (int i = 0; i < 3; i++) {
+                if (build.specializations[i].spec_id == 0) continue;
+                nlohmann::json s;
+                s["specId"] = build.specializations[i].spec_id;
+                nlohmann::json traits = nlohmann::json::array();
+                for (int t = 0; t < 3; t++)
+                    traits.push_back(build.specializations[i].traits[t]);
+                s["selectedTraitIds"] = traits;
+                specs.push_back(s);
+            }
+            bj["specializations"] = specs;
+
+            // Skills: reverse-resolve to palette IDs for mobile app compatibility
+            auto toPalette = [&](uint32_t skill_id) -> int {
+                if (skill_id == 0) return 0;
+                uint16_t p = AlterEgo::GW2API::GetPaletteIdFromSkill(build.profession, skill_id);
+                return (p != 0) ? (int)p : (int)skill_id;
+            };
+            bj["healSkillId"] = toPalette(build.terrestrial_skills.heal);
+            nlohmann::json utils = nlohmann::json::array();
+            for (int i = 0; i < 3; i++)
+                utils.push_back(toPalette(build.terrestrial_skills.utilities[i]));
+            bj["utilitySkillIds"] = utils;
+            bj["eliteSkillId"] = toPalette(build.terrestrial_skills.elite);
+        }
+
+        // Build the gearJson string (matches mobile app schema)
+        nlohmann::json gj;
+        {
+            nlohmann::json slots = nlohmann::json::object();
+            for (const auto& [slot, gs] : build.gear) {
+                nlohmann::json s;
+                if (gs.stat_id != 0) s["statId"] = gs.stat_id;
+                if (!gs.stat_name.empty()) s["statName"] = gs.stat_name;
+                if (!gs.weapon_type.empty()) s["weaponType"] = gs.weapon_type;
+                if (gs.sigil_id != 0) s["sigilId"] = gs.sigil_id;
+                if (gs.sigil2_id != 0) s["sigil2Id"] = gs.sigil2_id;
+                if (gs.rune_id != 0) s["runeId"] = gs.rune_id;
+                if (!s.empty()) slots[slot] = s;
+            }
+            gj["slots"] = slots;
+            if (!build.rune_name.empty()) gj["rune"] = build.rune_name;
+            if (build.rune_id != 0) gj["runeId"] = build.rune_id;
+            if (!build.relic_name.empty()) gj["relic"] = build.relic_name;
+            if (build.relic_id != 0) gj["relicId"] = build.relic_id;
+        }
+
+        // Assemble relay payload
+        nlohmann::json payload;
+        payload["name"] = build.name;
+        payload["profession"] = build.profession;
+        payload["gameMode"] = GameModeLabel(build.game_mode);
+        payload["chatLink"] = build.chat_link;
+        payload["buildJson"] = bj.dump();
+        payload["gearJson"] = gj.dump();
+
+        std::string url = "https://pie.rocks.cc/relay.php";
+        std::string headers = "X-App-Secret: ae-relay-v1\r\n";
+        auto resp = Skinventory::HttpClient::PostJson(url, payload.dump(), headers);
+
+        if (resp.status_code == 200) {
+            try {
+                auto r = nlohmann::json::parse(resp.body);
+                std::string code = r.value("code", "");
+                if (!code.empty()) {
+                    g_RelayResultCode = code;
+                } else {
+                    g_RelayResultError = "Server returned no code.";
+                }
+            } catch (...) {
+                g_RelayResultError = "Failed to parse server response.";
+            }
+        } else if (resp.status_code == 0) {
+            g_RelayResultError = "Network error — could not reach relay server.";
+        } else if (resp.status_code == 429) {
+            g_RelayResultError = "Rate limited — try again in a minute.";
+        } else if (resp.status_code == 413) {
+            g_RelayResultError = "Build data too large to send.";
+        } else {
+            g_RelayResultError = "Relay error (HTTP " + std::to_string(resp.status_code) + ")";
+        }
+        g_RelaySending = false;
+    }).detach();
+}
+
+// Returns true if input is a shared build (AE2, chat link, or relay code)
+// On success, populates 'out' with the imported build
+static bool ImportSharedBuild(const std::string& input, AlterEgo::SavedBuild& out, std::string& error) {
+    // AE2 compact binary format
+    if (input.size() > 4 && input.substr(0, 4) == "AE2:") {
+        return ImportBuildFromAE2(input, out, error);
+    }
+    // 4-character alphanumeric code — mobile relay import
+    if (IsRelayCode(input)) {
+        return ImportBuildFromRelay(input, out, error);
+    }
+    // Chat link
+    if (input.size() > 4 && input[0] == '[' && input[1] == '&') {
+        std::string name = "Imported Build";
+        AlterEgo::GameMode mode = AlterEgo::GameMode::PvE;
+        // Detect profession for palette data
+        AlterEgo::DecodedBuildLink peek;
+        if (AlterEgo::ChatLink::DecodeBuild(input, peek)) {
+            std::string prof = ProfessionFromCode(peek.profession);
+            if (!prof.empty() && prof != "Unknown" && !AlterEgo::GW2API::HasPaletteData(prof)) {
+                AlterEgo::GW2API::FetchProfessionPaletteAsync(prof);
+                error = "Loading " + prof + " skill data... try again in a moment.";
+                return false;
+            }
+        }
+        if (!DecodeBuildLink(input, name, mode, out)) {
+            error = "Failed to decode build chat link.";
+            return false;
+        }
+        return true;
+    }
+    return false; // Not a recognized format
 }
 
 // Decode a build chat link and create a SavedBuild
@@ -4814,6 +4824,10 @@ static void OnEvChatMessage(void* eventArgs) {
     std::string content(gm->Content);
     std::string sender = gm->CharacterName ? std::string(gm->CharacterName) : "Unknown";
 
+    // Skip our own messages (no toast for builds we posted ourselves)
+    if (!g_CurrentCharName.empty() && sender == g_CurrentCharName)
+        return;
+
     // --- Priority 1: Detect AE2: compact build codes (includes gear) ---
     {
         size_t ae2pos = content.find("AE2:");
@@ -4826,7 +4840,7 @@ static void OnEvChatMessage(void* eventArgs) {
 
             // Quick-decode to extract profession info for the toast
             auto ae2data = AlterEgo::ChatLink::Base64Decode(ae2code.substr(4));
-            if (ae2data.size() >= 4 && ae2data[0] == 2) {
+            if (ae2data.size() >= 4 && (ae2data[0] == 2 || ae2data[0] == 3)) {
                 uint8_t ae2flags = ae2data[1];
                 bool ae2hasGear = (ae2flags >> 3) & 1;
                 uint8_t linkLen = ae2data[2];
@@ -4889,6 +4903,9 @@ static void OnEvChatMessage(void* eventArgs) {
             if (end == std::string::npos) break;
 
             std::string link = content.substr(pos, end - pos + 1);
+            // GW2 internal chat format escapes ] as \] — strip the backslash
+            size_t bs = link.size() - 2; // position before ]
+            if (bs > 0 && link[bs] == '\\') link.erase(bs, 1);
             pos = end + 1;
 
             auto linkType = AlterEgo::ChatLink::DetectType(link);
@@ -6921,7 +6938,7 @@ static void RenderBuildLibrary() {
     // Import panel
     if (g_LibShowImport) {
         ImGui::Separator();
-        ImGui::Text("Paste chat link, shared build code (AE1:...), or JSON:");
+        ImGui::Text("Paste chat link, AE2 build code, or relay code:");
         ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x);
         ImGui::InputText("##import_link", g_LibImportBuf, sizeof(g_LibImportBuf));
 
@@ -6945,7 +6962,7 @@ static void RenderBuildLibrary() {
             if (input.empty()) {
                 g_LibImportError = "Paste a build first.";
             } else {
-                // Try shared build format first (AE1: base64 or JSON)
+                // Try shared build format (AE2, relay code, or chat link)
                 AlterEgo::SavedBuild sharedBuild;
                 std::string sharedError;
                 if (ImportSharedBuild(input, sharedBuild, sharedError)) {
@@ -7145,6 +7162,16 @@ static void RenderBuildLibrary() {
                         if (APIDefs) APIDefs->GUI_SendAlert("Failed to generate build code. Build may be missing a chat link.");
                     }
                 }
+                if (!g_RelaySending && ImGui::Selectable("Share complete build via one-time code")) {
+                    if (b.chat_link.empty()) {
+                        if (APIDefs) APIDefs->GUI_SendAlert("Cannot send: build has no chat link.");
+                    } else {
+                        SendBuildToRelay(b);
+                    }
+                }
+                if (g_RelaySending) {
+                    ImGui::TextColored(ImVec4(0.6f, 0.6f, 0.6f, 1.0f), "Sending...");
+                }
                 ImGui::Separator();
                 ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.3f, 0.3f, 1.0f));
                 if (ImGui::Selectable("Delete this build")) {
@@ -7315,6 +7342,71 @@ static void RenderBuildLibrary() {
         ImGui::TextColored(ImVec4(0.5f, 0.5f, 0.5f, 1.0f), "Select a build from the list.");
     }
     ImGui::EndChild();
+
+    // Relay code result popup (triggered by SendBuildToRelay)
+    if (g_RelaySending && g_RelayResultCode.empty() && g_RelayResultError.empty()) {
+        ImGui::OpenPopup("Sending to Mobile...##relay");
+    }
+    if (!g_RelayResultCode.empty()) {
+        ImGui::OpenPopup("Build Sent##relay_ok");
+    }
+    if (!g_RelayResultError.empty()) {
+        ImGui::OpenPopup("Send Failed##relay_err");
+    }
+
+    // "Sending..." spinner popup
+    if (ImGui::BeginPopupModal("Sending to Mobile...##relay", nullptr,
+            ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoMove)) {
+        ImGui::Text("Uploading build to relay...");
+        if (!g_RelaySending) ImGui::CloseCurrentPopup(); // closes when done
+        ImGui::EndPopup();
+    }
+
+    // Success popup — show the code
+    if (ImGui::BeginPopupModal("Build Sent##relay_ok", nullptr,
+            ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoMove)) {
+        ImGui::Text("Enter this code in the Alter Ego mobile app,\nor share it with another player.");
+        ImGui::Spacing();
+
+        // Large centered code display
+        float codeW = ImGui::CalcTextSize("W").x * 8.0f; // generous width for 4 chars with spacing
+        float avail = ImGui::GetContentRegionAvail().x;
+        if (avail > codeW) ImGui::SetCursorPosX(ImGui::GetCursorPosX() + (avail - codeW) * 0.5f);
+        ImGui::PushFont(nullptr); // default font, scaled below
+        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.9f, 0.8f, 0.5f, 1.0f));
+        ImGui::SetWindowFontScale(2.0f);
+        ImGui::Text("  %s", g_RelayResultCode.c_str());
+        ImGui::SetWindowFontScale(1.0f);
+        ImGui::PopStyleColor();
+        ImGui::PopFont();
+
+        ImGui::Spacing();
+        ImGui::TextColored(ImVec4(0.5f, 0.5f, 0.5f, 1.0f), "Code expires in 15 minutes. Single use.");
+
+        ImGui::Spacing();
+        if (ImGui::Button("Copy Code", ImVec2(100, 0))) {
+            CopyToClipboard(g_RelayResultCode);
+            if (APIDefs) APIDefs->GUI_SendAlert("Relay code copied!");
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Done", ImVec2(80, 0))) {
+            g_RelayResultCode.clear();
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::EndPopup();
+    }
+
+    // Error popup
+    if (ImGui::BeginPopupModal("Send Failed##relay_err", nullptr,
+            ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoMove)) {
+        ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.4f, 1.0f), "%s", g_RelayResultError.c_str());
+        ImGui::Spacing();
+        if (ImGui::Button("OK", ImVec2(80, 0))) {
+            g_RelayResultError.clear();
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::EndPopup();
+    }
 }
 
 // --- GW2-Themed UI Style ---
@@ -7490,6 +7582,7 @@ void AddonLoad(AddonAPI_t* aApi) {
     APIDefs->Events_Subscribe(EV_AE_SKIN_UNLOCK_RESP, AlterEgo::GW2API::OnSkinUnlocksResponse);
     APIDefs->Events_Subscribe(EV_AE_ITEM_LOC_RESP, AlterEgo::GW2API::OnItemLocationResponse);
     APIDefs->Events_Subscribe(EV_AE_CLEARS_ACH_RESPONSE, OnClearsAchResponse);
+    APIDefs->Events_Subscribe(EV_AE_VAULT_RESPONSE, OnVaultResponse);
     APIDefs->Events_Subscribe(EV_AE_ACH_PROGRESS_RESPONSE, OnAchProgressResponse);
     APIDefs->Events_Subscribe(EV_AE_ACCOUNTS_RESP, AlterEgo::GW2API::OnAccountsResponse);
     APIDefs->Events_Subscribe(EV_HOARD_ACCOUNTS_CHANGED, AlterEgo::GW2API::OnAccountsChanged);
@@ -7510,6 +7603,7 @@ void AddonLoad(AddonAPI_t* aApi) {
     LoadSettings();
     LoadSession();
     LoadClearsCache();
+    LoadVaultCache();
     LoadAchTrackerState();
     LoadAchGroupCache();
     LoadAchDefCache();
@@ -7600,6 +7694,7 @@ void AddonUnload() {
     APIDefs->Events_Unsubscribe(EV_AE_SKIN_UNLOCK_RESP, AlterEgo::GW2API::OnSkinUnlocksResponse);
     APIDefs->Events_Unsubscribe(EV_AE_ITEM_LOC_RESP, AlterEgo::GW2API::OnItemLocationResponse);
     APIDefs->Events_Unsubscribe(EV_AE_CLEARS_ACH_RESPONSE, OnClearsAchResponse);
+    APIDefs->Events_Unsubscribe(EV_AE_VAULT_RESPONSE, OnVaultResponse);
     APIDefs->Events_Unsubscribe(EV_AE_ACH_PROGRESS_RESPONSE, OnAchProgressResponse);
     APIDefs->Events_Unsubscribe(EV_AE_ACCOUNTS_RESP, AlterEgo::GW2API::OnAccountsResponse);
     APIDefs->Events_Unsubscribe(EV_HOARD_ACCOUNTS_CHANGED, AlterEgo::GW2API::OnAccountsChanged);
@@ -7686,336 +7781,6 @@ void ProcessKeybind(const char* aIdentifier, bool aIsRelease) {
     }
 }
 
-// =========================================================================
-// Clears - Backend
-// =========================================================================
-
-// Calculate the most recent daily reset (00:00 UTC) before 'now'
-static std::chrono::system_clock::time_point CalcLastDailyReset(std::chrono::system_clock::time_point now) {
-    auto tt = std::chrono::system_clock::to_time_t(now);
-    struct tm utc{};
-#ifdef _WIN32
-    gmtime_s(&utc, &tt);
-#else
-    gmtime_r(&tt, &utc);
-#endif
-    utc.tm_hour = 0; utc.tm_min = 0; utc.tm_sec = 0;
-    auto reset = std::chrono::system_clock::from_time_t(
-#ifdef _WIN32
-        _mkgmtime(&utc)
-#else
-        timegm(&utc)
-#endif
-    );
-    if (reset > now) reset -= std::chrono::hours(24);
-    return reset;
-}
-
-// Calculate the most recent weekly reset (Monday 07:30 UTC) before 'now'
-static std::chrono::system_clock::time_point CalcLastWeeklyReset(std::chrono::system_clock::time_point now) {
-    auto tt = std::chrono::system_clock::to_time_t(now);
-    struct tm utc{};
-#ifdef _WIN32
-    gmtime_s(&utc, &tt);
-#else
-    gmtime_r(&tt, &utc);
-#endif
-    // tm_wday: 0=Sun, 1=Mon, ...
-    int daysSinceMonday = (utc.tm_wday + 6) % 7; // Mon=0, Tue=1, ... Sun=6
-    utc.tm_hour = 7; utc.tm_min = 30; utc.tm_sec = 0;
-    utc.tm_mday -= daysSinceMonday;
-    auto reset = std::chrono::system_clock::from_time_t(
-#ifdef _WIN32
-        _mkgmtime(&utc)
-#else
-        timegm(&utc)
-#endif
-    );
-    if (reset > now) reset -= std::chrono::hours(24 * 7);
-    return reset;
-}
-
-// Format time until next reset as human-readable string
-static std::string FormatTimeUntilReset(std::chrono::system_clock::time_point resetTime,
-                                         std::chrono::hours period) {
-    auto now = std::chrono::system_clock::now();
-    auto nextReset = resetTime + period;
-    if (nextReset <= now) return "now";
-    auto remaining = std::chrono::duration_cast<std::chrono::seconds>(nextReset - now).count();
-    int h = (int)(remaining / 3600);
-    int m = (int)((remaining % 3600) / 60);
-    if (h > 0) {
-        char buf[32];
-        snprintf(buf, sizeof(buf), "%dh %dm", h, m);
-        return buf;
-    }
-    char buf[32];
-    snprintf(buf, sizeof(buf), "%dm", m);
-    return buf;
-}
-
-// Parse tier from fractal achievement name
-static std::string ParseFractalTier(const std::string& name) {
-    if (name.find("Tier 4") != std::string::npos) return "T4";
-    if (name.find("Tier 3") != std::string::npos) return "T3";
-    if (name.find("Tier 2") != std::string::npos) return "T2";
-    if (name.find("Tier 1") != std::string::npos) return "T1";
-    if (name.find("Recommended") != std::string::npos) return "Rec";
-    return "";
-}
-
-// Send H&S achievement query for all currently tracked clears IDs
-static void SendClearsAchQuery() {
-    std::vector<uint32_t> allIds;
-    {
-        std::lock_guard<std::mutex> lock(g_ClearsMutex);
-        for (const auto& e : g_DailyFractals) allIds.push_back(e.id);
-        for (const auto& e : g_DailyBounties) allIds.push_back(e.id);
-        for (const auto& e : g_WeeklyWings)   allIds.push_back(e.id);
-        if (g_WeeklyStrikes.id > 0) allIds.push_back(g_WeeklyStrikes.id);
-    }
-    if (allIds.empty() || !APIDefs) return;
-
-    std::string acctName = GetEffectiveAccountName();
-    HoardQueryAchievementRequest req{};
-    req.api_version = HOARD_API_VERSION;
-    strncpy(req.requester, "Alter Ego", sizeof(req.requester) - 1);
-    strncpy(req.response_event, EV_AE_CLEARS_ACH_RESPONSE, sizeof(req.response_event) - 1);
-    if (!acctName.empty())
-        strncpy(req.account_name, acctName.c_str(), sizeof(req.account_name) - 1);
-    req.id_count = (uint32_t)std::min(allIds.size(), (size_t)200);
-    for (uint32_t i = 0; i < req.id_count; i++) {
-        req.ids[i] = allIds[i];
-    }
-    APIDefs->Events_Raise(EV_HOARD_QUERY_ACHIEVEMENT, &req);
-}
-
-// H&S achievement response handler for all clears
-static void OnClearsAchResponse(void* eventArgs) {
-    if (!eventArgs) return;
-    auto* resp = (HoardQueryAchievementResponse*)eventArgs;
-    if (resp->api_version < 2) { return; }
-
-    if (resp->status != HOARD_STATUS_OK) {
-        std::lock_guard<std::mutex> lock(g_ClearsMutex);
-        if (resp->status == HOARD_STATUS_PENDING) {
-            g_ClearsStatusMsg = "Waiting for H&S permission...";
-            // Signal render thread to retry (Events_Raise must be on render thread)
-            g_ClearsRetryPending = true;
-        } else {
-            if (resp->status == HOARD_STATUS_DENIED)
-                g_ClearsStatusMsg = "H&S permission denied";
-            else
-                g_ClearsStatusMsg = "H&S error";
-            g_ClearsFetching = false;
-        }
-        return;
-    }
-
-    // Build lookup maps from response
-    struct AchData {
-        bool done;
-        int32_t current;
-        int32_t max;
-        std::set<uint32_t> bits;
-    };
-    std::unordered_map<uint32_t, AchData> achMap;
-    for (uint32_t i = 0; i < resp->entry_count; i++) {
-        auto& e = resp->entries[i];
-        AchData ad;
-        ad.done = e.done;
-        ad.current = e.current;
-        ad.max = e.max;
-        for (uint32_t b = 0; b < e.bit_count && b < 64; b++) {
-            ad.bits.insert(e.bits[b]);
-        }
-        achMap[e.id] = std::move(ad);
-    }
-
-    {
-        std::lock_guard<std::mutex> lock(g_ClearsMutex);
-
-        // Apply to all tracked entries
-        auto applyTo = [&](ClearEntry& ce) {
-            auto it = achMap.find(ce.id);
-            if (it != achMap.end()) {
-                ce.done = it->second.done;
-                ce.current = it->second.current;
-                ce.max = it->second.max;
-                // API clears bits when achievement is fully completed;
-                // detect this and mark all encounters done
-                if (it->second.done && ce.max > 0 && ce.current >= ce.max) {
-                    ce.bitDone.assign(ce.bitNames.size(), true);
-                } else {
-                    ce.bitDone.assign(ce.bitNames.size(), false);
-                    for (uint32_t bitIdx : it->second.bits) {
-                        if (bitIdx < ce.bitDone.size()) {
-                            ce.bitDone[bitIdx] = true;
-                        }
-                    }
-                }
-            }
-        };
-
-        for (auto& e : g_DailyFractals)  applyTo(e);
-        for (auto& e : g_DailyBounties)  applyTo(e);
-        for (auto& e : g_WeeklyWings)    applyTo(e);
-        applyTo(g_WeeklyStrikes);
-
-        g_ClearsFetched = true;
-        g_ClearsFetching = false;
-        g_ClearsStatusMsg = "";
-        g_LastClearsCompletionQuery = std::chrono::steady_clock::now();
-    }
-
-    // Persist to disk
-    SaveClearsCache();
-}
-
-// Helper: fetch a category's achievement IDs from public API
-static std::vector<uint32_t> FetchCategoryIds(uint32_t catId) {
-    std::string url = "https://api.guildwars2.com/v2/achievements/categories/" + std::to_string(catId);
-    std::string json = Skinventory::HttpClient::Get(url);
-    std::vector<uint32_t> ids;
-    try {
-        auto j = nlohmann::json::parse(json);
-        if (j.contains("achievements") && j["achievements"].is_array()) {
-            for (const auto& id : j["achievements"]) {
-                ids.push_back(id.get<uint32_t>());
-            }
-        }
-    } catch (...) {}
-    return ids;
-}
-
-// Helper: fetch achievement details (name, bits) from public API
-static std::vector<ClearEntry> FetchAchievementDetails(const std::vector<uint32_t>& ids) {
-    std::vector<ClearEntry> entries;
-    if (ids.empty()) return entries;
-
-    std::string idStr;
-    for (size_t i = 0; i < ids.size(); i++) {
-        if (i > 0) idStr += ",";
-        idStr += std::to_string(ids[i]);
-    }
-    std::string json = Skinventory::HttpClient::Get(
-        "https://api.guildwars2.com/v2/achievements?ids=" + idStr);
-    if (json.empty()) return entries;
-
-    try {
-        auto j = nlohmann::json::parse(json);
-        if (j.is_array()) {
-            for (const auto& ach : j) {
-                ClearEntry ce;
-                ce.id = ach.value("id", 0u);
-                ce.name = ach.value("name", "");
-                if (ce.id == 0 || ce.name.empty()) continue;
-
-                // Parse bits (sub-objectives)
-                if (ach.contains("bits") && ach["bits"].is_array()) {
-                    for (const auto& bit : ach["bits"]) {
-                        ce.bitNames.push_back(bit.value("text", ""));
-                    }
-                }
-
-                // Parse tier count from tiers
-                if (ach.contains("tiers") && ach["tiers"].is_array()) {
-                    auto& tiers = ach["tiers"];
-                    if (!tiers.empty()) {
-                        ce.max = tiers.back().value("count", 0);
-                    }
-                }
-
-                entries.push_back(std::move(ce));
-            }
-        }
-    } catch (...) {}
-    return entries;
-}
-
-// Fetch all clears data (runs on background thread)
-static void FetchClears() {
-    if (g_ClearsFetching) return;
-    g_ClearsFetching = true;
-    {
-        std::lock_guard<std::mutex> lock(g_ClearsMutex);
-        g_ClearsStatusMsg = "Fetching achievement data...";
-        g_ClearsFetched = false;
-    }
-
-    std::thread([]() {
-        // Step 1: Fetch all category achievement IDs
-        auto fractalIds = FetchCategoryIds(CAT_DAILY_FRACTALS);
-        auto bountyIds  = FetchCategoryIds(CAT_DAILY_BOUNTIES);
-        auto weeklyIds  = FetchCategoryIds(CAT_WEEKLY_RAIDS);
-
-        if (fractalIds.empty() && bountyIds.empty() && weeklyIds.empty()) {
-            std::lock_guard<std::mutex> lock(g_ClearsMutex);
-            g_ClearsStatusMsg = "Failed to fetch achievement categories";
-            g_ClearsFetching = false;
-            return;
-        }
-
-        // Step 2: Fetch all achievement details
-        {
-            std::lock_guard<std::mutex> lock(g_ClearsMutex);
-            g_ClearsStatusMsg = "Fetching achievement details...";
-        }
-
-        auto fractalEntries = FetchAchievementDetails(fractalIds);
-        for (auto& e : fractalEntries) {
-            e.tier = ParseFractalTier(e.name);
-        }
-
-        auto bountyEntries = FetchAchievementDetails(bountyIds);
-        auto weeklyEntries = FetchAchievementDetails(weeklyIds);
-
-        // Separate weekly entries into wings vs strikes meta
-        ClearEntry strikesEntry{};
-        std::vector<ClearEntry> wingEntries;
-        for (auto& e : weeklyEntries) {
-            if (e.id == ACH_WEEKLY_STRIKES) {
-                strikesEntry = std::move(e);
-            } else if (!e.bitNames.empty()) {
-                // Per-wing achievements have bits for encounters
-                wingEntries.push_back(std::move(e));
-            }
-        }
-
-        // Sort wings into canonical W1-W8 order by achievement ID
-        static const std::unordered_map<uint32_t, int> wingOrder = {
-            {9128, 1}, // Spirit Vale
-            {9147, 2}, // Salvation Pass
-            {9182, 3}, // Stronghold of the Faithful
-            {9144, 4}, // Bastion of the Penitent
-            {9111, 5}, // Hall of Chains
-            {9120, 6}, // Mythwright Gambit
-            {9156, 7}, // Key of Ahdashim
-            {9181, 8}, // Mount Balrior
-        };
-        std::sort(wingEntries.begin(), wingEntries.end(),
-            [](const ClearEntry& a, const ClearEntry& b) {
-                auto ai = wingOrder.find(a.id);
-                auto bi = wingOrder.find(b.id);
-                int ao = (ai != wingOrder.end()) ? ai->second : 99;
-                int bo = (bi != wingOrder.end()) ? bi->second : 99;
-                return ao < bo;
-            });
-
-        {
-            std::lock_guard<std::mutex> lock(g_ClearsMutex);
-            g_DailyFractals = std::move(fractalEntries);
-            g_DailyBounties = std::move(bountyEntries);
-            g_WeeklyWings = std::move(wingEntries);
-            g_WeeklyStrikes = std::move(strikesEntry);
-            g_ClearsStatusMsg = "Querying completion...";
-        }
-
-        // Background fetch done — allow render thread to send H&S completion query
-        g_ClearsFetching = false;
-        g_ClearsQueryPending = true;
-    }).detach();
-}
 
 // =========================================================================
 // Skinventory UI
@@ -8825,32 +8590,8 @@ static void RenderSkinShoppingList() {
     }
 }
 
-// Helper: strip fractal achievement name to short form
-static std::string ShortenFractalName(const std::string& name) {
-    // "Daily Recommended Fractal—Swampland" → "Swampland"
-    auto pos = name.find("Fractal");
-    if (pos != std::string::npos && pos + 7 < name.size()) {
-        size_t start = pos + 7;
-        while (start < name.size() && (name[start] == ' ' || (unsigned char)name[start] == 0xe2)) {
-            if ((unsigned char)name[start] == 0xe2 && start + 2 < name.size())
-                start += 3;
-            else
-                start++;
-        }
-        return name.substr(start);
-    }
-    // "Daily Tier 4 Swampland" → "Swampland"
-    auto pos2 = name.find("Tier");
-    if (pos2 != std::string::npos) {
-        size_t afterTier = name.find(' ', pos2 + 5);
-        if (afterTier != std::string::npos && afterTier + 1 < name.size())
-            return name.substr(afterTier + 1);
-    }
-    return name;
-}
-
 // Helper: draw a gradient-backed section header with colored accent underline
-static void RenderSectionHeader(const char* label, ImVec4 color, const char* suffix) {
+void RenderSectionHeader(const char* label, ImVec4 color, const char* suffix) {
     ImVec2 pos = ImGui::GetCursorScreenPos();
     float w = ImGui::GetContentRegionAvail().x;
     float h = ImGui::GetTextLineHeightWithSpacing() + 4.0f;
@@ -8875,326 +8616,6 @@ static void RenderSectionHeader(const char* label, ImVec4 color, const char* suf
     ImGui::SetCursorScreenPos(ImVec2(pos.x, pos.y + h + 2.0f));
 }
 
-// Map verbose API encounter text to readable short names
-static std::string ShortenEncounterName(const std::string& text) {
-    static const std::unordered_map<std::string, std::string> nameMap = {
-        // W1 — Spirit Vale
-        {"Defeat the Vale Guardian.",                                      "Vale Guardian"},
-        {"Traverse the Spirit Woods.",                                     "Spirit Woods"},
-        {"Destroy Gorseval.",                                              "Gorseval"},
-        {"Cull the bandits to lure out the bandit leader.",                ""},
-        {"Defeat Sabetha the Saboteur.",                                   "Sabetha"},
-        // W2 — Salvation Pass
-        {"Defeat Slothasor.",                                              "Sloth"},
-        {"Protect the caged prisoners.",                                   "Trio"},
-        {"Cull the bandits in the ruins.",                                 ""},
-        {"Defeat Inquisitor Matthias Gabrel.",                             "Matthias"},
-        // W3 — Stronghold of the Faithful
-        {"Escort Glenna to the stronghold's courtyard.",                   "Escort"},
-        {"Defeat McLeod and breach the stronghold.",                       ""},
-        {"Destroy the Keep Construct.",                                    "Keep Construct"},
-        {"Traverse the Twisted Castle.",                                   "Twisted Castle"},
-        {"Defeat Xera.",                                                   "Xera"},
-        // W4 — Bastion of the Penitent
-        {"Defeat Cairn the Indomitable.",                                  "Cairn"},
-        {"Defeat the Mursaat Overseer.",                                   "Mursaat"},
-        {"Defeat Samarog.",                                                "Samarog"},
-        {"Free the prisoner from his bonds.",                              "Deimos"},
-        // W5 — Hall of Chains
-        {"Defeat the Soulless Horror.",                                    "Soulless Horror"},
-        {"Traverse the River of Souls.",                                   "River"},
-        {"Restore the Statue of Ice.",                                     "Broken King"},
-        {"Restore the Statue of Death and Resurrection.",                  "Eater"},
-        {"Restore the Statue of Darkness.",                                "Eyes"},
-        {"Defeat Dhuum.",                                                  "Dhuum"},
-        // W6 — Mythwright Gambit
-        {"Destroy the conjured amalgamate.",                               "Conjured Amalgamate"},
-        {"Make your way through the sorting and appraisal rooms.",         "Sorting"},
-        {"Defeat the twin largos.",                                        "Twin Largos"},
-        {"Clear a path through Qadim's minions to the Mythwright Cauldron.", "Qadim's Minions"},
-        {"Defeat Qadim.",                                                  "Qadim"},
-        // W7 — Key of Ahdashim
-        {"Get Glenna and the key to Ahdashim's front gate.",               "Gate"},
-        {"Defeat Cardinal Adina.",                                         "Adina"},
-        {"Defeat Cardinal Sabir.",                                         "Sabir"},
-        {"Defeat Qadim the Peerless.",                                     "Qadim the Peerless"},
-        // W8 — Mount Balrior
-        {"Cleanse the camp of titanspawn.",                                "Camp"},
-        {"Defeat the sentient conduit.",                                   "Conduit"},
-        {"Defeat the blighted beast and his empowering allies.",           ""},
-        {"Defeat Decima.",                                                 "Decima"},
-        {"Defeat Greer.",                                                  "Greer"},
-        {"Defeat Ura.",                                                    "Ura"},
-    };
-    auto it = nameMap.find(text);
-    if (it != nameMap.end()) return it->second;
-    return text; // fallback to original
-}
-
-// Helper: render a done/not-done/unknown indicator
-static void RenderClearStatus(bool fetched, bool done, const char* label) {
-    if (!fetched)
-        ImGui::TextColored(ImVec4(0.4f, 0.4f, 0.4f, 1.0f), "[?] %s", label);
-    else if (done)
-        ImGui::TextColored(ImVec4(0.35f, 0.82f, 0.35f, 1.0f), "[x] %s", label);
-    else
-        ImGui::TextColored(ImVec4(0.9f, 0.9f, 0.9f, 1.0f), "[ ] %s", label);
-}
-
-static void RenderClears() {
-    auto now = std::chrono::system_clock::now();
-
-    // Compute reset times (add 60s buffer so we don't refetch before the API has updated)
-    auto dailyReset = CalcLastDailyReset(now);
-    auto weeklyReset = CalcLastWeeklyReset(now);
-    auto dailyResetBuffered = dailyReset + std::chrono::seconds(60);
-    auto weeklyResetBuffered = weeklyReset + std::chrono::seconds(60);
-
-    // Detect resets — clear stale data and auto re-fetch achievement lists
-    bool resetTriggered = false;
-    if (g_LastDailyReset != std::chrono::system_clock::time_point{} && dailyReset > g_LastDailyReset && now >= dailyResetBuffered) {
-        std::lock_guard<std::mutex> lock(g_ClearsMutex);
-        g_DailyFractals.clear();
-        g_DailyBounties.clear();
-        g_ClearsFetched = false;
-        resetTriggered = true;
-    }
-    if (g_LastWeeklyReset != std::chrono::system_clock::time_point{} && weeklyReset > g_LastWeeklyReset && now >= weeklyResetBuffered) {
-        std::lock_guard<std::mutex> lock(g_ClearsMutex);
-        g_WeeklyWings.clear();
-        g_WeeklyStrikes = ClearEntry{};
-        g_ClearsFetched = false;
-        resetTriggered = true;
-    }
-    g_LastDailyReset = dailyReset;
-    g_LastWeeklyReset = weeklyReset;
-
-    // Auto re-fetch full data at reset boundaries
-    if (resetTriggered && !g_ClearsFetching) {
-        FetchClears();
-    }
-
-    // Deferred requery on account change
-    if (g_ClearsNeedRequery && g_ClearsFetched && !g_ClearsFetching) {
-        g_ClearsNeedRequery = false;
-        {
-            std::lock_guard<std::mutex> lock(g_ClearsMutex);
-            // Clear stale completion from previous account
-            for (auto& e : g_DailyFractals) { e.done = false; e.current = 0; e.bitDone.assign(e.bitDone.size(), false); }
-            for (auto& e : g_DailyBounties) { e.done = false; e.current = 0; e.bitDone.assign(e.bitDone.size(), false); }
-            for (auto& e : g_WeeklyWings)   { e.done = false; e.current = 0; e.bitDone.assign(e.bitDone.size(), false); }
-            g_WeeklyStrikes.done = false; g_WeeklyStrikes.current = 0;
-            g_WeeklyStrikes.bitDone.assign(g_WeeklyStrikes.bitDone.size(), false);
-            g_ClearsStatusMsg = "Refreshing completion for new account...";
-        }
-        SendClearsAchQuery();
-    }
-
-    // Consume deferred clears query from bg thread (FetchClears step 3)
-    if (g_ClearsQueryPending.exchange(false) && !g_ClearsFetching) {
-        SendClearsAchQuery();
-    }
-
-    // Consume deferred PENDING retry for clears
-    if (g_ClearsRetryPending.exchange(false) && !g_ClearsFetching) {
-        SendClearsAchQuery();
-    }
-
-    // Auto re-query completion every 10 minutes (if we have data and not currently fetching)
-    auto steadyNow = std::chrono::steady_clock::now();
-    if (g_ClearsFetched && !g_ClearsFetching &&
-        g_LastClearsCompletionQuery != std::chrono::steady_clock::time_point{} &&
-        (steadyNow - g_LastClearsCompletionQuery) >= std::chrono::minutes(10)) {
-        g_LastClearsCompletionQuery = steadyNow;
-        SendClearsAchQuery();
-    }
-
-    // Refresh button + status
-    bool fetching = g_ClearsFetching;
-    if (fetching) ImGui::PushStyleVar(ImGuiStyleVar_Alpha, 0.5f);
-    if (ImGui::SmallButton("Refresh##clears") && !fetching) {
-        FetchClears();
-    }
-    if (fetching) ImGui::PopStyleVar();
-    ImGui::SameLine();
-    {
-        std::lock_guard<std::mutex> lock(g_ClearsMutex);
-        if (fetching) {
-            ImGui::TextColored(ImVec4(1.0f, 0.85f, 0.0f, 1.0f), "%s", g_ClearsStatusMsg.c_str());
-        } else if (!g_ClearsFetched && g_DailyFractals.empty()) {
-            ImGui::TextColored(ImVec4(0.5f, 0.5f, 0.5f, 1.0f), "Click Refresh to load data");
-        } else if (!g_ClearsStatusMsg.empty()) {
-            ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.4f, 1.0f), "%s", g_ClearsStatusMsg.c_str());
-        } else {
-            ImGui::TextColored(ImVec4(0.6f, 0.6f, 0.6f, 1.0f), "Data loaded");
-        }
-    }
-
-    ImGui::Separator();
-
-    std::lock_guard<std::mutex> lock(g_ClearsMutex);
-
-    std::string dailyResetStr = FormatTimeUntilReset(dailyReset, std::chrono::hours(24));
-    std::string weeklyResetStr = FormatTimeUntilReset(weeklyReset, std::chrono::hours(24 * 7));
-
-    // ---- Daily Fractals ----
-    {
-        char suffix[64];
-        snprintf(suffix, sizeof(suffix), "(resets in %s)", dailyResetStr.c_str());
-        RenderSectionHeader("Daily Fractals", ImVec4(0.3f, 0.7f, 0.9f, 1.0f), suffix);
-    }
-
-    if (g_DailyFractals.empty()) {
-        ImGui::TextColored(ImVec4(0.5f, 0.5f, 0.5f, 1.0f), "  No data");
-    } else {
-        const char* tierOrder[] = {"T4", "T3", "T2", "T1", "Rec"};
-        for (const char* tier : tierOrder) {
-            std::vector<const ClearEntry*> tierEntries;
-            for (const auto& e : g_DailyFractals) {
-                if (e.tier == tier) tierEntries.push_back(&e);
-            }
-            if (tierEntries.empty()) continue;
-
-            // Sort by shortened name so order is consistent across tiers
-            std::sort(tierEntries.begin(), tierEntries.end(),
-                [](const ClearEntry* a, const ClearEntry* b) {
-                    return ShortenFractalName(a->name) < ShortenFractalName(b->name);
-                });
-
-            bool allDone = g_ClearsFetched;
-            for (const auto* e : tierEntries) {
-                if (!e->done) { allDone = false; break; }
-            }
-
-            if (allDone)
-                ImGui::TextColored(ImVec4(0.35f, 0.82f, 0.35f, 1.0f), "  %-4s", tier);
-            else
-                ImGui::TextColored(ImVec4(0.8f, 0.8f, 0.8f, 1.0f), "  %-4s", tier);
-
-            for (const auto* e : tierEntries) {
-                ImGui::SameLine();
-                std::string shortName = ShortenFractalName(e->name);
-                RenderClearStatus(g_ClearsFetched, e->done, shortName.c_str());
-            }
-        }
-        // Uncategorized
-        for (const auto& e : g_DailyFractals) {
-            if (!e.tier.empty()) continue;
-            ImGui::Text("  ");
-            ImGui::SameLine();
-            RenderClearStatus(g_ClearsFetched, e.done, e.name.c_str());
-        }
-    }
-
-    ImGui::Spacing();
-    ImGui::Separator();
-
-    // ---- Daily Raid Bounties ----
-    {
-        char suffix[64];
-        snprintf(suffix, sizeof(suffix), "(resets in %s)", dailyResetStr.c_str());
-        RenderSectionHeader("Daily Raid Bounties", ImVec4(0.9f, 0.6f, 0.3f, 1.0f), suffix);
-    }
-
-    if (g_DailyBounties.empty()) {
-        ImGui::TextColored(ImVec4(0.5f, 0.5f, 0.5f, 1.0f), "  No data");
-    } else {
-        for (const auto& e : g_DailyBounties) {
-            // Strip "Raid Bounty: " prefix
-            std::string display = e.name;
-            if (display.find("Raid Bounty: ") == 0)
-                display = display.substr(13);
-            ImGui::Text("  ");
-            ImGui::SameLine();
-            RenderClearStatus(g_ClearsFetched, e.done, display.c_str());
-        }
-    }
-
-    ImGui::Spacing();
-    ImGui::Separator();
-
-    // ---- Weekly Strikes ----
-    {
-        char suffix[64];
-        snprintf(suffix, sizeof(suffix), "(resets in %s)", weeklyResetStr.c_str());
-        RenderSectionHeader("Weekly Strikes", ImVec4(0.7f, 0.4f, 0.9f, 1.0f), suffix);
-    }
-
-    if (g_WeeklyStrikes.id == 0) {
-        ImGui::TextColored(ImVec4(0.5f, 0.5f, 0.5f, 1.0f), "  No data");
-    } else {
-        for (size_t i = 0; i < g_WeeklyStrikes.bitNames.size(); i++) {
-            bool bitDone = (i < g_WeeklyStrikes.bitDone.size()) ? g_WeeklyStrikes.bitDone[i] : false;
-            ImGui::Text("  ");
-            ImGui::SameLine();
-            RenderClearStatus(g_ClearsFetched, bitDone, g_WeeklyStrikes.bitNames[i].c_str());
-        }
-        if (g_ClearsFetched && g_WeeklyStrikes.max > 0) {
-            int doneCount = 0;
-            for (bool b : g_WeeklyStrikes.bitDone) { if (b) doneCount++; }
-            ImGui::TextColored(ImVec4(0.5f, 0.5f, 0.5f, 1.0f), "  %d / %d completed",
-                doneCount, (int)g_WeeklyStrikes.bitNames.size());
-        }
-    }
-
-    ImGui::Spacing();
-    ImGui::Separator();
-
-    // ---- Weekly Raids ----
-    {
-        char suffix[64];
-        snprintf(suffix, sizeof(suffix), "(resets in %s)", weeklyResetStr.c_str());
-        RenderSectionHeader("Weekly Raids", ImVec4(0.9f, 0.7f, 0.3f, 1.0f), suffix);
-    }
-
-    if (g_WeeklyWings.empty()) {
-        ImGui::TextColored(ImVec4(0.5f, 0.5f, 0.5f, 1.0f), "  No data");
-    } else {
-        if (ImGui::BeginTable("RaidWingsTable", 2, ImGuiTableFlags_BordersInnerH | ImGuiTableFlags_RowBg)) {
-            ImGui::TableSetupColumn("Wing", ImGuiTableColumnFlags_WidthFixed, 220);
-            ImGui::TableSetupColumn("Encounters", ImGuiTableColumnFlags_WidthStretch);
-            ImGui::TableHeadersRow();
-
-            for (const auto& wing : g_WeeklyWings) {
-                ImGui::TableNextRow();
-                ImGui::TableNextColumn();
-
-                // Strip "Weekly " prefix and add W# prefix
-                std::string wingName = wing.name;
-                if (wingName.find("Weekly ") == 0)
-                    wingName = wingName.substr(7);
-                {
-                    static const std::unordered_map<uint32_t, int> wingNum = {
-                        {9128, 1}, {9147, 2}, {9182, 3}, {9144, 4},
-                        {9111, 5}, {9120, 6}, {9156, 7}, {9181, 8},
-                    };
-                    auto it = wingNum.find(wing.id);
-                    if (it != wingNum.end())
-                        wingName = "W" + std::to_string(it->second) + ": " + wingName;
-                }
-
-                ImGui::Text("%s", wingName.c_str());
-
-                ImGui::TableNextColumn();
-                // Render encounters, skipping progress-only bits (empty short name)
-                bool firstEnc = true;
-                for (size_t i = 0; i < wing.bitNames.size(); i++) {
-                    std::string shortName = ShortenEncounterName(wing.bitNames[i]);
-                    if (shortName.empty()) continue; // skip progress-only bits
-                    bool bitDone = (i < wing.bitDone.size()) ? wing.bitDone[i] : false;
-                    if (!firstEnc) {
-                        ImGui::SameLine();
-                        ImGui::TextColored(ImVec4(0.3f, 0.3f, 0.3f, 1.0f), "|");
-                        ImGui::SameLine();
-                    }
-                    RenderClearStatus(g_ClearsFetched, bitDone, shortName.c_str());
-                    firstEnc = false;
-                }
-            }
-            ImGui::EndTable();
-        }
-    }
-}
 
 // =========================================================================
 // Achievement Tracker — UI
@@ -9688,38 +9109,23 @@ static void RenderAchievements() {
     {
         std::lock_guard<std::recursive_mutex> lock(g_AchMutex);
 
-        // Festivals — shown at top when a festival/bonus event is active
-        if (!g_AchActiveEventCatIds.empty() || !g_AchActiveFestivalCatIds.empty()) {
-            static const std::string kFestivalGroupId = "__active_event__";
-            bool forceOpenEvent = g_AchRestoreScroll && (g_AchSelectedGroupId == kFestivalGroupId);
+        // Active event — shown at top of tree when a bonus event or festival is active
+        if (!g_AchActiveMainCatIds.empty()) {
+            static const std::string kEventGroupId = "__active_event__";
+            bool forceOpenEvent = g_AchRestoreScroll && (g_AchSelectedGroupId == kEventGroupId);
             if (forceOpenEvent) ImGui::SetNextItemOpen(true);
             else if (!g_AchRestoreScroll) ImGui::SetNextItemOpen(true, ImGuiCond_Once);
 
-            std::string festLabel = g_AchActiveFestivalName.empty() ? "Current Event" : g_AchActiveFestivalName;
-            if (ImGui::TreeNode(festLabel.c_str())) {
-                // Full festival categories from Historical (e.g. SAB World 1, World 2, etc.)
-                for (uint32_t catId : g_AchActiveFestivalCatIds) {
+            std::string eventLabel = g_AchActiveEventName.empty() ? "Current Event" : g_AchActiveEventName;
+            if (ImGui::TreeNode(eventLabel.c_str())) {
+                for (uint32_t catId : g_AchActiveMainCatIds) {
                     auto it = g_AchCategories.find(catId);
                     if (it == g_AchCategories.end() || it->second.name.empty()) continue;
                     bool selected = (g_AchSelectedCatId == catId);
                     if (ImGui::Selectable(it->second.name.c_str(), selected)) {
                         if (g_AchSelectedCatId != catId) {
                             g_AchSelectedCatId = catId;
-                            g_AchSelectedGroupId = kFestivalGroupId;
-                            FetchAchCategoryDefs(catId);
-                        }
-                    }
-                }
-                // Non-festival bonus event categories (e.g. Roller Beetle Racing, Fractal Rush)
-                for (uint32_t catId : g_AchActiveEventCatIds) {
-                    if (FESTIVAL_DAILY_CAT_IDS.count(catId)) continue; // daily already in Daily group
-                    auto it = g_AchCategories.find(catId);
-                    if (it == g_AchCategories.end() || it->second.name.empty()) continue;
-                    bool selected = (g_AchSelectedCatId == catId);
-                    if (ImGui::Selectable(it->second.name.c_str(), selected)) {
-                        if (g_AchSelectedCatId != catId) {
-                            g_AchSelectedCatId = catId;
-                            g_AchSelectedGroupId = kFestivalGroupId;
+                            g_AchSelectedGroupId = kEventGroupId;
                             FetchAchCategoryDefs(catId);
                         }
                     }
@@ -9728,24 +9134,28 @@ static void RenderAchievements() {
             }
         }
 
+        // Build set of active daily cat IDs for quick lookup
+        std::unordered_set<uint32_t> activeDailySet(g_AchActiveDailyCatIds.begin(), g_AchActiveDailyCatIds.end());
+
         for (const auto& group : g_AchGroups) {
             if (group.name.empty()) continue;
-            if (group.name == "Character Adventure Guide") continue; // per-character; API can't distinguish
-            if (group.name == "Bonus Events") continue; // API group is polluted with unrelated categories
-            if (group.name == "Historical") continue; // massive grab-bag; active events surfaced via Current Bonus Event
+            if (group.name == "Character Adventure Guide") continue;
+            if (group.name == "Bonus Events") continue;
+            if (group.name == "Historical") continue;
+
+            bool isDaily = (group.name == "Daily");
 
             // Auto-open the saved group
             bool forceOpen = g_AchRestoreScroll && (group.id == g_AchSelectedGroupId);
             if (forceOpen) ImGui::SetNextItemOpen(true);
             if (ImGui::TreeNode(group.name.c_str())) {
-                // Sort categories by order within the group, skipping hidden categories
-                bool isDaily = (group.name == "Daily");
+                // Sort categories by order, skipping hidden and inactive festival dailies
                 std::vector<const AchCategoryDef*> sortedCats;
                 for (uint32_t catId : group.categories) {
                     if (g_AchHiddenCatIds.count(catId)) continue;
-                    // Hide inactive festival dailies from the Daily group (only after active event is known)
+                    // Hide inactive festival dailies from Daily group
                     if (isDaily && g_AchActiveEventFetched && FESTIVAL_DAILY_CAT_IDS.count(catId) &&
-                        std::find(g_AchActiveEventCatIds.begin(), g_AchActiveEventCatIds.end(), catId) == g_AchActiveEventCatIds.end())
+                        !activeDailySet.count(catId))
                         continue;
                     auto it = g_AchCategories.find(catId);
                     if (it != g_AchCategories.end() && !it->second.name.empty()) {
@@ -9755,7 +9165,25 @@ static void RenderAchievements() {
                 std::sort(sortedCats.begin(), sortedCats.end(),
                     [](const AchCategoryDef* a, const AchCategoryDef* b) { return a->order < b->order; });
 
+                // For Daily group: show active event dailies first
+                if (isDaily && !g_AchActiveDailyCatIds.empty()) {
+                    for (uint32_t catId : g_AchActiveDailyCatIds) {
+                        auto it = g_AchCategories.find(catId);
+                        if (it == g_AchCategories.end() || it->second.name.empty()) continue;
+                        bool selected = (g_AchSelectedCatId == catId);
+                        if (ImGui::Selectable(it->second.name.c_str(), selected)) {
+                            if (g_AchSelectedCatId != catId) {
+                                g_AchSelectedCatId = catId;
+                                g_AchSelectedGroupId = group.id;
+                                FetchAchCategoryDefs(catId);
+                            }
+                        }
+                    }
+                }
+
                 for (const auto* cat : sortedCats) {
+                    // Skip active dailies already shown at the top
+                    if (isDaily && activeDailySet.count(cat->id)) continue;
                     bool selected = (g_AchSelectedCatId == cat->id);
                     if (ImGui::Selectable(cat->name.c_str(), selected)) {
                         if (g_AchSelectedCatId != cat->id) {
@@ -10470,6 +9898,7 @@ void AddonRender() {
                 Skinventory::OwnedSkins::SetAccountName(g_SelectedAccountFilter);
                 g_SkinRefreshOwned = true;
                 g_ClearsNeedRequery = true;
+                g_VaultNeedRequery = true;
                 g_AchNeedRequery = true;
             }
             ImGui::EndCombo();
@@ -11462,11 +10891,11 @@ void AddonRender() {
 
         if (acctTabsDisabled) {
             ImGui::PushStyleVar(ImGuiStyleVar_Alpha, 0.4f);
-            ImGui::TabItemButton("Clears", ImGuiTabItemFlags_NoReorder);
+            ImGui::TabItemButton("Vault & Clears", ImGuiTabItemFlags_NoReorder);
             ImGui::PopStyleVar();
             if (ImGui::IsItemHovered())
                 ImGui::SetTooltip("%s", acctTabTooltip);
-        } else if (ImGui::BeginTabItem("Clears")) {
+        } else if (ImGui::BeginTabItem("Vault & Clears")) {
             g_MainTab = 3;
             RenderClears();
             ImGui::EndTabItem();

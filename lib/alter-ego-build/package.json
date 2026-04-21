@@ -1,0 +1,36 @@
+{
+  "name": "alter-ego-build",
+  "version": "1.0.0",
+  "description": "Encode and decode Alter Ego AE2 build codes for Guild Wars 2",
+  "type": "module",
+  "main": "src/index.js",
+  "module": "src/index.js",
+  "exports": {
+    ".": {
+      "import": "./src/index.js",
+      "require": "./dist/index.cjs"
+    }
+  },
+  "files": [
+    "src/",
+    "dist/",
+    "README.md"
+  ],
+  "scripts": {
+    "test": "node test/roundtrip.js",
+    "build:cjs": "echo 'const m = require(\"./src/index.js\"); module.exports = m;' > dist/index.cjs"
+  },
+  "keywords": [
+    "guild-wars-2",
+    "gw2",
+    "alter-ego",
+    "build-template",
+    "ae2"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/PieOrCake/alter_ego"
+  },
+  "homepage": "https://pie.rocks.cc/projects/alter-ego/"
+}

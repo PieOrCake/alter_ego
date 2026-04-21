@@ -50,12 +50,12 @@ If an LLM creating software upsets you, then perhaps this repo isn't for you. Mo
   - Filter by type, subtype, weight class
   - Skin detail panel with wiki images, TP prices, vendor prices
   - Shopping list for tracking skins you want to acquire
-- **Clears** — Track daily and weekly completion per account
-  - Daily Fractals grouped by tier with completion status
-  - Daily Raid Bounties
-  - Weekly Strike Missions (per-encounter tracking)
-  - Weekly Raids (per-wing, per-encounter tracking)
-  - Auto-refreshes on account switch, at daily/weekly reset times, and every 10 minutes
+- **Vault & Clears** — Track Wizard's Vault objectives and raid/fractal completion per account
+  - **Vault** sub-tab: daily, weekly, and special Wizard's Vault objectives
+    - Meta chest progress bar per period with reset countdown
+    - Per-objective status, acclaim reward, track tag (PvE/PvP/WvW), progress, and claimed state
+  - **Clears** sub-tab: Daily Fractals (by tier), Daily Raid Bounties, Weekly Strikes, Weekly Raids (per-wing, per-encounter)
+  - Auto-refreshes on account switch, at daily/weekly reset, and every 10 minutes
   - Data cached to disk for instant display on addon load
 - **Achievements** — Browse and track GW2 achievements per account
   - Full achievement group and category tree with search across 8000+ achievements

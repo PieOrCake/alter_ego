@@ -40,6 +40,7 @@ set(IMGUI_SOURCES
 # Source files
 set(SOURCES
     src/dllmain.cpp
+    src/Clears.cpp
     src/GW2API.cpp
     src/IconManager.cpp
     src/ChatLink.cpp

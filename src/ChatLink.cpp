@@ -67,6 +67,8 @@ bool ChatLink::ExtractPayload(const std::string& link, std::string& payload) {
     size_t end = link.find(']', start);
     if (end == std::string::npos) return false;
     payload = link.substr(start + 2, end - start - 2);
+    // GW2 internal chat format escapes ] as \] — strip trailing backslash if present
+    if (!payload.empty() && payload.back() == '\\') payload.pop_back();
     return !payload.empty();
 }
 

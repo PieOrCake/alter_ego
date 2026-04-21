@@ -1,6 +1,6 @@
 # Alter Ego Shared Build Template Specification
 
-**Version:** 2  
+**Version:** 3  
 **Status:** Stable  
 **Last updated:** April 2026
 
@@ -10,65 +10,61 @@ Alter Ego Shared Build Templates allow Guild Wars 2 build websites and tools to 
 
 Unlike GW2 build chat links (`[&...]`), which only encode traits, skills, pets, and legends, shared build templates carry the **full gear configuration** needed to recreate a build.
 
-## Encoding Formats
+## Quick Start (JavaScript)
 
-Three formats are supported. **AE2 is the preferred format** for in-game chat sharing.
+The easiest way to add AE2 support to a website is with the [`alter-ego-build`](https://www.npmjs.com/package/alter-ego-build) library — zero dependencies, works in browser and Node.js. Use the [**AE2 Build Viewer**](https://pie.rocks.cc/tools/ae2-playground/) to verify your output visually.
 
-### 1. Raw JSON
+```bash
+npm install alter-ego-build
+```
 
-Plain JSON object. Suitable for file exports, APIs, and debugging.
+### Encode a build
 
-```json
-{
-  "v": 1,
-  "name": "Power Dragonhunter",
-  "chat_link": "[&DQEeHjElPy5LFwAAhgAAAEgBAACGAAAALRcAAAAAAAAAAAAAAAAAAAAAAAA=]",
-  "profession": "Guardian",
-  "game_mode": "Raid",
-  "notes": "Burst DPS variant with greatsword + scepter/focus",
-  "gear": {
-    "Helm":       { "stat_id": 1077, "stat": "Berserker's" },
-    "Shoulders":  { "stat_id": 1077, "stat": "Berserker's" },
-    "Coat":       { "stat_id": 1077, "stat": "Berserker's" },
-    "Gloves":     { "stat_id": 1077, "stat": "Berserker's" },
-    "Leggings":   { "stat_id": 1077, "stat": "Berserker's" },
-    "Boots":      { "stat_id": 1077, "stat": "Berserker's" },
-    "WeaponA1":   { "stat_id": 1077, "stat": "Berserker's", "sigil": "Superior Sigil of Force", "weapon": "Greatsword" },
-    "WeaponB1":   { "stat_id": 1077, "stat": "Berserker's", "sigil": "Superior Sigil of Accuracy", "weapon": "Scepter" },
-    "WeaponB2":   { "stat_id": 1077, "stat": "Berserker's", "sigil": "Superior Sigil of Force", "weapon": "Focus" },
-    "Backpack":   { "stat_id": 1077, "stat": "Berserker's" },
-    "Accessory1": { "stat_id": 1077, "stat": "Berserker's" },
-    "Accessory2": { "stat_id": 1077, "stat": "Berserker's" },
-    "Amulet":     { "stat_id": 1077, "stat": "Berserker's" },
-    "Ring1":      { "stat_id": 1077, "stat": "Berserker's" },
-    "Ring2":      { "stat_id": 1077, "stat": "Berserker's" }
+```js
+import { encodeAE2 } from 'alter-ego-build';
+
+const code = encodeAE2({
+  chatLink: '[&DQEeHjElPy5LFwAAhgAAAEgBAACGAAAALRcAAAAAAAAAAAAAAAAAAAAAAAA=]',
+  gameMode: 'Raid',
+  gear: {
+    Helm:       { statId: 1077 },
+    Shoulders:  { statId: 1077 },
+    Coat:       { statId: 1077 },
+    Gloves:     { statId: 1077 },
+    Leggings:   { statId: 1077 },
+    Boots:      { statId: 1077 },
+    WeaponA1:   { statId: 1077, sigilId: 24615, weaponType: 'Greatsword', sigil2Id: 24868 },
+    WeaponB1:   { statId: 1077, sigilId: 24618, weaponType: 'Scepter' },
+    WeaponB2:   { statId: 1077, sigilId: 24615, weaponType: 'Focus' },
+    Backpack:   { statId: 1077 },
+    Accessory1: { statId: 1077 },
+    Accessory2: { statId: 1077 },
+    Amulet:     { statId: 1077 },
+    Ring1:      { statId: 1077 },
+    Ring2:      { statId: 1077 },
   },
-  "rune": "Superior Rune of Scholar",
-  "relic": "Relic of the Thief"
-}
+  runeId: 24836,     // Superior Rune of Scholar
+  relicId: 100916,   // Relic of the Thief (exotic ID)
+});
+// => "AE2:AwuL..." — ready for clipboard or GW2 chat
 ```
 
-### 2. Compact Code (`AE1:` prefix) — Legacy
+### Decode a build
 
-Base64-encoded JSON with an `AE1:` prefix. Supported for backward compatibility; **prefer AE2 for new implementations**.
+```js
+import { decodeAE2 } from 'alter-ego-build';
 
+const build = decodeAE2(code);
+// { chatLink, gameMode, gear, runeId, relicId, version }
 ```
-AE1:<base64-encoded-json>
-```
 
-**Encoding steps:**
-1. Serialize the JSON object to a string (minified, no extra whitespace)
-2. Base64-encode the UTF-8 bytes using standard Base64 (RFC 4648, alphabet `A-Z a-z 0-9 + /`, `=` padding)
-3. Prepend `AE1:`
+See the [library README](https://www.npmjs.com/package/alter-ego-build) for the full API reference.
 
-**Decoding steps:**
-1. Strip the `AE1:` prefix
-2. Base64-decode to get UTF-8 bytes
-3. Parse as JSON
+If you need to implement AE2 in another language, the binary format is documented below.
 
-### 3. Compact Binary (`AE2:` prefix) — Preferred
+## Format
 
-Binary format with an `AE2:` prefix, designed to fit complete builds (traits, skills, gear stats, runes, sigils, relics) within GW2's 199-character chat limit. Typical output is 130–150 base64 characters.
+Compact binary format with an `AE2:` prefix, designed to fit complete builds (traits, skills, gear stats, runes, sigils, relics) within GW2's 199-character chat limit. Typical output is 130–150 base64 characters.
 
 ```
 AE2:<base64-encoded-binary>
@@ -78,7 +74,7 @@ AE2:<base64-encoded-binary>
 
 | Offset | Size | Field | Description |
 |--------|------|-------|-------------|
-| 0 | 1 | `version` | Always `2`. |
+| 0 | 1 | `version` | Format version. Current: `3` (also accepts `2` for backward compat). |
 | 1 | 1 | `flags` | Bit field (see below). |
 | 2 | 1 | `build_link_len` | Length of the raw build link bytes. |
 | 3 | N | `build_link` | Raw bytes of the GW2 build chat link (the base64-decoded `[&...]` payload, excluding the `[&` prefix and `]` suffix). |
@@ -126,13 +122,15 @@ After `build_link`, optional sections follow based on `flags`:
 |------|-------|-------------|
 | 4 | `relic_id` | `uint32` GW2 item ID of the **exotic** relic. See [Relic IDs](#relic-ids). |
 
-#### Sigil IDs (after rune/relic, for each weapon slot in gear_mask)
+#### Weapon Slot Data (after rune/relic, for each weapon slot in gear_mask)
 
 For each weapon slot present in `gear_mask` (bits 6–9, in order):
 
 | Size | Field | Description |
 |------|-------|-------------|
-| 4 | `sigil_id` | `uint32` GW2 item ID of the sigil. |
+| 4 | `sigil_id` | `uint32` GW2 item ID of the sigil. 0 if none. |
+| 2 | `weapon_type_id` | `uint16` weapon type identifier. See [Weapon Type IDs](#weapon-type-ids). 0 if none. |
+| 4 | `sigil2_id` | `uint32` GW2 item ID of the second sigil (for two-handed weapons). 0 if none. *(v3 only — not present in v2)* |
 
 #### Encoding Steps
 
@@ -148,54 +146,30 @@ For each weapon slot present in `gear_mask` (bits 6–9, in order):
 4. Decode the `build_link` bytes as a GW2 build template to extract traits, skills, pets, legends
 5. Resolve item IDs against `/v2/items` for display names
 
-## JSON Schema Reference
+#### Weapon Type IDs
 
-### Top-level fields
+These match the GW2 API item `type` values:
 
-| Field | Type | Required | Description |
-|-------|------|----------|-------------|
-| `v` | integer | **Yes** | Schema version. Currently `1`. |
-| `name` | string | **Yes** | Display name for the build. |
-| `chat_link` | string | **Yes** | GW2 build template chat link (`[&...]`). |
-| `profession` | string | Recommended | Profession name. See [Profession Names](#profession-names). |
-| `game_mode` | string | No | Game mode tag. See [Game Modes](#game-modes). Defaults to `"PvE"`. |
-| `notes` | string | No | Free-text notes about the build. |
-| `gear` | object | No | Gear configuration. See [Gear Object](#gear-object). |
-| `rune` | string | No | Shared rune name across all armor pieces. |
-| `relic` | string | No | Relic name. |
+| ID | Weapon | ID | Weapon |
+|----|--------|----|--------|
+| 5 | Axe | 86 | Scepter |
+| 35 | Longbow | 87 | Shield |
+| 47 | Dagger | 89 | Staff |
+| 49 | Focus | 90 | Sword |
+| 50 | Greatsword | 102 | Torch |
+| 51 | Hammer | 103 | Warhorn |
+| 53 | Mace | 107 | Shortbow |
+| 54 | Pistol | 265 | Spear |
+| 85 | Rifle | 0 | (none) |
 
-### Gear Object
+#### Version Differences
 
-A map of **slot name** → **gear slot object**. Only include slots that have data.
+| Version | Per-weapon-slot size | Fields |
+|---------|---------------------|--------|
+| 2 | 6 bytes | `sigil_id` (4) + `weapon_type_id` (2) |
+| 3 | 10 bytes | `sigil_id` (4) + `weapon_type_id` (2) + `sigil2_id` (4) |
 
-#### Slot Names
-
-**Armor:**
-`Helm`, `Shoulders`, `Coat`, `Gloves`, `Leggings`, `Boots`
-
-**Weapons:**
-`WeaponA1` (main hand set A), `WeaponA2` (off hand set A), `WeaponB1` (main hand set B), `WeaponB2` (off hand set B)
-
-**Trinkets:**
-`Backpack`, `Accessory1`, `Accessory2`, `Amulet`, `Ring1`, `Ring2`
-
-**Other:**
-`Relic` (not typically included in gear — use the top-level `relic` field instead)
-
-#### Gear Slot Object
-
-| Field | Type | Description |
-|-------|------|-------------|
-| `stat_id` | integer | GW2 API itemstat ID from [`/v2/itemstats`](https://wiki.guildwars2.com/wiki/API:2/itemstats). |
-| `stat` | string | Human-readable stat combo name (e.g., `"Berserker's"`, `"Viper's"`). |
-| `rune` | string | Rune name (armor slots only). |
-| `sigil` | string | Sigil name (weapon slots only). |
-| `infusion` | string | Infusion name. |
-| `weapon` | string | Weapon type (weapon slots only). See [Weapon Types](#weapon-types). |
-
-All fields are optional. Include whichever data is available.
-
-If `stat_id` is provided, Alter Ego will use it for exact stat matching. If only `stat` (the name) is provided, it serves as a display label.
+Decoders should check byte 0 (`version`) to determine the per-weapon-slot layout. Version 2 codes are still accepted for backward compatibility.
 
 ## Relic IDs
 
@@ -240,65 +214,30 @@ Full list available from the [GW2 API](https://api.guildwars2.com/v2/itemstats?i
 
 ## Implementation Guide
 
-### For build websites (export)
+### For build websites (JavaScript)
 
-To add an "Export to Alter Ego" button:
+The recommended approach — no binary packing required:
 
-1. Construct the JSON object with the build's chat link, gear, and metadata
-2. Encode as either:
-   - **Compact code** — for a "Copy to clipboard" button (paste into Alter Ego's import field)
-   - **JSON** — for a downloadable file or API response
-3. The user pastes the code into Alter Ego's Build Library → Import Build field
+1. `npm install alter-ego-build`
+2. Call `encodeAE2()` with the build's chat link, gear stat IDs, rune/relic/sigil item IDs, and weapon types
+3. Verify your output with the [AE2 Build Viewer](https://pie.rocks.cc/tools/ae2-playground/) — paste the code to see the full build rendered visually
+4. Present the resulting string as a "Copy to clipboard" button
+5. The user pastes the code into Alter Ego's Build Library → Import Build field, or shares it in GW2 chat
 
-**Minimal example** (traits + skills only, no gear):
+### For other languages (manual encoding)
 
-```json
-{
-  "v": 1,
-  "name": "My Build",
-  "chat_link": "[&DQEeHjElPy5LFwAAhgAAAEgBAACGAAAALRcAAAAAAAAAAAAAAAAAAAAAAAA=]"
-}
-```
+To implement AE2 without the JS library:
 
-**Full example** (with gear):
-
-```json
-{
-  "v": 1,
-  "name": "Power Dragonhunter",
-  "chat_link": "[&DQEeHjElPy5LFwAAhgAAAEgBAACGAAAALRcAAAAAAAAAAAAAAAAAAAAAAAA=]",
-  "profession": "Guardian",
-  "game_mode": "Raid",
-  "gear": {
-    "Helm":     { "stat_id": 1077, "stat": "Berserker's" },
-    "Coat":     { "stat_id": 1077, "stat": "Berserker's" },
-    "WeaponA1": { "stat_id": 1077, "stat": "Berserker's", "weapon": "Greatsword", "sigil": "Superior Sigil of Force" }
-  },
-  "rune": "Superior Rune of Scholar",
-  "relic": "Relic of the Thief"
-}
-```
-
-You do not need to include every slot — only include slots you have data for.
+1. Build the binary payload as described in [Binary Layout](#binary-layout-little-endian)
+2. Base64-encode the bytes and prepend `AE2:`
 
 ### For addon/tool developers (import)
 
-1. Check if the input starts with `AE2:` → decode base64, parse binary (see [Compact Binary](#3-compact-binary-ae2-prefix--preferred))
-2. Check if the input starts with `AE1:` → decode base64, parse JSON
-3. Check if the input starts with `{` → parse as raw JSON
-4. Otherwise → treat as a GW2 chat link (existing behavior)
-5. Validate version field for compatibility (`v` for JSON, byte 0 for AE2)
-6. Decode the build link to get traits, skills, pets, legends
-7. Apply gear/rune/sigil/relic data
-
-## Versioning
-
-The `v` field indicates the schema version. Importers should:
-- Accept `v: 1` as defined in this document
-- Ignore unknown fields gracefully (forward compatibility)
-- Reject documents with `v` values they don't understand
-
-Future versions will be backwards-compatible where possible. Breaking changes will increment the version number.
+1. Check if the input starts with `AE2:` → decode base64, parse binary
+2. Check byte 0 (`version`) to determine per-weapon-slot layout (v2 or v3)
+3. Decode the `build_link` bytes as a GW2 build template to extract traits, skills, pets, legends
+4. Resolve item IDs against `/v2/items` for display names
+5. Apply gear/rune/sigil/relic data
 
 ## Contact
 
