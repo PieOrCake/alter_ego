@@ -88,6 +88,7 @@ static std::atomic<bool> g_VaultRetryPending{false};
 bool g_VaultNeedRequery = false;
 static std::chrono::system_clock::time_point g_VaultLastDailyReset{};
 static std::chrono::system_clock::time_point g_VaultLastWeeklyReset{};
+static std::chrono::system_clock::time_point g_VaultSeasonEnd{};
 
 // =========================================================================
 // Clears - Backend (reset calculations, fetch, H&S response)
@@ -171,6 +172,20 @@ static std::string FormatTimeUntilReset(std::chrono::system_clock::time_point re
     char buf[32];
     snprintf(buf, sizeof(buf), "%dm", m);
     return buf;
+}
+
+static std::chrono::system_clock::time_point ParseISO8601(const std::string& s) {
+    int year = 0, mon = 0, day = 0, hour = 0, min = 0, sec = 0;
+    if (sscanf(s.c_str(), "%d-%d-%dT%d:%d:%d", &year, &mon, &day, &hour, &min, &sec) != 6)
+        return {};
+    struct tm t{};
+    t.tm_year = year - 1900; t.tm_mon = mon - 1; t.tm_mday = day;
+    t.tm_hour = hour; t.tm_min = min; t.tm_sec = sec;
+#ifdef _WIN32
+    return std::chrono::system_clock::from_time_t(_mkgmtime(&t));
+#else
+    return std::chrono::system_clock::from_time_t(timegm(&t));
+#endif
 }
 
 // Parse tier from fractal achievement name
@@ -313,9 +328,38 @@ static void FetchVaultData() {
         APIDefs->Events_Raise(EV_HOARD_QUERY_WIZARDSVAULT, &req);
     }
 
+    // Also fetch season info (for the special objectives end date)
+    {
+        HoardQueryApiRequest req{};
+        req.api_version = HOARD_API_VERSION;
+        strncpy(req.requester, "Alter Ego", sizeof(req.requester) - 1);
+        strncpy(req.endpoint, "/v2/account/wizardsvault", sizeof(req.endpoint) - 1);
+        strncpy(req.response_event, EV_AE_VAULT_SEASON_RESP, sizeof(req.response_event) - 1);
+        if (!acctName.empty())
+            strncpy(req.account_name, acctName.c_str(), sizeof(req.account_name) - 1);
+        APIDefs->Events_Raise(EV_HOARD_QUERY_API, &req);
+    }
+
     g_VaultFetching = false;
     g_VaultFetched = true;
     SaveVaultCache();
+}
+
+void OnVaultSeasonResponse(void* eventArgs) {
+    if (!eventArgs) return;
+    auto* resp = static_cast<HoardQueryApiResponse*>(eventArgs);
+    if (resp->status != HOARD_STATUS_OK || resp->json_length == 0) return;
+    try {
+        auto j = nlohmann::json::parse(resp->json);
+        std::string endStr = j.value("end", "");
+        if (!endStr.empty()) {
+            auto tp = ParseISO8601(endStr);
+            if (tp != std::chrono::system_clock::time_point{}) {
+                std::lock_guard<std::mutex> lock(g_ClearsMutex);
+                g_VaultSeasonEnd = tp;
+            }
+        }
+    } catch (...) {}
 }
 
 void OnVaultResponse(void* eventArgs) {
@@ -701,9 +745,11 @@ static void SaveVaultCache() {
     j["fetch_time"] = epochSecs;
     {
         std::lock_guard<std::mutex> lock(g_ClearsMutex);
-        j["daily"]   = serializePeriod(g_VaultDaily);
-        j["weekly"]  = serializePeriod(g_VaultWeekly);
-        j["special"] = serializePeriod(g_VaultSpecial);
+        j["daily"]      = serializePeriod(g_VaultDaily);
+        j["weekly"]     = serializePeriod(g_VaultWeekly);
+        j["special"]    = serializePeriod(g_VaultSpecial);
+        j["season_end"] = std::chrono::duration_cast<std::chrono::seconds>(
+            g_VaultSeasonEnd.time_since_epoch()).count();
     }
 
     std::ofstream file(path);
@@ -753,6 +799,9 @@ void LoadVaultCache() {
             if (!dailyStale  && j.contains("daily"))   g_VaultDaily   = deserializePeriod(j["daily"]);
             if (!weeklyStale && j.contains("weekly"))  g_VaultWeekly  = deserializePeriod(j["weekly"]);
             if (j.contains("special"))                 g_VaultSpecial = deserializePeriod(j["special"]);
+            int64_t seasonEndEpoch = j.value("season_end", (int64_t)0);
+            if (seasonEndEpoch > 0)
+                g_VaultSeasonEnd = std::chrono::system_clock::from_time_t((time_t)seasonEndEpoch);
 
             if (!g_VaultDaily.objectives.empty() || !g_VaultWeekly.objectives.empty())
                 g_VaultFetched = true;
@@ -981,7 +1030,20 @@ static void RenderVaultTab(const std::string& dailyResetStr, const std::string& 
     if (!g_VaultSpecial.objectives.empty()) {
         ImGui::Spacing();
         ImGui::Separator();
-        RenderVaultPeriodSection("Special Objectives", "seasonal",
+        std::string seasonLabel = "seasonal";
+        if (g_VaultSeasonEnd != std::chrono::system_clock::time_point{}) {
+            auto sNow = std::chrono::system_clock::now();
+            if (g_VaultSeasonEnd > sNow) {
+                auto rem = std::chrono::duration_cast<std::chrono::seconds>(g_VaultSeasonEnd - sNow).count();
+                int d = (int)(rem / 86400), h = (int)((rem % 86400) / 3600);
+                char buf[32];
+                snprintf(buf, sizeof(buf), "%dd %dh", d, h);
+                seasonLabel = buf;
+            } else {
+                seasonLabel = "ended";
+            }
+        }
+        RenderVaultPeriodSection("Special Objectives", seasonLabel.c_str(),
             ImVec4(0.9f, 0.70f, 0.30f, 1.0f), g_VaultSpecial);
     }
 }

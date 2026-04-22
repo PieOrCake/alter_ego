@@ -35,7 +35,7 @@
 #define V_MAJOR 0
 #define V_MINOR 9
 #define V_BUILD 5
-#define V_REVISION 0
+#define V_REVISION 1
 
 // Quick Access icon identifiers
 #define QA_ID "QA_ALTER_EGO"
@@ -1475,18 +1475,11 @@ static void LoadAchGroupCache() {
             }
         }
 
-        // Build hidden category set (only truly junk categories, not event-related)
+        // Build hidden category set
         g_AchHiddenCatIds.clear();
         for (const auto& g : g_AchGroups) {
             if (g.name == "Character Adventure Guide") {
                 for (uint32_t cid : g.categories) g_AchHiddenCatIds.insert(cid);
-            } else if (g.name == "Bonus Events") {
-                for (uint32_t cid : g.categories) {
-                    auto catIt = g_AchCategories.find(cid);
-                    if (catIt == g_AchCategories.end()) continue;
-                    if (IsBonusEventJunk(catIt->second.name))
-                        g_AchHiddenCatIds.insert(cid);
-                }
             }
         }
 
@@ -1844,13 +1837,6 @@ static void FetchAchGroups() {
             for (const auto& g : g_AchGroups) {
                 if (g.name == "Character Adventure Guide") {
                     for (uint32_t cid : g.categories) g_AchHiddenCatIds.insert(cid);
-                } else if (g.name == "Bonus Events") {
-                    for (uint32_t cid : g.categories) {
-                        auto catIt = g_AchCategories.find(cid);
-                        if (catIt == g_AchCategories.end()) continue;
-                        if (IsBonusEventJunk(catIt->second.name))
-                            g_AchHiddenCatIds.insert(cid);
-                    }
                 }
             }
             g_AchGroupsFetched = true;
@@ -3800,8 +3786,20 @@ static void RenderBuildPanel(const AlterEgo::Character& ch) {
         saveLink.profession = ProfCodeLib(bt.profession);
         for (int i = 0; i < 3; i++) {
             saveLink.specs[i].spec_id = (uint8_t)bt.specializations[i].spec_id;
-            for (int t = 0; t < 3; t++)
-                saveLink.specs[i].traits[t] = (uint8_t)bt.specializations[i].traits[t];
+            const auto* specInfo = AlterEgo::GW2API::GetSpecInfo(bt.specializations[i].spec_id);
+            for (int t = 0; t < 3; t++) {
+                int traitId = bt.specializations[i].traits[t];
+                uint8_t choice = 0;
+                if (traitId != 0 && specInfo && specInfo->major_traits.size() >= 9) {
+                    for (int r = 0; r < 3; r++) {
+                        if ((int)specInfo->major_traits[t * 3 + r] == traitId) {
+                            choice = (uint8_t)(r + 1);
+                            break;
+                        }
+                    }
+                }
+                saveLink.specs[i].traits[t] = choice;
+            }
         }
         auto ToPaletteLib = [&](uint32_t skill_id) -> uint16_t {
             if (skill_id == 0) return 0;
@@ -7583,6 +7581,7 @@ void AddonLoad(AddonAPI_t* aApi) {
     APIDefs->Events_Subscribe(EV_AE_ITEM_LOC_RESP, AlterEgo::GW2API::OnItemLocationResponse);
     APIDefs->Events_Subscribe(EV_AE_CLEARS_ACH_RESPONSE, OnClearsAchResponse);
     APIDefs->Events_Subscribe(EV_AE_VAULT_RESPONSE, OnVaultResponse);
+    APIDefs->Events_Subscribe(EV_AE_VAULT_SEASON_RESP, OnVaultSeasonResponse);
     APIDefs->Events_Subscribe(EV_AE_ACH_PROGRESS_RESPONSE, OnAchProgressResponse);
     APIDefs->Events_Subscribe(EV_AE_ACCOUNTS_RESP, AlterEgo::GW2API::OnAccountsResponse);
     APIDefs->Events_Subscribe(EV_HOARD_ACCOUNTS_CHANGED, AlterEgo::GW2API::OnAccountsChanged);
@@ -7695,6 +7694,7 @@ void AddonUnload() {
     APIDefs->Events_Unsubscribe(EV_AE_ITEM_LOC_RESP, AlterEgo::GW2API::OnItemLocationResponse);
     APIDefs->Events_Unsubscribe(EV_AE_CLEARS_ACH_RESPONSE, OnClearsAchResponse);
     APIDefs->Events_Unsubscribe(EV_AE_VAULT_RESPONSE, OnVaultResponse);
+    APIDefs->Events_Unsubscribe(EV_AE_VAULT_SEASON_RESP, OnVaultSeasonResponse);
     APIDefs->Events_Unsubscribe(EV_AE_ACH_PROGRESS_RESPONSE, OnAchProgressResponse);
     APIDefs->Events_Unsubscribe(EV_AE_ACCOUNTS_RESP, AlterEgo::GW2API::OnAccountsResponse);
     APIDefs->Events_Unsubscribe(EV_HOARD_ACCOUNTS_CHANGED, AlterEgo::GW2API::OnAccountsChanged);
@@ -9140,8 +9140,6 @@ static void RenderAchievements() {
         for (const auto& group : g_AchGroups) {
             if (group.name.empty()) continue;
             if (group.name == "Character Adventure Guide") continue;
-            if (group.name == "Bonus Events") continue;
-            if (group.name == "Historical") continue;
 
             bool isDaily = (group.name == "Daily");
 
@@ -9149,14 +9147,10 @@ static void RenderAchievements() {
             bool forceOpen = g_AchRestoreScroll && (group.id == g_AchSelectedGroupId);
             if (forceOpen) ImGui::SetNextItemOpen(true);
             if (ImGui::TreeNode(group.name.c_str())) {
-                // Sort categories by order, skipping hidden and inactive festival dailies
+                // Sort categories by order, skipping hidden categories
                 std::vector<const AchCategoryDef*> sortedCats;
                 for (uint32_t catId : group.categories) {
                     if (g_AchHiddenCatIds.count(catId)) continue;
-                    // Hide inactive festival dailies from Daily group
-                    if (isDaily && g_AchActiveEventFetched && FESTIVAL_DAILY_CAT_IDS.count(catId) &&
-                        !activeDailySet.count(catId))
-                        continue;
                     auto it = g_AchCategories.find(catId);
                     if (it != g_AchCategories.end() && !it->second.name.empty()) {
                         sortedCats.push_back(&it->second);
