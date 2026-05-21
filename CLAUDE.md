@@ -8,6 +8,8 @@ When the user says **"discuss"** or **"suggest"**, respond in words only — no 
 
 After every code change, always build the DLL (`cd build && make -j$(nproc)`) and confirm it compiled cleanly.
 
+When producing an HTML mockup (anything in `screenshots/`), always start a local dev server in the background so the user can view it in a browser. Use `python3 -m http.server` from the repo root and tell the user the URL (e.g. `http://localhost:8000/screenshots/<file>.html`).
+
 ## Build
 
 Cross-compiled Windows DLL from Linux using MinGW:

@@ -441,7 +441,15 @@ bool g_WindowVisible = false;
 // UI State
 static int g_SelectedCharIdx = -1;
 static int g_SelectedTab = 0;          // 0 = Equipment, 1 = Build
+static bool RenderChipStrip(const std::vector<std::string>& labels,
+                            const std::vector<bool>& activeMarkers,
+                            int& selectedIdx,
+                            float& scrollOffset,
+                            const char* idScope);
+
 static int g_SelectedEquipTab = 0;     // Equipment tab filter
+static float g_EquipTabScroll = 0.0f;  // Horizontal scroll offset for equipment tab chip strip
+static float g_BuildTabScroll = 0.0f;  // Horizontal scroll offset for build tab chip strip
 static int g_SelectedBuildTab = 0;     // Build tab filter
 static bool g_ShowQAIcon = true;
 static bool g_CompactCharList = false;
@@ -2464,6 +2472,221 @@ static void FetchDetailsForCharacter(const AlterEgo::Character& ch) {
     if (!ch.profession.empty()) AlterEgo::GW2API::FetchProfessionInfoAsync(ch.profession);
 }
 
+// Resolve and load a per-character portrait texture (PNG/JPG from AlterEgo/portraits/<name>.<ext>)
+// Returns nullptr if not present; caches result. Same backing data as the Equipment-panel overlay.
+static Texture_t* GetCharacterPortraitTexture(const AlterEgo::Character& ch) {
+    auto cacheIt = s_portraitPathCache.find(ch.name);
+    if (cacheIt == s_portraitPathCache.end()) {
+        if (s_portraitMissing.find(ch.name) != s_portraitMissing.end()) return nullptr;
+        std::string portraitDir = AlterEgo::GW2API::GetDataDirectory() + "/portraits";
+        std::filesystem::create_directories(portraitDir);
+        static const char* exts[] = { ".png", ".jpg", ".jpeg" };
+        bool found = false;
+        for (const char* ext : exts) {
+            std::string path = portraitDir + "/" + ch.name + ext;
+            std::error_code ec;
+            if (std::filesystem::is_regular_file(std::filesystem::u8path(path), ec)) {
+                int64_t modTime = GetFileModTime(path);
+                s_portraitPathCache[ch.name] = { path, modTime };
+                found = true;
+                break;
+            }
+        }
+        if (!found) {
+            s_portraitMissing.insert(ch.name);
+            return nullptr;
+        }
+        cacheIt = s_portraitPathCache.find(ch.name);
+    }
+    std::string texId = "AE_PORTRAIT_" + ch.name + "_" + std::to_string(cacheIt->second.modTime);
+    Texture_t* tex = APIDefs->Textures_Get(texId.c_str());
+    if (!tex || !tex->Resource) {
+        try {
+            auto fspath = std::filesystem::u8path(cacheIt->second.path);
+            std::ifstream ifs(fspath, std::ios::binary | std::ios::ate);
+            if (ifs.is_open()) {
+                auto sz = ifs.tellg();
+                if (sz > 0) {
+                    std::vector<uint8_t> buf((size_t)sz);
+                    ifs.seekg(0);
+                    ifs.read(reinterpret_cast<char*>(buf.data()), sz);
+                    tex = APIDefs->Textures_GetOrCreateFromMemory(
+                        texId.c_str(), buf.data(), (uint64_t)buf.size());
+                }
+            }
+        } catch (...) {}
+    }
+    return (tex && tex->Resource) ? tex : nullptr;
+}
+
+// Render a right-aligned profession emblem (the wiki "tango" icon fetched via the GW2 API).
+// Draws a faint dark backing + gold-ish frame; shows a tooltip with the profession name.
+static void RenderProfessionEmblem(const std::string& profession, float size) {
+    if (profession.empty()) { ImGui::Dummy(ImVec2(size, size)); return; }
+
+    // Trigger fetch if we don't already have it
+    AlterEgo::GW2API::FetchProfessionInfoAsync(profession);
+    const auto* prof = AlterEgo::GW2API::GetProfessionInfo(profession);
+
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    ImVec2 pos = ImGui::GetCursorScreenPos();
+    ImVec2 maxp(pos.x + size, pos.y + size);
+
+    // Backing card (subtle, so it reads as part of the header)
+    dl->AddRectFilled(pos, maxp, IM_COL32(20, 20, 26, 180), 4.0f);
+    dl->AddRect(pos, maxp, IM_COL32(140, 113, 55, 160), 4.0f, 0, 1.0f);
+
+    bool drew = false;
+    if (prof && !prof->icon_big_url.empty()) {
+        // Use a stable synthetic ID so IconManager caches the texture by profession
+        uint32_t profIconId = 9100000u + (uint32_t)(std::hash<std::string>{}(profession) % 100000u);
+        Texture_t* tex = AlterEgo::IconManager::GetIcon(profIconId);
+        if (tex && tex->Resource) {
+            float ir = size - 8.0f;
+            float ix = pos.x + (size - ir) * 0.5f;
+            float iy = pos.y + (size - ir) * 0.5f;
+            dl->AddImage(tex->Resource,
+                ImVec2(ix, iy), ImVec2(ix + ir, iy + ir),
+                ImVec2(0, 0), ImVec2(1, 1),
+                IM_COL32(240, 226, 190, 230));
+            drew = true;
+        } else {
+            AlterEgo::IconManager::RequestIcon(profIconId, prof->icon_big_url);
+        }
+    }
+    if (!drew) {
+        // Placeholder: profession initial in dim gold
+        std::string init = profession.substr(0, 1);
+        ImVec2 ts = ImGui::CalcTextSize(init.c_str());
+        dl->AddText(ImVec2(pos.x + (size - ts.x) * 0.5f, pos.y + (size - ts.y) * 0.5f),
+            IM_COL32(180, 160, 110, 200), init.c_str());
+    }
+
+    ImGui::Dummy(ImVec2(size, size));
+    if (ImGui::IsItemHovered()) {
+        ImGui::BeginTooltip();
+        ImGui::TextColored(GetProfessionColor(profession), "%s", profession.c_str());
+        ImGui::EndTooltip();
+    }
+}
+
+// Render a circular character avatar (size px). Uses per-character portrait if available,
+// falls back to the profession icon. Draws a gold ring around it.
+static void RenderCharacterAvatar(const AlterEgo::Character& ch, float size) {
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    ImVec2 pos = ImGui::GetCursorScreenPos();
+    ImVec2 center(pos.x + size * 0.5f, pos.y + size * 0.5f);
+    float r = size * 0.5f;
+
+    // Background
+    dl->AddCircleFilled(center, r, IM_COL32(20, 20, 26, 255), 32);
+
+    Texture_t* tex = GetCharacterPortraitTexture(ch);
+    bool drewImage = false;
+    if (tex && tex->Resource) {
+        // Use AddImageRounded with rounding == radius for circular crop
+        dl->AddImageRounded(tex->Resource,
+            ImVec2(center.x - r, center.y - r),
+            ImVec2(center.x + r, center.y + r),
+            ImVec2(0, 0), ImVec2(1, 1),
+            IM_COL32_WHITE, r, ImDrawCornerFlags_All);
+        drewImage = true;
+    } else {
+        // Fallback: profession icon
+        const auto* prof = AlterEgo::GW2API::GetProfessionInfo(ch.profession);
+        if (prof && !prof->icon_url.empty()) {
+            uint32_t profIconId = 9000000 + std::hash<std::string>{}(ch.profession) % 100000;
+            Texture_t* ptex = AlterEgo::IconManager::GetIcon(profIconId);
+            if (ptex && ptex->Resource) {
+                // Tinted, inset slightly so the gold ring shows
+                float ir = r * 0.78f;
+                dl->AddImageRounded(ptex->Resource,
+                    ImVec2(center.x - ir, center.y - ir),
+                    ImVec2(center.x + ir, center.y + ir),
+                    ImVec2(0, 0), ImVec2(1, 1),
+                    IM_COL32(230, 220, 180, 255), ir, ImDrawCornerFlags_All);
+                drewImage = true;
+            } else {
+                AlterEgo::IconManager::RequestIcon(profIconId, prof->icon_url);
+            }
+        }
+    }
+
+    if (!drewImage) {
+        // Initial placeholder — first letter
+        std::string initial = ch.name.empty() ? "?" : ch.name.substr(0, 1);
+        ImVec2 ts = ImGui::CalcTextSize(initial.c_str());
+        dl->AddText(ImVec2(center.x - ts.x * 0.5f, center.y - ts.y * 0.5f),
+            IM_COL32(180, 160, 110, 220), initial.c_str());
+    }
+
+    // Gold ring
+    dl->AddCircle(center, r, IM_COL32(197, 161, 85, 220), 32, 1.5f);
+    dl->AddCircle(center, r - 1.5f, IM_COL32(0, 0, 0, 90), 32, 1.0f);
+
+    ImGui::Dummy(ImVec2(size, size));
+}
+
+// Build a one-line subtitle for an equipped item: "Stat • Sigil/Rune" (truncated where needed).
+// Returns empty string if neither piece of info is available.
+static std::string BuildEquipSubtitle(const AlterEgo::EquipmentItem* eq) {
+    if (!eq || eq->id == 0) return "";
+    std::string out;
+
+    // Stat name (e.g. "Berserker", from "Berserker's")
+    if (eq->stat_id != 0) {
+        const auto* si = AlterEgo::GW2API::GetItemStatInfo(eq->stat_id);
+        if (si && !si->name.empty()) {
+            out = si->name;
+            if (!out.empty() && out.back() == 's' && out.size() > 2 &&
+                out[out.size() - 2] == '\'') {
+                out.erase(out.size() - 2);
+            }
+        }
+    } else {
+        const auto* item_info = AlterEgo::GW2API::GetItemInfo(eq->id);
+        if (item_info && item_info->details.is_object() &&
+            item_info->details.contains("infix_upgrade") &&
+            item_info->details["infix_upgrade"].contains("id")) {
+            uint32_t fixedStatId = item_info->details["infix_upgrade"]["id"].get<uint32_t>();
+            const auto* si = AlterEgo::GW2API::GetItemStatInfo(fixedStatId);
+            if (si && !si->name.empty()) {
+                out = si->name;
+                if (!out.empty() && out.back() == 's' && out.size() > 2 &&
+                    out[out.size() - 2] == '\'') {
+                    out.erase(out.size() - 2);
+                }
+            }
+        }
+    }
+
+    // First upgrade (rune for armor, sigil for weapon) — short form
+    if (!eq->upgrades.empty() && eq->upgrades[0] != 0) {
+        const auto* uinfo = AlterEgo::GW2API::GetItemInfo(eq->upgrades[0]);
+        if (uinfo && !uinfo->name.empty()) {
+            std::string upgradeShort = uinfo->name;
+            // Strip "Superior Rune of " / "Superior Sigil of " / "the "
+            static const char* prefixes[] = {
+                "Superior Rune of the ", "Superior Rune of ",
+                "Superior Sigil of the ", "Superior Sigil of ",
+                "Major Rune of the ", "Major Rune of ",
+                "Major Sigil of the ", "Major Sigil of "
+            };
+            for (const char* p : prefixes) {
+                size_t plen = strlen(p);
+                if (upgradeShort.rfind(p, 0) == 0) {
+                    upgradeShort = upgradeShort.substr(plen);
+                    break;
+                }
+            }
+            if (!out.empty()) out += " \xe2\x80\xa2 "; // bullet
+            else out = "";
+            out += upgradeShort;
+        }
+    }
+    return out;
+}
+
 // Render a single equipment slot with icon and tooltip
 static void RenderEquipmentSlot(const AlterEgo::EquipmentItem* eq, const char* slotName) {
     ImGui::PushID(slotName);
@@ -2796,73 +3019,153 @@ static const AlterEgo::EquipmentItem* FindEquipment(
 }
 
 // Helper: render one equipment row with label LEFT of icon (for right column)
-static void RenderEquipRowReverse(const AlterEgo::Character& ch, const char* slot, int tab) {
-    const auto* eq = FindEquipment(ch, slot, tab);
+// Shared resolution of display name + rarity for an equipped slot
+static void ResolveEquipDisplay(const AlterEgo::EquipmentItem* eq, const char* slot,
+                                std::string& outName, std::string& outRarity) {
+    outName = "---";
+    outRarity = "Basic";
+    if (!eq || eq->id == 0) {
+        outName = SlotDisplayName(slot);
+        return;
+    }
+    const auto* info = AlterEgo::GW2API::GetItemInfo(eq->id);
+    const auto* skin = eq->skin ? AlterEgo::GW2API::GetSkinInfo(eq->skin) : nullptr;
+    if (info) outRarity = info->rarity;
+    if (std::string(slot) == "Relic" && info && info->rarity == "Legendary") {
+        outName = "Legendary Relic";
+    } else if (skin) {
+        outName = skin->name;
+    } else if (info) {
+        outName = info->name;
+    } else {
+        outName = SlotDisplayName(slot);
+    }
+}
 
-    // Determine display name and rarity
-    std::string name = "---";
-    std::string rarity = "Basic";
-    if (eq && eq->id != 0) {
-        const auto* info = AlterEgo::GW2API::GetItemInfo(eq->id);
-        const auto* skin = eq->skin ? AlterEgo::GW2API::GetSkinInfo(eq->skin) : nullptr;
-        if (info) rarity = info->rarity;
-        if (std::string(slot) == "Relic" && info && info->rarity == "Legendary") {
-            name = "Legendary Relic";
-        } else if (skin) {
-            name = skin->name;
-        } else if (info) {
-            name = info->name;
+// Truncate a string with "..." so its rendered width fits maxW.
+static std::string TruncateToWidth(const std::string& s, float maxW) {
+    if (ImGui::CalcTextSize(s.c_str()).x <= maxW) return s;
+    const char* ell = "\xe2\x80\xa6"; // …
+    float ellW = ImGui::CalcTextSize(ell).x;
+    int lo = 0, hi = (int)s.size();
+    while (lo < hi) {
+        int mid = (lo + hi + 1) / 2;
+        if (ImGui::CalcTextSize(s.substr(0, mid).c_str()).x + ellW <= maxW) lo = mid;
+        else hi = mid - 1;
+    }
+    return s.substr(0, lo) + ell;
+}
+
+// Card-style equipment row. dir = +1 (icon-left), -1 (icon-right / trinkets column).
+static void RenderEquipCard(const AlterEgo::Character& ch, const char* slot, int tab, int dir) {
+    const auto* eq = FindEquipment(ch, slot, tab);
+    std::string name, rarity;
+    ResolveEquipDisplay(eq, slot, name, rarity);
+    bool hasItem = (eq && eq->id != 0);
+    std::string subtitle = hasItem ? BuildEquipSubtitle(eq) : "";
+
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    float availW = ImGui::GetContentRegionAvail().x;
+    float cardH = ICON_SIZE + 6.0f;
+    ImVec2 cardMin = ImGui::GetCursorScreenPos();
+    ImVec2 cardMax(cardMin.x + availW, cardMin.y + cardH);
+
+    // Card background — solid at the outer edge, fades to transparent toward the centre
+    // so the character portrait shows through the middle of the panel.
+    if (hasItem) {
+        ImU32 outerCol = IM_COL32(28, 26, 32, 215);
+        ImU32 innerCol = IM_COL32(28, 26, 32, 25);
+        if (dir > 0) {
+            dl->AddRectFilledMultiColor(cardMin, cardMax, outerCol, innerCol, innerCol, outerCol);
         } else {
-            name = SlotDisplayName(slot);
+            dl->AddRectFilledMultiColor(cardMin, cardMax, innerCol, outerCol, outerCol, innerCol);
+        }
+    } else {
+        // Empty slots: very faint, same fade direction
+        ImU32 outerCol = IM_COL32(20, 19, 24, 80);
+        ImU32 innerCol = IM_COL32(20, 19, 24, 0);
+        if (dir > 0) {
+            dl->AddRectFilledMultiColor(cardMin, cardMax, outerCol, innerCol, innerCol, outerCol);
+        } else {
+            dl->AddRectFilledMultiColor(cardMin, cardMax, innerCol, outerCol, outerCol, innerCol);
         }
     }
 
-    // Right-align: push label to the right so icon ends near the right edge
-    float colW = ImGui::GetContentRegionAvail().x;
-    float textW = ImGui::CalcTextSize(name.c_str()).x;
-    float borderPad = 3.0f; // room for rarity border overhang
-    float totalW = textW + 4.0f + ICON_SIZE + borderPad; // text + gap + icon + border
-    float offset = colW - totalW;
-    if (offset > 0) ImGui::SetCursorPosX(ImGui::GetCursorPosX() + offset);
-
-    ImGui::AlignTextToFramePadding();
-    if (eq && eq->id != 0) {
-        ImGui::TextColored(GetRarityColor(rarity), "%s", name.c_str());
-    } else {
-        ImGui::TextColored(ImVec4(0.4f, 0.4f, 0.4f, 1.0f), "%s", name.c_str());
+    // Rarity accent strip on the outer edge only
+    if (hasItem) {
+        ImVec4 rcol = GetRarityColor(rarity);
+        ImU32 raccent = ImGui::ColorConvertFloat4ToU32(ImVec4(rcol.x, rcol.y, rcol.z, 0.70f));
+        if (dir > 0) {
+            dl->AddRectFilled(cardMin, ImVec2(cardMin.x + 2.0f, cardMax.y), raccent);
+        } else {
+            dl->AddRectFilled(ImVec2(cardMax.x - 2.0f, cardMin.y), cardMax, raccent);
+        }
     }
-    ImGui::SameLine();
-    RenderEquipmentSlot(eq, SlotDisplayName(slot));
+
+    float pad = 4.0f;
+    float textGap = 6.0f;
+    float textW = availW - ICON_SIZE - pad * 2 - textGap;
+    float lineH = ImGui::GetTextLineHeight();
+
+    if (dir > 0) {
+        // Icon on left
+        ImGui::SetCursorScreenPos(ImVec2(cardMin.x + pad, cardMin.y + 3.0f));
+        RenderEquipmentSlot(eq, SlotDisplayName(slot));
+
+        if (hasItem) {
+            float textX = cardMin.x + pad + ICON_SIZE + textGap;
+            std::string nTrunc = TruncateToWidth(name, textW);
+            std::string sTrunc = subtitle.empty() ? "" : TruncateToWidth(subtitle, textW);
+            // If subtitle would lose more than half its content, drop it entirely
+            if (!sTrunc.empty() && sTrunc != subtitle) {
+                if ((float)sTrunc.size() < (float)subtitle.size() * 0.5f) sTrunc.clear();
+            }
+            float blockH = sTrunc.empty() ? lineH : lineH * 2 + 1.0f;
+            float textTopY = cardMin.y + (cardH - blockH) * 0.5f;
+            dl->AddText(ImVec2(textX, textTopY),
+                ImGui::ColorConvertFloat4ToU32(GetRarityColor(rarity)), nTrunc.c_str());
+            if (!sTrunc.empty()) {
+                dl->AddText(ImVec2(textX, textTopY + lineH + 1.0f),
+                    IM_COL32(150, 142, 120, 230), sTrunc.c_str());
+            }
+        }
+    } else {
+        // Text on left, icon on right (trinkets column)
+        float iconX = cardMax.x - pad - ICON_SIZE;
+
+        if (hasItem) {
+            float textRightX = iconX - textGap;
+            std::string nTrunc = TruncateToWidth(name, textW);
+            std::string sTrunc = subtitle.empty() ? "" : TruncateToWidth(subtitle, textW);
+            if (!sTrunc.empty() && sTrunc != subtitle) {
+                if ((float)sTrunc.size() < (float)subtitle.size() * 0.5f) sTrunc.clear();
+            }
+            float nW = ImGui::CalcTextSize(nTrunc.c_str()).x;
+            float sW = sTrunc.empty() ? 0.0f : ImGui::CalcTextSize(sTrunc.c_str()).x;
+            float blockH = sTrunc.empty() ? lineH : lineH * 2 + 1.0f;
+            float textTopY = cardMin.y + (cardH - blockH) * 0.5f;
+            dl->AddText(ImVec2(textRightX - nW, textTopY),
+                ImGui::ColorConvertFloat4ToU32(GetRarityColor(rarity)), nTrunc.c_str());
+            if (!sTrunc.empty()) {
+                dl->AddText(ImVec2(textRightX - sW, textTopY + lineH + 1.0f),
+                    IM_COL32(150, 142, 120, 230), sTrunc.c_str());
+            }
+        }
+        ImGui::SetCursorScreenPos(ImVec2(iconX, cardMin.y + 3.0f));
+        RenderEquipmentSlot(eq, SlotDisplayName(slot));
+    }
+
+    // Advance cursor below the card
+    ImGui::SetCursorScreenPos(ImVec2(cardMin.x, cardMax.y + 3.0f));
+}
+
+static void RenderEquipRowReverse(const AlterEgo::Character& ch, const char* slot, int tab) {
+    RenderEquipCard(ch, slot, tab, -1);
 }
 
 // Helper: render one equipment row (icon + name) for the paper-doll grid
 static void RenderEquipRow(const AlterEgo::Character& ch, const char* slot, int tab) {
-    const auto* eq = FindEquipment(ch, slot, tab);
-    RenderEquipmentSlot(eq, SlotDisplayName(slot));
-    ImGui::SameLine();
-    if (eq && eq->id != 0) {
-        const auto* info = AlterEgo::GW2API::GetItemInfo(eq->id);
-        const auto* skin = eq->skin ? AlterEgo::GW2API::GetSkinInfo(eq->skin) : nullptr;
-        std::string rarity = info ? info->rarity : "Basic";
-
-        // Determine display name
-        std::string name;
-        if (std::string(slot) == "Relic" && info && info->rarity == "Legendary") {
-            name = "Legendary Relic";
-        } else if (skin) {
-            name = skin->name;
-        } else if (info) {
-            name = info->name;
-        } else {
-            name = SlotDisplayName(slot);
-        }
-
-        ImGui::AlignTextToFramePadding();
-        ImGui::TextColored(GetRarityColor(rarity), "%s", name.c_str());
-    } else {
-        ImGui::AlignTextToFramePadding();
-        ImGui::TextColored(ImVec4(0.4f, 0.4f, 0.4f, 1.0f), "---");
-    }
+    RenderEquipCard(ch, slot, tab, +1);
 }
 
 // Draw a race silhouette as a semi-transparent background overlay
@@ -3027,31 +3330,27 @@ static void RenderEquipmentPanel(const AlterEgo::Character& ch) {
     if (tab == 0) tab = 1;
 
     if (maxTab > 1) {
-        ImGui::Text("Equipment Tab:");
+        std::vector<std::string> labels;
+        std::vector<bool> activeMarkers;
+        labels.reserve(maxTab);
+        activeMarkers.reserve(maxTab);
         for (int t = 1; t <= maxTab; t++) {
-            ImGui::SameLine();
-            // Use tab name if available, otherwise just the number
             std::string label;
             auto nameIt = ch.equipment_tab_names.find(t);
             if (nameIt != ch.equipment_tab_names.end() && !nameIt->second.empty()) {
                 label = nameIt->second;
             } else {
-                label = std::to_string(t);
+                label = "Tab " + std::to_string(t);
             }
-            bool active = (tab == t);
-            bool isActiveTab = (ch.active_equipment_tab == t);
-            if (isActiveTab) label += " *";
-            if (active) ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.35f, 0.30f, 0.14f, 1.0f));
-            ImGui::PushID(t);
-            if (ImGui::SmallButton(label.c_str())) {
-                g_SelectedEquipTab = t;
-                g_DetailsFetched = false;
-            }
-            ImGui::PopID();
-            if (active) ImGui::PopStyleColor();
+            labels.push_back(label);
+            activeMarkers.push_back(ch.active_equipment_tab == t);
+        }
+        int selIdx = tab - 1;
+        if (RenderChipStrip(labels, activeMarkers, selIdx, g_EquipTabScroll, "##equip_chips")) {
+            g_SelectedEquipTab = selIdx + 1;
+            g_DetailsFetched = false;
         }
     }
-
     ImGui::Spacing();
 
     // Record start position for silhouette overlay
@@ -3085,20 +3384,60 @@ static void RenderEquipmentPanel(const AlterEgo::Character& ch) {
 
         RenderSectionHeader("Weapons", ImVec4(0.70f, 0.58f, 0.20f, 1.0f));
         {
-            float halfW = (leftW - pad * 2 - gap - 8.0f) * 0.5f;
-            ImGui::BeginGroup();
-            ImGui::PushItemWidth(halfW);
-            RenderEquipRow(ch, "WeaponA1", tab);
-            RenderEquipRow(ch, "WeaponA2", tab);
-            ImGui::PopItemWidth();
-            ImGui::EndGroup();
-            ImGui::SameLine(0, 8.0f);
-            ImGui::BeginGroup();
-            ImGui::PushItemWidth(halfW);
-            RenderEquipRow(ch, "WeaponB1", tab);
-            RenderEquipRow(ch, "WeaponB2", tab);
-            ImGui::PopItemWidth();
-            ImGui::EndGroup();
+            auto DrawSetLabel = [](const char* roman, float rowH) {
+                ImDrawList* dl = ImGui::GetWindowDrawList();
+                ImVec2 lp = ImGui::GetCursorScreenPos();
+                float w = 28.0f;
+                float h = rowH;
+                ImU32 bgTop = IM_COL32(26, 22, 18, 255);
+                ImU32 bgBot = IM_COL32(20, 17, 13, 255);
+                dl->AddRectFilledMultiColor(lp, ImVec2(lp.x + w, lp.y + h), bgTop, bgTop, bgBot, bgBot);
+                dl->AddRect(lp, ImVec2(lp.x + w, lp.y + h),
+                    IM_COL32(70, 60, 40, 140), 3.0f, 0, 1.0f);
+                ImVec2 ts = ImGui::CalcTextSize(roman);
+                dl->AddText(
+                    ImVec2(lp.x + w * 0.5f - ts.x * 0.5f, lp.y + h * 0.5f - ts.y * 0.5f),
+                    IM_COL32(197, 161, 85, 255), roman);
+                ImGui::Dummy(ImVec2(w, h));
+            };
+
+            float rowH = ICON_SIZE + 10.0f;
+            float labelW = 28.0f;
+            float innerGap = 6.0f;
+            float weaponsW = leftW - pad * 2 - labelW - innerGap;
+            float primaryW = (weaponsW - 8.0f) * 0.62f;
+            float secondaryW = (weaponsW - 8.0f) - primaryW;
+
+            auto RenderWeaponSet = [&](const char* roman, const char* a, const char* b) {
+                ImGui::BeginGroup();
+                DrawSetLabel(roman, rowH);
+                ImGui::EndGroup();
+                ImGui::SameLine(0, innerGap);
+
+                ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0, 0));
+                ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(4, 0));
+
+                ImGui::PushID(a);
+                ImGui::BeginChild("##wA", ImVec2(primaryW, rowH), false,
+                    ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
+                RenderEquipRow(ch, a, tab);
+                ImGui::EndChild();
+                ImGui::PopID();
+
+                ImGui::SameLine(0, 8.0f);
+
+                ImGui::PushID(b);
+                ImGui::BeginChild("##wB", ImVec2(secondaryW, rowH), false,
+                    ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
+                RenderEquipRow(ch, b, tab);
+                ImGui::EndChild();
+                ImGui::PopID();
+
+                ImGui::PopStyleVar(2);
+            };
+
+            RenderWeaponSet("I",  "WeaponA1", "WeaponA2");
+            RenderWeaponSet("II", "WeaponB1", "WeaponB2");
         }
 
         ImGui::Unindent(pad);
@@ -3258,18 +3597,25 @@ static void RenderEquipmentPanel(const AlterEgo::Character& ch) {
     RenderSectionHeader("Aquatic", ImVec4(0.70f, 0.58f, 0.20f, 1.0f));
     RenderEquipRow(ch, "HelmAquatic", tab);
     {
+        float rowH = ICON_SIZE + 6.0f + 4.0f;
         float halfW = (ImGui::GetContentRegionAvail().x - 8.0f) * 0.5f;
-        ImGui::BeginGroup();
-        ImGui::PushItemWidth(halfW);
+
+        ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0, 0));
+        ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(4, 0));
+
+        ImGui::BeginChild("##aqA", ImVec2(halfW, rowH), false,
+            ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
         RenderEquipRow(ch, "WeaponAquaticA", tab);
-        ImGui::PopItemWidth();
-        ImGui::EndGroup();
+        ImGui::EndChild();
+
         ImGui::SameLine(0, 8.0f);
-        ImGui::BeginGroup();
-        ImGui::PushItemWidth(halfW);
+
+        ImGui::BeginChild("##aqB", ImVec2(halfW, rowH), false,
+            ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
         RenderEquipRow(ch, "WeaponAquaticB", tab);
-        ImGui::PopItemWidth();
-        ImGui::EndGroup();
+        ImGui::EndChild();
+
+        ImGui::PopStyleVar(2);
     }
     ImGui::Unindent(6.0f);
 }
@@ -3308,9 +3654,9 @@ static ImVec2 RenderTraitIcon(uint32_t trait_id, bool selected, bool isMinor, fl
     if (tex && tex->Resource) {
         if (selected) {
             ImGui::GetWindowDrawList()->AddRect(
-                ImVec2(pos.x - 1, pos.y - 1),
-                ImVec2(pos.x + size + 1, pos.y + size + 1),
-                IM_COL32(100, 220, 255, 255), 0.0f, 0, 2.0f);
+                pos,
+                ImVec2(pos.x + size, pos.y + size),
+                IM_COL32(100, 220, 255, 255), 0.0f, 0, 1.5f);
         }
 
         if (!selected && !isMinor) {
@@ -3514,21 +3860,17 @@ static void RenderBuildPanel(const AlterEgo::Character& ch) {
         return;
     }
 
-    // Build tab selector
-    ImGui::Text("Build Tab:");
-    for (int i = 0; i < (int)ch.build_tabs.size(); i++) {
-        ImGui::SameLine();
-        const auto& bt = ch.build_tabs[i];
-        std::string label = bt.name.empty() ?
-            ("Tab " + std::to_string(bt.tab)) : bt.name;
-        if (bt.is_active) label += " *";
-
-        bool active = (g_SelectedBuildTab == i);
-        if (active) ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.35f, 0.30f, 0.14f, 1.0f));
-        if (ImGui::SmallButton(label.c_str())) {
-            g_SelectedBuildTab = i;
+    // Build tab selector — chip strip
+    {
+        std::vector<std::string> labels;
+        std::vector<bool> activeMarkers;
+        labels.reserve(ch.build_tabs.size());
+        activeMarkers.reserve(ch.build_tabs.size());
+        for (const auto& bt : ch.build_tabs) {
+            labels.push_back(bt.name.empty() ? ("Tab " + std::to_string(bt.tab)) : bt.name);
+            activeMarkers.push_back(bt.is_active);
         }
-        if (active) ImGui::PopStyleColor();
+        RenderChipStrip(labels, activeMarkers, g_SelectedBuildTab, g_BuildTabScroll, "##build_chips");
     }
 
     int buildIdx = g_SelectedBuildTab;
@@ -3543,6 +3885,10 @@ static void RenderBuildPanel(const AlterEgo::Character& ch) {
 
     const auto& bt = ch.build_tabs[buildIdx];
     ImGui::Separator();
+
+    // Small left/right padding so spec hex portraits & trait selection borders
+    // don't sit flush against the scroll-child edges (icon borders extend ~1px).
+    ImGui::Indent(4.0f);
 
     // Record start position for profession/elite spec overlay
     ImVec2 buildPanelStart = ImGui::GetCursorScreenPos();
@@ -3905,66 +4251,7 @@ static void RenderBuildPanel(const AlterEgo::Character& ch) {
         g_SaveLibDialogOpen = true;
     }
 
-    // Draw profession/elite spec icon overlay in the top-right of the build panel
-    {
-        ImVec2 buildPanelEnd = ImGui::GetCursorScreenPos();
-        float panelW = ImGui::GetContentRegionAvail().x + ImGui::GetCursorScreenPos().x - buildPanelStart.x;
-        float overlaySize = 64.0f;
-        float margin = 8.0f;
-
-        // Determine which icon to show: elite spec if present, else base profession
-        uint32_t overlayIconId = 0;
-        std::string overlayIconUrl;
-        std::string overlayTooltip;
-
-        // Check for elite spec in this build's specializations
-        for (int si = 0; si < 3; si++) {
-            uint32_t sid = bt.specializations[si].spec_id;
-            if (sid == 0) continue;
-            const auto* sInfo = AlterEgo::GW2API::GetSpecInfo(sid);
-            if (sInfo && sInfo->elite) {
-                // Use offset ID to avoid collision with hex portrait icon
-                overlayIconId = 7000000 + sid;
-                overlayIconUrl = sInfo->profession_icon_big_url;
-                overlayTooltip = sInfo->name;
-                break;
-            }
-        }
-
-        // Fall back to profession emblem from a core spec
-        if (overlayIconId == 0) {
-            for (int si = 0; si < 3; si++) {
-                uint32_t sid = bt.specializations[si].spec_id;
-                if (sid == 0) continue;
-                const auto* sInfo = AlterEgo::GW2API::GetSpecInfo(sid);
-                if (sInfo && !sInfo->profession_icon_big_url.empty()) {
-                    overlayIconId = 7000000 + sid;
-                    overlayIconUrl = sInfo->profession_icon_big_url;
-                    overlayTooltip = ch.profession;
-                    break;
-                }
-            }
-        }
-
-        if (overlayIconId != 0) {
-            Texture_t* tex = AlterEgo::IconManager::GetIcon(overlayIconId);
-            if (tex && tex->Resource) {
-                ImVec2 iconPos(
-                    buildPanelStart.x + panelW - overlaySize - margin,
-                    buildPanelStart.y + margin
-                );
-                ImGui::GetWindowDrawList()->AddImage(
-                    tex->Resource,
-                    iconPos,
-                    ImVec2(iconPos.x + overlaySize, iconPos.y + overlaySize),
-                    ImVec2(0, 0), ImVec2(1, 1),
-                    IM_COL32(255, 255, 255, 50)
-                );
-            } else if (!overlayIconUrl.empty()) {
-                AlterEgo::IconManager::RequestIcon(overlayIconId, overlayIconUrl);
-            }
-        }
-    }
+    ImGui::Unindent(4.0f);
 }
 
 // --- Build Library helpers ---
@@ -5281,6 +5568,56 @@ static const RuneEntry RUNE_LIST[] = {
     {"Superior Rune of the Dolyak",       24699, "+Toughness, +Vitality, stability"},
     {"Superior Rune of the Ranger",       24815, "+Precision, +Ferocity"},
     {"Superior Rune of Leadership",       70600, "+All stats, +Boon Duration"},
+    // --- Remaining superior runes ---
+    {"Superior Rune of Evasion",          67344, "+Vitality, endurance refill on dodge"},
+    {"Superior Rune of Exuberance",       44951, "+Vitality, +Toughness, +Might dur"},
+    {"Superior Rune of Infiltration",     24703, "+Power, +Precision, stealth on skill"},
+    {"Superior Rune of Lyssa",            24776, "+Condi Dmg, all boons + cleanse on elite"},
+    {"Superior Rune of Mercy",            24708, "+Healing, +Vitality, faster revive"},
+    {"Superior Rune of Nature's Bounty",  81091, "+Condi Dmg, +Expertise, +Regen dur"},
+    {"Superior Rune of Orr",              24860, "+Condi Dmg, +Condi Duration"},
+    {"Superior Rune of Perplexity",       44957, "+Condi Dmg, confusion on interrupt"},
+    {"Superior Rune of Radiance",         67342, "+Power, +Ferocity, blind on swap"},
+    {"Superior Rune of Rata Sum",         24726, "+Precision, +Ferocity, golem at low HP"},
+    {"Superior Rune of Speed",            24720, "+Power, +Swiftness dur, +25% swiftness"},
+    {"Superior Rune of Svanir",           24794, "+Toughness, +Chill dur, frost armor"},
+    {"Superior Rune of the Adventurer",   24830, "+Power, +Precision, endurance on heal"},
+    {"Superior Rune of the Air",          24750, "+Precision, +Ferocity, lightning on hit"},
+    {"Superior Rune of the Baelfire",     24854, "+Condi Dmg, +Burn dur, condi remove"},
+    {"Superior Rune of the Brawler",      24833, "+Power, +Ferocity, might on heal"},
+    {"Superior Rune of the Cavalier",     83367, "+Toughness, +Ferocity, +25% movement"},
+    {"Superior Rune of the Centaur",      24788, "+Power, +Swiftness dur, swiftness on heal"},
+    {"Superior Rune of the Daredevil",    72852, "+Power, +Ferocity, daze on dodge"},
+    {"Superior Rune of the Deadeye",      82791, "+Precision, +Ferocity, fury on stealth"},
+    {"Superior Rune of the Druid",        70450, "+Healing, +Boon dur, heal on dodge"},
+    {"Superior Rune of the Earth",        24744, "+Toughness, +Bleed dur, bleed on hit"},
+    {"Superior Rune of the Elementalist", 24800, "+Power, +Ferocity, aura on swap"},
+    {"Superior Rune of the Fire",         24747, "+Power, +Burn dur, fire aura on hit"},
+    {"Superior Rune of the Flame Legion", 24797, "+Power, +Burn dur, burn on hit"},
+    {"Superior Rune of the Flock",        24696, "+Power, +Vitality, heal on hit"},
+    {"Superior Rune of the Forgeman",     24851, "+Toughness, +Burn dur, fire shield"},
+    {"Superior Rune of the Golemancer",   24785, "+Power, +Ferocity, mini golem at low HP"},
+    {"Superior Rune of the Guardian",     24824, "+Power, +Boon dur, aegis on hit"},
+    {"Superior Rune of the Holosmith",    82633, "+Power, +Ferocity, lightning on crit"},
+    {"Superior Rune of the Ice",          24753, "+Toughness, +Chill dur, chill on hit"},
+    {"Superior Rune of the Krait",        24762, "+Condi Dmg, +Bleed dur, torment on bleed"},
+    {"Superior Rune of the Lich",         24688, "+Condi Dmg, +Ferocity, lifesteal on crit"},
+    {"Superior Rune of the Mad King",     36044, "+Power, +Ferocity, plague at low HP"},
+    {"Superior Rune of the Mesmer",       24803, "+Condi Dmg, +Confusion dur"},
+    {"Superior Rune of the Mirage",       84127, "+Condi Dmg, +Expertise, mirror on dodge"},
+    {"Superior Rune of the Necromancer",  24806, "+Condi Dmg, +Vitality, life siphon"},
+    {"Superior Rune of the Privateer",    24782, "+Power, +Swiftness dur, might on kill"},
+    {"Superior Rune of the Reaper",       70829, "+Power, +Ferocity, chill on crit"},
+    {"Superior Rune of the Renegade",     83502, "+Condi Dmg, +Expertise, summon Razah"},
+    {"Superior Rune of the Revenant",     69370, "+All stats, +Boon Duration"},
+    {"Superior Rune of the Scourge",      83663, "+Condi Dmg, +Expertise, torment on hit"},
+    {"Superior Rune of the Scrapper",     71276, "+Toughness, +Vitality, barrier on hit"},
+    {"Superior Rune of the Soulbeast",    83964, "+Precision, +Ferocity, fury on swap"},
+    {"Superior Rune of the Spellbreaker", 84749, "+Power, +Precision, boon strip on hit"},
+    {"Superior Rune of the Stars",        85713, "+All stats, -Incoming Condi"},
+    {"Superior Rune of the Trooper",      24827, "+Toughness, +Boon dur, shouts cleanse"},
+    {"Superior Rune of the Wurm",         24791, "+Power, +Toughness, wurm at low HP"},
+    {"Superior Rune of the Zephyrite",    88118, "+All stats, swiftness on dodge"},
 };
 static const int RUNE_COUNT = sizeof(RUNE_LIST) / sizeof(RUNE_LIST[0]);
 
@@ -5328,6 +5665,48 @@ static const SigilEntry SIGIL_LIST[] = {
     {"Superior Sigil of Chilling",        24630, "Chill on hit"},
     {"Superior Sigil of Leeching",        24599, "Steal HP on kill"},
     {"Superior Sigil of Celerity",        24865, "Quickness on disable"},
+    // --- Remaining superior sigils ---
+    {"Superior Sigil of Agility",         72092, "Swiftness + quickness on swap"},
+    {"Superior Sigil of Benevolence",     24584, "Outgoing heal stacks on kill"},
+    {"Superior Sigil of Blight",          67913, "Poison AoE on crit"},
+    {"Superior Sigil of Bounty",          81045, "Concentration stacks on kill"},
+    {"Superior Sigil of Centaur Slaying", 24645, "+7% vs centaurs"},
+    {"Superior Sigil of Cruelty",         67341, "Ferocity stacks on kill"},
+    {"Superior Sigil of Debility",        24636, "+20% weakness duration"},
+    {"Superior Sigil of Destroyer Slaying",24654,"+7% vs destroyers"},
+    {"Superior Sigil of Dreams",          24681, "+7% vs Nightmare Court"},
+    {"Superior Sigil of Elemental Slaying",24661,"+7% vs elementals"},
+    {"Superior Sigil of Frailty",         24567, "Vuln on flank/behind/defiant"},
+    {"Superior Sigil of Frenzy",          82876, "-2s skill cooldown on kill"},
+    {"Superior Sigil of Generosity",      38294, "Transfer condi on crit"},
+    {"Superior Sigil of Ghost Slaying",   24809, "+7% vs ghosts"},
+    {"Superior Sigil of Grawl Slaying",   24648, "+7% vs grawl"},
+    {"Superior Sigil of Hobbling",        24627, "+20% cripple duration"},
+    {"Superior Sigil of Hologram Slaying",91339, "+17% vs holograms"},
+    {"Superior Sigil of Icebrood Slaying",24651, "+7% vs icebrood"},
+    {"Superior Sigil of Incapacitation",  67343, "Cripple on flank/defiant"},
+    {"Superior Sigil of Justice",         24678, "+7% vs outlaws"},
+    {"Superior Sigil of Karka Slaying",   37912, "+7% vs karka"},
+    {"Superior Sigil of Life",            24582, "Healing stacks on kill"},
+    {"Superior Sigil of Luck",            24591, "75% boon on kill"},
+    {"Superior Sigil of Mad Scientists",  24672, "+7% vs Inquest"},
+    {"Superior Sigil of Mischief",        68436, "Blinding snowballs on swap"},
+    {"Superior Sigil of Momentum",        49457, "Toughness stacks on kill"},
+    {"Superior Sigil of Ogre Slaying",    24655, "+7% vs ogres"},
+    {"Superior Sigil of Perception",      24580, "Precision stacks on kill"},
+    {"Superior Sigil of Peril",           24621, "+20% vuln duration"},
+    {"Superior Sigil of Purity",          24571, "Cleanse on flank/defiant"},
+    {"Superior Sigil of Rage",            24561, "Quickness on crit"},
+    {"Superior Sigil of Rending",         73532, "Vuln on interrupt"},
+    {"Superior Sigil of Restoration",     24594, "Heal on interrupt"},
+    {"Superior Sigil of Ruthlessness",    71130, "Might on interrupt"},
+    {"Superior Sigil of Smothering",      24675, "+7% vs Flame Legion"},
+    {"Superior Sigil of Sorrow",          24684, "+7% vs dredge"},
+    {"Superior Sigil of Speed",           24589, "Swiftness on kill"},
+    {"Superior Sigil of Stamina",         24592, "Endurance refill on kill"},
+    {"Superior Sigil of Water",           24551, "AoE heal on crit"},
+    {"Superior Sigil of Wrath",           24667, "+7% vs Sons of Svanir"},
+    {"Superior Sigil of the Stars",       86170, "All stats stacks on kill"},
 };
 static const int SIGIL_COUNT = sizeof(SIGIL_LIST) / sizeof(SIGIL_LIST[0]);
 
@@ -6427,12 +6806,13 @@ static void RenderBuildGearSlot(AlterEgo::SavedBuild& build, const char* slot) {
     }
 
     if (tex && tex->Resource) {
-        // Render real icon with legendary border
+        // Render real icon with legendary border (drawn on the icon edge, not outside it,
+        // so a flush-left layout doesn't clip the border pixel)
         ImVec4 borderColor = hasData ? ImVec4(1.0f, 0.8f, 0.2f, 1.0f) : ImVec4(0.5f, 0.3f, 0.6f, 0.8f);
         ImGui::GetWindowDrawList()->AddRect(
-            ImVec2(pos.x - 1, pos.y - 1),
-            ImVec2(pos.x + iconSz + 1, pos.y + iconSz + 1),
-            ImGui::ColorConvertFloat4ToU32(borderColor), 0.0f, 0, 2.0f);
+            pos,
+            ImVec2(pos.x + iconSz, pos.y + iconSz),
+            ImGui::ColorConvertFloat4ToU32(borderColor), 0.0f, 0, 1.5f);
         ImGui::Image(tex->Resource, ImVec2(iconSz, iconSz));
     } else {
         // Fallback: colored placeholder with slot initial
@@ -6573,8 +6953,7 @@ static void RenderBuildGearSlot(AlterEgo::SavedBuild& build, const char* slot) {
 
 // Render the full gear section for a saved build
 static void RenderBuildGearPanel(AlterEgo::SavedBuild& build) {
-    ImGui::TextColored(ImVec4(0.7f, 0.85f, 1.0f, 1.0f), "Gear");
-    ImGui::Separator();
+    RenderSectionHeader("Gear", ImVec4(0.70f, 0.58f, 0.20f, 1.0f));
 
     if (ImGui::BeginTable("##buildGear", 2, ImGuiTableFlags_None)) {
         ImGui::TableSetupColumn("##gearLeft", ImGuiTableColumnFlags_WidthStretch);
@@ -6583,7 +6962,8 @@ static void RenderBuildGearPanel(AlterEgo::SavedBuild& build) {
 
         // Left column: Armor
         ImGui::TableNextColumn();
-        ImGui::TextColored(ImVec4(0.7f, 0.7f, 0.7f, 1.0f), "Armor");
+        ImGui::Indent(2.0f);
+        RenderSectionHeader("Armor", ImVec4(0.70f, 0.58f, 0.20f, 1.0f));
         RenderBuildGearSlot(build, "Helm");
         RenderBuildGearSlot(build, "Shoulders");
         RenderBuildGearSlot(build, "Coat");
@@ -6592,15 +6972,17 @@ static void RenderBuildGearPanel(AlterEgo::SavedBuild& build) {
         RenderBuildGearSlot(build, "Boots");
 
         ImGui::Spacing();
-        ImGui::TextColored(ImVec4(0.7f, 0.7f, 0.7f, 1.0f), "Weapons");
+        RenderSectionHeader("Weapons", ImVec4(0.70f, 0.58f, 0.20f, 1.0f));
         RenderBuildGearSlot(build, "WeaponA1");
         RenderBuildGearSlot(build, "WeaponA2");
         RenderBuildGearSlot(build, "WeaponB1");
         RenderBuildGearSlot(build, "WeaponB2");
+        ImGui::Unindent(2.0f);
 
         // Right column: Trinkets + Relic + Rune
         ImGui::TableNextColumn();
-        ImGui::TextColored(ImVec4(0.7f, 0.7f, 0.7f, 1.0f), "Trinkets");
+        ImGui::Indent(2.0f);
+        RenderSectionHeader("Trinkets", ImVec4(0.70f, 0.58f, 0.20f, 1.0f));
         RenderBuildGearSlot(build, "Backpack");
         RenderBuildGearSlot(build, "Accessory1");
         RenderBuildGearSlot(build, "Accessory2");
@@ -6608,6 +6990,7 @@ static void RenderBuildGearPanel(AlterEgo::SavedBuild& build) {
         RenderBuildGearSlot(build, "Ring1");
         RenderBuildGearSlot(build, "Ring2");
         RenderBuildGearSlot(build, "Relic");
+        ImGui::Unindent(2.0f);
 
         ImGui::EndTable();
     }
@@ -6640,13 +7023,42 @@ static void RenderSavedBuildPreview(const AlterEgo::SavedBuild& build) {
     ResolveBuildTraitPlaceholders(const_cast<AlterEgo::SavedBuild&>(build));
 
     ImVec4 profColor = GetProfessionColor(build.profession);
-    ImGui::TextColored(profColor, "%s", build.name.c_str());
-    ImGui::SameLine();
-    ImGui::TextColored(ImVec4(0.5f, 0.5f, 0.5f, 1.0f), "%s", build.profession.c_str());
-    ImGui::SameLine();
-    ImGui::TextColored(ImVec4(0.4f, 0.65f, 0.4f, 1.0f), "[%s]", GameModeLabel(build.game_mode));
+    {
+        // Build header card: gold accent bar, name in profession color, sub-line with prof + mode
+        ImDrawList* dl = ImGui::GetWindowDrawList();
+        ImVec2 pos = ImGui::GetCursorScreenPos();
+        float w = ImGui::GetContentRegionAvail().x;
+        float lineH = ImGui::GetTextLineHeightWithSpacing();
+        float h = lineH * 2.0f + 6.0f;
+        // Gradient bg using profession color
+        ImU32 left = ImGui::ColorConvertFloat4ToU32(
+            ImVec4(profColor.x * 0.24f, profColor.y * 0.24f, profColor.z * 0.24f, 0.55f));
+        ImU32 right = IM_COL32(0, 0, 0, 0);
+        dl->AddRectFilledMultiColor(
+            ImVec2(pos.x + 4, pos.y), ImVec2(pos.x + w, pos.y + h),
+            left, right, right, left);
+        // Gold left bar
+        ImU32 barTop = IM_COL32(227, 196, 122, 255);
+        ImU32 barBot = IM_COL32(140, 113, 55, 255);
+        dl->AddRectFilledMultiColor(
+            ImVec2(pos.x, pos.y + 2),
+            ImVec2(pos.x + 3, pos.y + h - 2),
+            barTop, barTop, barBot, barBot);
+        // Underline
+        dl->AddLine(
+            ImVec2(pos.x + 4, pos.y + h),
+            ImVec2(pos.x + w * 0.55f, pos.y + h),
+            ImGui::ColorConvertFloat4ToU32(ImVec4(profColor.x, profColor.y, profColor.z, 0.35f)), 1.0f);
 
-    ImGui::Separator();
+        ImGui::SetCursorScreenPos(ImVec2(pos.x + 10, pos.y + 2));
+        ImGui::TextColored(profColor, "%s", build.name.c_str());
+
+        ImGui::SetCursorScreenPos(ImVec2(pos.x + 10, pos.y + 2 + lineH));
+        std::string sub = build.profession + "  \xc2\xb7  " + GameModeLabel(build.game_mode);
+        ImGui::TextColored(ImVec4(0.55f, 0.50f, 0.40f, 1.0f), "%s", sub.c_str());
+
+        ImGui::SetCursorScreenPos(ImVec2(pos.x, pos.y + h + 4));
+    }
 
     // Specializations with trait grid (same logic as RenderBuildPanel)
     const float iconSz = TRAIT_ICON_SIZE;
@@ -7519,7 +7931,7 @@ static void BuildGW2Theme() {
     s.WindowRounding    = 6.0f;
     s.ChildRounding     = 4.0f;
     s.FrameRounding     = 4.0f;
-    s.PopupRounding     = 4.0f;
+    s.PopupRounding     = 5.0f;
     s.ScrollbarRounding = 6.0f;
     s.GrabRounding      = 3.0f;
     s.TabRounding       = 4.0f;
@@ -7533,7 +7945,7 @@ static void BuildGW2Theme() {
     s.GrabMinSize       = 8.0f;
     s.WindowBorderSize  = 1.0f;
     s.ChildBorderSize   = 1.0f;
-    s.PopupBorderSize   = 1.0f;
+    s.PopupBorderSize   = 1.5f;
     s.FrameBorderSize   = 0.0f;
     s.TabBorderSize     = 0.0f;
 
@@ -7543,7 +7955,7 @@ static void BuildGW2Theme() {
     // Backgrounds
     c[ImGuiCol_WindowBg]             = ImVec4(0.08f, 0.08f, 0.10f, 0.96f);
     c[ImGuiCol_ChildBg]              = ImVec4(0.07f, 0.07f, 0.09f, 0.80f);
-    c[ImGuiCol_PopupBg]              = ImVec4(0.10f, 0.10f, 0.12f, 0.96f);
+    c[ImGuiCol_PopupBg]              = ImVec4(0.085f, 0.075f, 0.06f, 0.97f);
 
     // Borders
     c[ImGuiCol_Border]               = ImVec4(0.28f, 0.25f, 0.18f, 0.50f);
@@ -8676,29 +9088,218 @@ static void RenderSkinShoppingList() {
 }
 
 // Helper: draw a gradient-backed section header with colored accent underline
+// Render a scrollable chip strip (used for equipment & build tab selectors).
+// Returns true if the user clicked a different chip (selectedIdx is updated in place).
+static bool RenderChipStrip(const std::vector<std::string>& labels,
+                            const std::vector<bool>& activeMarkers,
+                            int& selectedIdx,
+                            float& scrollOffset,
+                            const char* idScope) {
+    int n = (int)labels.size();
+    if (n <= 0) return false;
+
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    const float chipMinW = 90.0f;
+    const float chipH = 30.0f;
+    const float gap = 5.0f;
+    const float arrowW = 22.0f;
+    const float arrowGap = 4.0f;
+
+    float availW = ImGui::GetContentRegionAvail().x - 6.0f;
+    float idealW = chipMinW * n + gap * (n - 1);
+    bool needsScroll = idealW > availW;
+
+    float chipW = chipMinW;
+    float stripW = availW;
+    if (!needsScroll) {
+        chipW = (availW - gap * (n - 1)) / (float)n;
+    } else {
+        stripW = availW - (arrowW + arrowGap) * 2.0f;
+    }
+
+    ImVec2 stripOrigin = ImGui::GetCursorScreenPos();
+    if (needsScroll) stripOrigin.x += arrowW + arrowGap;
+
+    bool changed = false;
+
+    if (needsScroll) {
+        float maxScroll = (chipW * n + gap * (n - 1)) - stripW;
+        if (maxScroll < 0) maxScroll = 0;
+        if (scrollOffset < 0) scrollOffset = 0;
+        if (scrollOffset > maxScroll) scrollOffset = maxScroll;
+        bool canLeft = scrollOffset > 0.5f;
+        bool canRight = scrollOffset < maxScroll - 0.5f;
+
+        auto DrawArrow = [&](float ax, bool right, bool enabled) -> bool {
+            ImVec2 amin(ax, stripOrigin.y);
+            ImVec2 amax(ax + arrowW, stripOrigin.y + chipH);
+            ImGui::PushID(right ? "##chipR" : "##chipL");
+            ImGui::SetCursorScreenPos(amin);
+            bool clicked = ImGui::InvisibleButton("##chipArrow",
+                ImVec2(arrowW, chipH)) && enabled;
+            bool hov = ImGui::IsItemHovered() && enabled;
+            ImGui::PopID();
+
+            ImU32 bg = !enabled ? IM_COL32(20, 18, 14, 200)
+                      : hov ? IM_COL32(50, 42, 24, 255)
+                            : IM_COL32(34, 28, 18, 255);
+            dl->AddRectFilled(amin, amax, bg, 4.0f);
+            ImU32 border = !enabled ? IM_COL32(60, 50, 30, 80)
+                          : IM_COL32(140, 115, 60, 200);
+            dl->AddRect(amin, amax, border, 4.0f, 0, 1.0f);
+
+            ImU32 chev = !enabled ? IM_COL32(110, 95, 60, 110)
+                        : IM_COL32(227, 196, 122, 255);
+            float cx = amin.x + arrowW * 0.5f;
+            float cy = amin.y + chipH * 0.5f;
+            float s = 6.0f;
+            if (right) {
+                dl->AddTriangleFilled(
+                    ImVec2(cx - s * 0.4f, cy - s),
+                    ImVec2(cx - s * 0.4f, cy + s),
+                    ImVec2(cx + s * 0.6f, cy), chev);
+            } else {
+                dl->AddTriangleFilled(
+                    ImVec2(cx + s * 0.4f, cy - s),
+                    ImVec2(cx + s * 0.4f, cy + s),
+                    ImVec2(cx - s * 0.6f, cy), chev);
+            }
+            return clicked;
+        };
+
+        if (DrawArrow(stripOrigin.x - arrowW - arrowGap, false, canLeft)) {
+            scrollOffset -= chipW + gap;
+            if (scrollOffset < 0) scrollOffset = 0;
+        }
+        if (DrawArrow(stripOrigin.x + stripW + arrowGap, true, canRight)) {
+            scrollOffset += chipW + gap;
+            if (scrollOffset > maxScroll) scrollOffset = maxScroll;
+        }
+    } else {
+        scrollOffset = 0;
+    }
+
+    if (needsScroll) {
+        dl->PushClipRect(stripOrigin,
+            ImVec2(stripOrigin.x + stripW, stripOrigin.y + chipH), true);
+    }
+
+    ImVec2 origin = ImVec2(stripOrigin.x - scrollOffset, stripOrigin.y);
+
+    ImGui::PushID(idScope);
+    for (int i = 0; i < n; i++) {
+        bool active = (selectedIdx == i);
+        bool isActiveInGame = (i < (int)activeMarkers.size()) && activeMarkers[i];
+
+        ImVec2 cMin(origin.x + (chipW + gap) * i, origin.y);
+        ImVec2 cMax(cMin.x + chipW, cMin.y + chipH);
+
+        ImGui::PushID(i);
+        ImGui::SetCursorScreenPos(cMin);
+        if (ImGui::InvisibleButton("##chip", ImVec2(chipW, chipH))) {
+            if (selectedIdx != i) {
+                selectedIdx = i;
+                changed = true;
+            }
+        }
+        bool hovered = ImGui::IsItemHovered();
+        ImGui::PopID();
+
+        if (active) {
+            ImU32 bgTop = IM_COL32(42, 36, 24, 255);
+            ImU32 bgBot = IM_COL32(28, 24, 16, 255);
+            dl->AddRectFilledMultiColor(cMin, cMax, bgTop, bgTop, bgBot, bgBot);
+        } else {
+            ImU32 bg = hovered ? IM_COL32(37, 35, 44, 255) : IM_COL32(29, 28, 36, 255);
+            dl->AddRectFilled(cMin, cMax, bg, 4.0f);
+        }
+        ImU32 border = active ? IM_COL32(197, 161, 85, 255)
+                      : (hovered ? IM_COL32(110, 95, 55, 180)
+                                 : IM_COL32(70, 60, 40, 110));
+        dl->AddRect(cMin, cMax, border, 4.0f, 0, active ? 1.5f : 1.0f);
+        if (active) {
+            dl->AddRectFilled(
+                ImVec2(cMin.x, cMax.y - 3),
+                ImVec2(cMax.x, cMax.y + 4),
+                IM_COL32(197, 161, 85, 40), 3.0f);
+        }
+
+        const std::string& label = labels[i];
+        ImVec2 ts = ImGui::CalcTextSize(label.c_str());
+        // Truncate if needed
+        std::string drawLabel = label;
+        if (ts.x > chipW - 12.0f) {
+            // Find truncated length
+            const char* ell = "\xe2\x80\xa6";
+            float ellW = ImGui::CalcTextSize(ell).x;
+            int lo = 0, hi = (int)label.size();
+            while (lo < hi) {
+                int mid = (lo + hi + 1) / 2;
+                if (ImGui::CalcTextSize(label.substr(0, mid).c_str()).x + ellW <= chipW - 12.0f) lo = mid;
+                else hi = mid - 1;
+            }
+            drawLabel = label.substr(0, lo) + ell;
+            ts = ImGui::CalcTextSize(drawLabel.c_str());
+        }
+        ImU32 textCol = active ? IM_COL32(240, 226, 190, 255)
+                               : IM_COL32(170, 162, 140, 255);
+        ImVec2 textPos(cMin.x + chipW * 0.5f - ts.x * 0.5f,
+                       cMin.y + chipH * 0.5f - ts.y * 0.5f);
+        dl->AddText(textPos, textCol, drawLabel.c_str());
+
+        if (isActiveInGame) {
+            dl->AddCircleFilled(
+                ImVec2(cMax.x - 6, cMin.y + 6),
+                2.5f, IM_COL32(227, 196, 122, 255));
+        }
+    }
+    ImGui::PopID();
+
+    if (needsScroll) dl->PopClipRect();
+
+    ImGui::SetCursorScreenPos(ImVec2(stripOrigin.x - (needsScroll ? (arrowW + arrowGap) : 0),
+                                     stripOrigin.y + chipH + 4.0f));
+    return changed;
+}
+
 void RenderSectionHeader(const char* label, ImVec4 color, const char* suffix) {
     ImVec2 pos = ImGui::GetCursorScreenPos();
     float w = ImGui::GetContentRegionAvail().x;
-    float h = ImGui::GetTextLineHeightWithSpacing() + 4.0f;
+    float h = ImGui::GetTextLineHeightWithSpacing() + 6.0f;
     ImDrawList* dl = ImGui::GetWindowDrawList();
 
     // Gradient background
     ImU32 left = ImGui::ColorConvertFloat4ToU32(
-        ImVec4(color.x * 0.20f, color.y * 0.20f, color.z * 0.20f, 0.50f));
+        ImVec4(color.x * 0.22f, color.y * 0.22f, color.z * 0.22f, 0.55f));
     ImU32 right = IM_COL32(0, 0, 0, 0);
-    dl->AddRectFilledMultiColor(pos, ImVec2(pos.x + w, pos.y + h), left, right, right, left);
+    dl->AddRectFilledMultiColor(
+        ImVec2(pos.x + 4.0f, pos.y),
+        ImVec2(pos.x + w, pos.y + h),
+        left, right, right, left);
+
+    // Left gold accent bar (vertical)
+    ImU32 barTop = ImGui::ColorConvertFloat4ToU32(ImVec4(
+        std::min(1.0f, color.x * 1.30f),
+        std::min(1.0f, color.y * 1.30f),
+        std::min(1.0f, color.z * 1.30f), 1.0f));
+    ImU32 barBot = ImGui::ColorConvertFloat4ToU32(ImVec4(
+        color.x * 0.70f, color.y * 0.70f, color.z * 0.70f, 1.0f));
+    dl->AddRectFilledMultiColor(
+        ImVec2(pos.x, pos.y + 2.0f),
+        ImVec2(pos.x + 3.0f, pos.y + h - 2.0f),
+        barTop, barTop, barBot, barBot);
 
     // Accent underline
-    dl->AddLine(ImVec2(pos.x, pos.y + h), ImVec2(pos.x + w * 0.5f, pos.y + h),
-        ImGui::ColorConvertFloat4ToU32(ImVec4(color.x, color.y, color.z, 0.30f)), 1.0f);
+    dl->AddLine(ImVec2(pos.x + 4.0f, pos.y + h), ImVec2(pos.x + w * 0.55f, pos.y + h),
+        ImGui::ColorConvertFloat4ToU32(ImVec4(color.x, color.y, color.z, 0.35f)), 1.0f);
 
-    ImGui::SetCursorScreenPos(ImVec2(pos.x + 4.0f, pos.y + 2.0f));
+    ImGui::SetCursorScreenPos(ImVec2(pos.x + 10.0f, pos.y + 3.0f));
     ImGui::TextColored(color, "%s", label);
     if (suffix) {
         ImGui::SameLine();
         ImGui::TextColored(ImVec4(0.50f, 0.47f, 0.40f, 1.0f), "%s", suffix);
     }
-    ImGui::SetCursorScreenPos(ImVec2(pos.x, pos.y + h + 2.0f));
+    ImGui::SetCursorScreenPos(ImVec2(pos.x, pos.y + h + 3.0f));
 }
 
 
@@ -10636,56 +11237,95 @@ void AddonRender() {
                         g_DetailsFetched = true;
                     }
 
-                    // Character header
-                    ImVec4 profColor = GetProfessionColor(ch.profession);
-                    ImGui::TextColored(profColor, "%s", ch.name.c_str());
-                    ImGui::SameLine();
-                    ImGui::TextColored(ImVec4(0.6f, 0.6f, 0.6f, 1.0f),
-                        "Level %d %s %s", ch.level, ch.race.c_str(), ch.profession.c_str());
-
-                    // Birthday countdown
+                    // Character header — avatar + name + meta + right-aligned profession emblem
                     {
-                        int bdays = DaysUntilBirthday(ch.created);
-                        int age = CharacterAgeYears(ch.created);
-                        if (bdays >= 0 && age >= 0) {
-                            if (bdays == 0) {
-                                ImGui::TextColored(ImVec4(1.0f, 0.85f, 0.0f, 1.0f),
-                                    "Happy Birthday! Turning %d today!", age + 1);
-                            } else {
-                                ImGui::TextColored(ImVec4(0.6f, 0.6f, 0.6f, 1.0f),
-                                    "Age %d  -  Birthday in %d day%s", age, bdays, bdays == 1 ? "" : "s");
-                            }
-                        }
+                        ImVec4 profColor = GetProfessionColor(ch.profession);
+                        const float avatarSize = 46.0f;
+                        const float emblemSize = 46.0f;
+                        float startY = ImGui::GetCursorPosY();
+                        float startX = ImGui::GetCursorPosX();
+                        float availW = ImGui::GetContentRegionAvail().x;
+
+                        // Avatar (left)
+                        ImGui::BeginGroup();
+                        RenderCharacterAvatar(ch, avatarSize);
+                        ImGui::EndGroup();
+                        ImGui::SameLine(0, 10);
+
+                        // Name + meta (middle) — clip width so it doesn't overlap the emblem
+                        float middleW = availW - avatarSize - 10.0f - emblemSize - 8.0f;
+                        ImGui::BeginGroup();
+                        ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + middleW);
+                        ImGui::SetCursorPosY(startY + 2.0f);
+                        ImGui::TextColored(profColor, "%s", ch.name.c_str());
+
+                        char meta[160];
+                        std::string raceUp = ch.race;
+                        std::string profUp = ch.profession;
+                        for (auto& c : raceUp) c = (char)toupper((unsigned char)c);
+                        for (auto& c : profUp) c = (char)toupper((unsigned char)c);
+                        snprintf(meta, sizeof(meta), "LV %d  \xe2\x80\xa2  %s  \xe2\x80\xa2  %s",
+                            ch.level, raceUp.c_str(), profUp.c_str());
+                        ImGui::TextColored(ImVec4(0.55f, 0.50f, 0.40f, 1.0f), "%s", meta);
+                        ImGui::PopTextWrapPos();
+                        ImGui::EndGroup();
+
+                        // Profession emblem (right) — fetched from GW2 wiki via IconManager
+                        ImGui::SameLine();
+                        ImGui::SetCursorPosX(startX + availW - emblemSize);
+                        ImGui::SetCursorPosY(startY);
+                        RenderProfessionEmblem(ch.profession, emblemSize);
+
+                        // Make sure cursor sits below the row
+                        float endY = ImGui::GetCursorPosY();
+                        float minY = startY + avatarSize + 4.0f;
+                        if (endY < minY) ImGui::SetCursorPosY(minY);
+                        else ImGui::SetCursorPosY(endY + 2.0f);
                     }
 
-                    // Last login (from local MumbleLink tracking)
+                    // Secondary info row: age / birthday / last login / crafting — all dim, single horizontal flow
                     {
+                        std::string secondary;
+                        int bdays = DaysUntilBirthday(ch.created);
+                        int age = CharacterAgeYears(ch.created);
+                        bool birthdayToday = (bdays == 0 && age >= 0);
+                        if (age >= 0) {
+                            secondary = "Age " + std::to_string(age);
+                        }
+                        if (bdays > 0) {
+                            if (!secondary.empty()) secondary += "  \xc2\xb7  ";
+                            secondary += "Birthday in " + std::to_string(bdays) + (bdays == 1 ? " day" : " days");
+                        }
                         auto tsIt = g_LoginTimestamps.find(ch.name);
                         if (tsIt != g_LoginTimestamps.end()) {
                             time_t now_t = std::time(nullptr);
                             int elapsed = (int)difftime(now_t, (time_t)tsIt->second);
                             std::string ago;
-                            if (elapsed < 60) ago = "Just Now";
+                            if (elapsed < 60) ago = "Just now";
                             else if (elapsed < 3600) ago = std::to_string(elapsed / 60) + "m ago";
                             else if (elapsed < 86400) ago = std::to_string(elapsed / 3600) + "h ago";
                             else ago = std::to_string(elapsed / 86400) + "d ago";
-                            ImGui::TextColored(ImVec4(0.6f, 0.6f, 0.6f, 1.0f), "Last login: %s", ago.c_str());
+                            if (!secondary.empty()) secondary += "  \xc2\xb7  ";
+                            secondary += "Login " + ago;
+                        }
+                        if (!ch.crafting.empty()) {
+                            if (!secondary.empty()) secondary += "  \xc2\xb7  ";
+                            for (size_t ci = 0; ci < ch.crafting.size(); ci++) {
+                                if (ci > 0) secondary += " ";
+                                secondary += ch.crafting[ci];
+                                if (ci < ch.crafting_levels.size())
+                                    secondary += " " + std::to_string(ch.crafting_levels[ci]);
+                            }
+                        }
+                        if (birthdayToday) {
+                            ImGui::TextColored(ImVec4(1.0f, 0.85f, 0.0f, 1.0f),
+                                "\xe2\x9c\xa6 Happy Birthday! Turning %d today!", age + 1);
+                        } else if (!secondary.empty()) {
+                            ImGui::TextColored(ImVec4(0.50f, 0.47f, 0.40f, 1.0f), "%s", secondary.c_str());
                         }
                     }
 
-                    // Crafting disciplines
-                    if (!ch.crafting.empty()) {
-                        ImGui::SameLine(0, 20);
-                        std::string craftStr;
-                        for (size_t ci = 0; ci < ch.crafting.size(); ci++) {
-                            if (ci > 0) craftStr += "  ";
-                            craftStr += ch.crafting[ci];
-                            if (ci < ch.crafting_levels.size())
-                                craftStr += " " + std::to_string(ch.crafting_levels[ci]);
-                        }
-                        ImGui::TextColored(ImVec4(0.6f, 0.6f, 0.6f, 1.0f), "%s", craftStr.c_str());
-                    }
-
+                    ImGui::Spacing();
                     ImGui::Separator();
 
                     // Tab bar: Equipment | Build

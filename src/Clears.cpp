@@ -908,73 +908,712 @@ static void RenderClearStatus(bool fetched, bool done, const char* label) {
         ImGui::TextColored(ImVec4(0.9f, 0.9f, 0.9f, 1.0f), "[ ] %s", label);
 }
 
+// ============= Banner-row helpers (strikes / raid wings) =============
+
+#include "EmbeddedBanners.h"
+
+// Look up the embedded banner JPEG for a key (e.g. "wing:9128", "strike:Cold War")
+// and return a loaded Nexus texture, or nullptr if none.
+static Texture_t* GetBannerTexture(const std::string& key) {
+    unsigned int len = 0;
+    const unsigned char* data = AlterEgo::EmbeddedBanners::FindBanner(key, len);
+    if (!data || len == 0) return nullptr;
+
+    std::string texId = "AE_BNR_" + key;
+    Texture_t* tex = APIDefs->Textures_Get(texId.c_str());
+    if (!tex || !tex->Resource) {
+        tex = APIDefs->Textures_GetOrCreateFromMemory(
+            texId.c_str(), const_cast<unsigned char*>(data), (uint64_t)len);
+    }
+    return (tex && tex->Resource) ? tex : nullptr;
+}
+
+struct ThemeGrad { ImU32 a, b; };
+
+static ThemeGrad WingTheme(uint32_t wingId) {
+    switch (wingId) {
+        case 9128: return { IM_COL32(26, 58, 94, 255),  IM_COL32(74, 139, 201, 255) }; // W1 Spirit Vale (blue)
+        case 9147: return { IM_COL32(74, 26, 26, 255),  IM_COL32(160, 60, 50, 255)  }; // W2 Salvation Pass (red)
+        case 9182: return { IM_COL32(20, 60, 32, 255),  IM_COL32(80, 150, 80, 255)  }; // W3 Stronghold (green)
+        case 9144: return { IM_COL32(58, 26, 78, 255),  IM_COL32(107, 42, 143, 255) }; // W4 Bastion (purple)
+        case 9111: return { IM_COL32(28, 24, 38, 255),  IM_COL32(90, 80, 130, 255)  }; // W5 Hall of Chains (dark slate)
+        case 9120: return { IM_COL32(78, 38, 14, 255),  IM_COL32(200, 110, 30, 255) }; // W6 Mythwright (gold/fire)
+        case 9156: return { IM_COL32(74, 42, 20, 255),  IM_COL32(200, 154, 74, 255) }; // W7 Key of Ahdashim (tan)
+        case 9181: return { IM_COL32(56, 28, 16, 255),  IM_COL32(150, 70, 40, 255)  }; // W8 Mount Balrior
+    }
+    return { IM_COL32(28, 26, 32, 255), IM_COL32(60, 56, 70, 255) };
+}
+
+static ThemeGrad FractalTierTheme(const std::string& tier) {
+    if (tier == "T1")  return { IM_COL32(30, 70, 36, 255),   IM_COL32(110, 200, 122, 255) }; // green
+    if (tier == "T2")  return { IM_COL32(26, 60, 110, 255),  IM_COL32(110, 192, 224, 255) }; // blue
+    if (tier == "T3")  return { IM_COL32(80, 50, 14, 255),   IM_COL32(216, 161, 74, 255)  }; // orange
+    if (tier == "T4")  return { IM_COL32(70, 22, 22, 255),   IM_COL32(217, 106, 106, 255) }; // red
+    if (tier == "Rec") return { IM_COL32(58, 32, 78, 255),   IM_COL32(160, 110, 200, 255) }; // purple/gold-ish
+    return { IM_COL32(40, 36, 28, 255), IM_COL32(120, 100, 60, 255) };
+}
+
+// Map a bounty boss name to its raid wing id (for banner background + theme).
+// Returns 0 if unknown.
+static const char* BountyWingFullName(uint32_t wingId) {
+    switch (wingId) {
+        case 9128: return "Spirit Vale";
+        case 9147: return "Salvation Pass";
+        case 9182: return "Stronghold of the Faithful";
+        case 9144: return "Bastion of the Penitent";
+        case 9111: return "Hall of Chains";
+        case 9120: return "Mythwright Gambit";
+        case 9156: return "The Key of Ahdashim";
+        case 9181: return "Mount Balrior";
+    }
+    return "";
+}
+
+static const char* BountyWingShortName(uint32_t wingId) {
+    switch (wingId) {
+        case 9128: return "W1";
+        case 9147: return "W2";
+        case 9182: return "W3";
+        case 9144: return "W4";
+        case 9111: return "W5";
+        case 9120: return "W6";
+        case 9156: return "W7";
+        case 9181: return "W8";
+    }
+    return "";
+}
+
+// Map a bounty name to a strike banner key (e.g. "strike:Cold War").
+// Returns empty if no match. Handles bounty names that may be boss names
+// rather than the strike's mission name.
+static std::string BountyToStrikeName(const std::string& name) {
+    static const std::unordered_map<std::string, std::string> map = {
+        // Strike mission name (canonical) → banner key
+        {"Shiverpeaks Pass",                          "Shiverpeaks Pass"},
+        {"Voice of the Fallen and Claw of the Fallen","Voice of the Fallen and Claw of the Fallen"},
+        {"Fraenir of Jormag",                         "Fraenir of Jormag"},
+        {"Boneskinner",                               "Boneskinner"},
+        {"Whisper of Jormag",                         "Whisper of Jormag"},
+        {"Forging Steel",                             "Forging Steel"},
+        {"Cold War",                                  "Cold War"},
+        {"Aetherblade Hideout",                       "Aetherblade Hideout"},
+        {"Xunlai Jade Junkyard",                      "Xunlai Jade Junkyard"},
+        {"Kaineng Overlook",                          "Kaineng Overlook"},
+        {"Harvest Temple",                            "Harvest Temple"},
+        {"Old Lion's Court",                          "Old Lion's Court"},
+        {"Cosmic Observatory",                        "Cosmic Observatory"},
+        {"Temple of Febe",                            "Temple of Febe"},
+        {"Guardian's Glade",                          "Guardian's Glade"},
+        // Common boss-name aliases that resolve to the same banner
+        {"Voice and Claw",                            "Voice of the Fallen and Claw of the Fallen"},
+        {"Fraenir",                                   "Fraenir of Jormag"},
+        {"Whisper",                                   "Whisper of Jormag"},
+        {"Mai Trin",                                  "Aetherblade Hideout"},
+        {"Ankka",                                     "Xunlai Jade Junkyard"},
+        {"Minister Li",                               "Kaineng Overlook"},
+        {"The Dragonvoid",                            "Harvest Temple"},
+        {"Dragonvoid",                                "Harvest Temple"},
+        {"Dagda",                                     "Cosmic Observatory"},
+        {"Cerus",                                     "Temple of Febe"},
+        {"Eparch",                                    "Guardian's Glade"},
+    };
+    auto it = map.find(name);
+    return (it != map.end()) ? it->second : std::string();
+}
+
+static uint32_t BountyBossToWing(const std::string& bossName) {
+    static const std::unordered_map<std::string, uint32_t> map = {
+        // W1 Spirit Vale
+        {"Vale Guardian", 9128}, {"Gorseval", 9128}, {"Gorseval the Multifarious", 9128},
+        {"Sabetha", 9128}, {"Sabetha the Saboteur", 9128},
+        // W2 Salvation Pass
+        {"Slothasor", 9147}, {"Bandit Trio", 9147}, {"Matthias", 9147}, {"Matthias Gabrel", 9147},
+        // W3 Stronghold of the Faithful
+        {"Keep Construct", 9182}, {"Xera", 9182},
+        // W4 Bastion of the Penitent
+        {"Cairn", 9144}, {"Cairn the Indomitable", 9144},
+        {"Mursaat Overseer", 9144}, {"Samarog", 9144}, {"Deimos", 9144},
+        // W5 Hall of Chains
+        {"Soulless Horror", 9111}, {"Dhuum", 9111},
+        // W6 Mythwright Gambit
+        {"Conjured Amalgamate", 9120}, {"Twin Largos", 9120}, {"Largos", 9120}, {"Qadim", 9120},
+        // W7 Key of Ahdashim
+        {"Cardinal Adina", 9156}, {"Adina", 9156},
+        {"Cardinal Sabir", 9156}, {"Sabir", 9156},
+        {"Qadim the Peerless", 9156},
+        // W8 Mount Balrior
+        {"Greer", 9181}, {"Decima", 9181}, {"Ura", 9181},
+    };
+    auto it = map.find(bossName);
+    return (it != map.end()) ? it->second : 0;
+}
+
+// Per-wiki: zone/map a strike mission is located in.
+static const char* StrikeZone(const std::string& name) {
+    static const std::unordered_map<std::string, std::string> map = {
+        {"Shiverpeaks Pass",                          "Lornar's Pass"},
+        {"Voice of the Fallen and Claw of the Fallen","Bjora Marches"},
+        {"Fraenir of Jormag",                         "Bjora Marches"},
+        {"Boneskinner",                               "Bjora Marches"},
+        {"Whisper of Jormag",                         "Bjora Marches"},
+        {"Forging Steel",                             "Drizzlewood Coast"},
+        {"Cold War",                                  "Drizzlewood Coast"},
+        {"Aetherblade Hideout",                       "Seitung Province"},
+        {"Xunlai Jade Junkyard",                      "Echovald Wilds"},
+        {"Kaineng Overlook",                          "New Kaineng City"},
+        {"Harvest Temple",                            "Dragon's End"},
+        {"Old Lion's Court",                          "Lion's Arch"},
+        {"Cosmic Observatory",                        "Skywatch Archipelago"},
+        {"Temple of Febe",                            "Inner Nayos"},
+        {"Guardian's Glade",                          "Janthir Syntri"},
+    };
+    auto it = map.find(name);
+    return (it != map.end()) ? it->second.c_str() : "";
+}
+
+static ThemeGrad StrikeTheme(const std::string& name) {
+    // Hash → pick from a curated palette of 8 themes so colours stay stable per strike
+    static const ThemeGrad palette[] = {
+        { IM_COL32(26, 78, 110, 255), IM_COL32(90, 203, 230, 255) }, // ice blue
+        { IM_COL32(110, 58, 20, 255), IM_COL32(255, 155, 58, 255) }, // ember
+        { IM_COL32(78, 26, 26, 255),  IM_COL32(200, 74, 94, 255)  }, // crimson
+        { IM_COL32(74, 74, 110, 255), IM_COL32(26, 26, 62, 255)   }, // void
+        { IM_COL32(110, 90, 30, 255), IM_COL32(228, 196, 122, 255)}, // gold dust
+        { IM_COL32(20, 70, 36, 255),  IM_COL32(100, 180, 100, 255)}, // verdant
+        { IM_COL32(60, 30, 80, 255),  IM_COL32(160, 80, 200, 255) }, // amethyst
+        { IM_COL32(20, 30, 50, 255),  IM_COL32(80, 110, 180, 255) }, // dusk
+    };
+    size_t h = std::hash<std::string>{}(name) % (sizeof(palette) / sizeof(palette[0]));
+    return palette[h];
+}
+
+// Render a single banner row (strike / generic clear). If widthOverride > 0,
+// use that width instead of the full available width (used for multi-column layouts).
+// If bannerKey resolves to an embedded loading-screen JPEG, that image is used
+// as the background; otherwise the gradient theme is used.
+static void RenderClearBanner(const std::string& title, const std::string& subtitle,
+                              bool fetched, bool done, ThemeGrad theme,
+                              const char* tooltip = nullptr,
+                              float widthOverride = 0.0f,
+                              const std::string& bannerKey = "") {
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    ImVec2 cmin = ImGui::GetCursorScreenPos();
+    float w = widthOverride > 0.0f ? widthOverride : ImGui::GetContentRegionAvail().x;
+    float h = 46.0f;
+    ImVec2 cmax(cmin.x + w, cmin.y + h);
+
+    // Background: embedded loading screen if available, else gradient
+    Texture_t* bnrTex = bannerKey.empty() ? nullptr : GetBannerTexture(bannerKey);
+    if (bnrTex && bnrTex->Resource) {
+        dl->AddImage(bnrTex->Resource, cmin, cmax,
+            ImVec2(0, 0), ImVec2(1, 1), IM_COL32(255, 255, 255, 255));
+    } else {
+        dl->AddRectFilledMultiColor(cmin, cmax,
+            theme.a, theme.b,
+            IM_COL32(theme.b & 0xFF, (theme.b >> 8) & 0xFF, (theme.b >> 16) & 0xFF, 255),
+            theme.a);
+    }
+
+    // Dark scrim — solid on the left, fading right
+    ImU32 scrimL = IM_COL32(14, 14, 18, 235);
+    ImU32 scrimR = IM_COL32(14, 14, 18, 26);
+    dl->AddRectFilledMultiColor(cmin, cmax, scrimL, scrimR, scrimR, scrimL);
+
+    // Border
+    dl->AddRect(cmin, cmax, IM_COL32(0, 0, 0, 200), 4.0f, 0, 1.0f);
+
+    // Hit test (whole banner)
+    ImGui::InvisibleButton("##banner", ImVec2(w, h));
+    bool hovered = ImGui::IsItemHovered();
+    if (hovered) {
+        dl->AddRect(cmin, cmax,
+            IM_COL32(197, 161, 85, 130), 4.0f, 0, 1.0f);
+        if (tooltip) {
+            ImGui::BeginTooltip();
+            ImGui::TextUnformatted(tooltip);
+            ImGui::EndTooltip();
+        }
+    }
+
+    // Status circle on the left
+    float cx = cmin.x + 18.0f;
+    float cy = cmin.y + h * 0.5f;
+    float r = 10.0f;
+    ImU32 ringCol, fillCol, checkCol;
+    if (!fetched) {
+        ringCol = IM_COL32(120, 110, 90, 220);
+        fillCol = IM_COL32(0, 0, 0, 130);
+        checkCol = IM_COL32(160, 150, 120, 200);
+    } else if (done) {
+        ringCol = IM_COL32(111, 204, 122, 255);
+        fillCol = IM_COL32(50, 110, 60, 130);
+        checkCol = IM_COL32(180, 240, 180, 255);
+    } else {
+        ringCol = IM_COL32(160, 150, 120, 200);
+        fillCol = IM_COL32(0, 0, 0, 130);
+        checkCol = IM_COL32(160, 150, 120, 200);
+    }
+    dl->AddCircleFilled(ImVec2(cx, cy), r, fillCol);
+    dl->AddCircle(ImVec2(cx, cy), r, ringCol, 24, 1.6f);
+    if (fetched && done) {
+        // Draw checkmark
+        dl->AddLine(ImVec2(cx - 4, cy + 0),  ImVec2(cx - 1, cy + 3),  checkCol, 2.0f);
+        dl->AddLine(ImVec2(cx - 1, cy + 3),  ImVec2(cx + 5, cy - 4),  checkCol, 2.0f);
+    } else if (!fetched) {
+        // ?
+        ImVec2 ts = ImGui::CalcTextSize("?");
+        dl->AddText(ImVec2(cx - ts.x * 0.5f, cy - ts.y * 0.5f), checkCol, "?");
+    }
+
+    // Title (top) + subtitle (bottom)
+    float textX = cmin.x + 36.0f;
+    float titleY = cmin.y + 6.0f;
+    float subY = cmin.y + h - 6.0f - ImGui::GetTextLineHeight();
+    ImU32 titleCol = (fetched && done) ? IM_COL32(240, 240, 230, 255) : IM_COL32(220, 215, 200, 255);
+    ImU32 subCol = IM_COL32(160, 152, 130, 230);
+    dl->AddText(ImVec2(textX, titleY), titleCol, title.c_str());
+    if (!subtitle.empty())
+        dl->AddText(ImVec2(textX, subY), subCol, subtitle.c_str());
+
+    // Spacing for next item
+    ImGui::Dummy(ImVec2(0, 2));
+}
+
+struct WingEncChip { std::string label; std::string fullName; bool done = false; };
+
+// Compact single-row tier banner with inline chips — for daily fractals.
+// Layout: [accent] [TIER] [title]   [chip][chip][chip]   X/Y
+static void RenderTierRow(const char* tierLabel,
+                          const std::string& title,
+                          int doneCount, int totalCount,
+                          bool fetched,
+                          ThemeGrad theme,
+                          ImU32 accentColor,
+                          const std::vector<WingEncChip>& chips) {
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    ImVec2 cmin = ImGui::GetCursorScreenPos();
+    float w = ImGui::GetContentRegionAvail().x;
+    float h = 46.0f;
+    ImVec2 cmax(cmin.x + w, cmin.y + h);
+
+    // Gradient background
+    dl->AddRectFilledMultiColor(cmin, cmax,
+        theme.a, theme.b,
+        IM_COL32(theme.b & 0xFF, (theme.b >> 8) & 0xFF, (theme.b >> 16) & 0xFF, 255),
+        theme.a);
+
+    // Left-biased scrim
+    ImU32 scrimL = IM_COL32(14, 14, 18, 235);
+    ImU32 scrimR = IM_COL32(14, 14, 18, 80);
+    dl->AddRectFilledMultiColor(cmin, cmax, scrimL, scrimR, scrimR, scrimL);
+
+    dl->AddRect(cmin, cmax, IM_COL32(0, 0, 0, 200), 4.0f, 0, 1.0f);
+
+    // Left accent strip
+    dl->AddRectFilled(ImVec2(cmin.x, cmin.y + 3), ImVec2(cmin.x + 3, cmax.y - 3),
+        accentColor);
+
+    float padX = 10.0f;
+    float midY = cmin.y + h * 0.5f;
+
+    // Tier label (left, tier-coloured)
+    float tierX = cmin.x + padX;
+    ImVec2 tierSz = ImGui::CalcTextSize(tierLabel);
+    dl->AddText(ImVec2(tierX, midY - tierSz.y * 0.5f), accentColor, tierLabel);
+
+    // Title
+    float titleX = tierX + tierSz.x + 10.0f;
+    ImU32 titleCol = IM_COL32(230, 225, 210, 255);
+    ImVec2 titleSz = ImGui::CalcTextSize(title.c_str());
+    dl->AddText(ImVec2(titleX, midY - titleSz.y * 0.5f), titleCol, title.c_str());
+
+    // Progress (right)
+    char prog[32];
+    snprintf(prog, sizeof(prog), "%d / %d", doneCount, totalCount);
+    ImVec2 progSz = ImGui::CalcTextSize(prog);
+    ImU32 progCol = (fetched && doneCount == totalCount && totalCount > 0)
+        ? IM_COL32(180, 240, 180, 255)
+        : IM_COL32(227, 196, 122, 255);
+    float progX = cmax.x - padX - progSz.x;
+    dl->AddText(ImVec2(progX, midY - progSz.y * 0.5f), progCol, prog);
+
+    // Hit-test the whole row first (so chips can override with their own)
+    ImGui::InvisibleButton("##tierrow", ImVec2(w, h));
+
+    // Chips area between title and progress
+    float chipsStartX = titleX + titleSz.x + 12.0f;
+    float chipsEndX = progX - 10.0f;
+    float chipsW = chipsEndX - chipsStartX;
+    float chipH = 18.0f;
+    float chipY = midY - chipH * 0.5f;
+    if (!chips.empty() && chipsW > 40.0f) {
+        float gap = 4.0f;
+        float chipW = (chipsW - gap * (chips.size() - 1)) / (float)chips.size();
+        for (size_t i = 0; i < chips.size(); i++) {
+            ImVec2 chmin(chipsStartX + (chipW + gap) * i, chipY);
+            ImVec2 chmax(chmin.x + chipW, chmin.y + chipH);
+
+            dl->AddRectFilled(chmin, chmax, IM_COL32(0, 0, 0, 175), 3.0f);
+            ImU32 cborder = chips[i].done
+                ? IM_COL32(111, 204, 122, 200)
+                : IM_COL32(160, 145, 110, 110);
+            dl->AddRect(chmin, chmax, cborder, 3.0f, 0, 1.0f);
+
+            float dotR = 3.5f;
+            float dotX = chmin.x + 7.0f;
+            float dotY = chmin.y + chipH * 0.5f;
+            if (chips[i].done)
+                dl->AddCircleFilled(ImVec2(dotX, dotY), dotR, IM_COL32(111, 204, 122, 255));
+            else
+                dl->AddCircle(ImVec2(dotX, dotY), dotR, IM_COL32(160, 145, 110, 220), 16, 1.4f);
+
+            ImU32 lblCol = chips[i].done
+                ? IM_COL32(240, 235, 215, 255)
+                : IM_COL32(170, 160, 135, 220);
+            float lblX = dotX + dotR + 5.0f;
+            ImVec2 lblSz = ImGui::CalcTextSize(chips[i].label.c_str());
+            float lblY = chmin.y + (chipH - lblSz.y) * 0.5f;
+            dl->PushClipRect(chmin, chmax, true);
+            dl->AddText(ImVec2(lblX, lblY), lblCol, chips[i].label.c_str());
+            dl->PopClipRect();
+
+            // Per-chip hover (overlay on top of the row hit area)
+            ImGui::SetCursorScreenPos(chmin);
+            ImGui::PushID((int)i);
+            ImGui::InvisibleButton("##chip", ImVec2(chipW, chipH));
+            if (ImGui::IsItemHovered() && !chips[i].fullName.empty()) {
+                ImGui::BeginTooltip();
+                ImGui::TextUnformatted(chips[i].fullName.c_str());
+                ImGui::EndTooltip();
+                dl->AddRect(chmin, chmax, IM_COL32(197, 161, 85, 220), 3.0f, 0, 1.0f);
+            }
+            ImGui::PopID();
+        }
+    }
+
+    ImGui::SetCursorScreenPos(ImVec2(cmin.x, cmin.y + h));
+    ImGui::Dummy(ImVec2(0, 2));
+}
+
+
+static void RenderWingBanner(const std::string& wingShortName,    // e.g. "W4"
+                             const std::string& wingFullName,     // e.g. "Bastion of the Penitent"
+                             int doneCount, int totalCount,
+                             bool fetched,
+                             ThemeGrad theme,
+                             const std::vector<WingEncChip>& chips,
+                             const std::string& bannerKey = "") {
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    ImVec2 cmin = ImGui::GetCursorScreenPos();
+    float w = ImGui::GetContentRegionAvail().x;
+    float h = 78.0f;
+    ImVec2 cmax(cmin.x + w, cmin.y + h);
+
+    // Background: embedded loading screen if available, else gradient
+    Texture_t* bnrTex = bannerKey.empty() ? nullptr : GetBannerTexture(bannerKey);
+    if (bnrTex && bnrTex->Resource) {
+        dl->AddImage(bnrTex->Resource, cmin, cmax,
+            ImVec2(0, 0), ImVec2(1, 1), IM_COL32(255, 255, 255, 255));
+    } else {
+        dl->AddRectFilledMultiColor(cmin, cmax,
+            theme.a, theme.b,
+            IM_COL32(theme.b & 0xFF, (theme.b >> 8) & 0xFF, (theme.b >> 16) & 0xFF, 255),
+            theme.a);
+    }
+
+    // Vertical scrim — fade top to bottom so the lower chip area is readable
+    ImU32 topScrim = IM_COL32(14, 14, 18, 100);
+    ImU32 botScrim = IM_COL32(14, 14, 18, 235);
+    dl->AddRectFilledMultiColor(cmin, cmax, topScrim, topScrim, botScrim, botScrim);
+    // Slight left bias too
+    ImU32 leftScrim = IM_COL32(14, 14, 18, 130);
+    ImU32 rightScrim = IM_COL32(14, 14, 18, 0);
+    dl->AddRectFilledMultiColor(cmin, cmax, leftScrim, rightScrim, rightScrim, leftScrim);
+
+    dl->AddRect(cmin, cmax, IM_COL32(0, 0, 0, 200), 5.0f, 0, 1.0f);
+
+    // Top row text
+    float padX = 10.0f;
+    float topY = cmin.y + 8.0f;
+    // Roman
+    dl->AddText(ImVec2(cmin.x + padX, topY),
+        IM_COL32(227, 196, 122, 255), wingShortName.c_str());
+    // Name
+    ImVec2 wsSz = ImGui::CalcTextSize(wingShortName.c_str());
+    dl->AddText(ImVec2(cmin.x + padX + wsSz.x + 10.0f, topY),
+        IM_COL32(240, 235, 220, 255), wingFullName.c_str());
+    // Progress fraction (right-aligned)
+    char prog[32];
+    snprintf(prog, sizeof(prog), "%d / %d", doneCount, totalCount);
+    ImVec2 pSz = ImGui::CalcTextSize(prog);
+    ImU32 progCol = (fetched && doneCount == totalCount && totalCount > 0)
+        ? IM_COL32(180, 240, 180, 255)
+        : IM_COL32(227, 196, 122, 255);
+    dl->AddText(ImVec2(cmax.x - padX - pSz.x, topY), progCol, prog);
+
+    // Encounter chips along the bottom
+    float chipsY = cmin.y + h - 24.0f;
+    float chipsX = cmin.x + padX;
+    float chipsW = w - padX * 2;
+    float chipH = 18.0f;
+    if (!chips.empty()) {
+        float gap = 4.0f;
+        float chipW = (chipsW - gap * (chips.size() - 1)) / (float)chips.size();
+        for (size_t i = 0; i < chips.size(); i++) {
+            ImVec2 chmin(chipsX + (chipW + gap) * i, chipsY);
+            ImVec2 chmax(chmin.x + chipW, chmin.y + chipH);
+
+            // Chip bg
+            dl->AddRectFilled(chmin, chmax, IM_COL32(0, 0, 0, 165), 3.0f);
+            ImU32 cborder = chips[i].done
+                ? IM_COL32(111, 204, 122, 200)
+                : IM_COL32(160, 145, 110, 110);
+            dl->AddRect(chmin, chmax, cborder, 3.0f, 0, 1.0f);
+
+            // Dot
+            float dotR = 4.0f;
+            float dotX = chmin.x + 7.0f;
+            float dotY = chmin.y + chipH * 0.5f;
+            if (chips[i].done) {
+                dl->AddCircleFilled(ImVec2(dotX, dotY), dotR,
+                    IM_COL32(111, 204, 122, 255));
+            } else {
+                dl->AddCircle(ImVec2(dotX, dotY), dotR,
+                    IM_COL32(160, 145, 110, 220), 16, 1.4f);
+            }
+
+            // Label
+            ImU32 lblCol = chips[i].done
+                ? IM_COL32(240, 235, 215, 255)
+                : IM_COL32(170, 160, 135, 220);
+            float lblX = dotX + dotR + 5.0f;
+            ImVec2 lblSz = ImGui::CalcTextSize(chips[i].label.c_str());
+            float lblY = chmin.y + (chipH - lblSz.y) * 0.5f;
+            // Clip text to chip width
+            float maxLblW = chipW - (lblX - chmin.x) - 4.0f;
+            dl->PushClipRect(chmin, chmax, true);
+            (void)maxLblW;
+            dl->AddText(ImVec2(lblX, lblY), lblCol, chips[i].label.c_str());
+            dl->PopClipRect();
+
+            // Hover area + tooltip with full encounter name
+            ImGui::SetCursorScreenPos(chmin);
+            ImGui::PushID((int)i);
+            ImGui::InvisibleButton("##chip", ImVec2(chipW, chipH));
+            if (ImGui::IsItemHovered() && !chips[i].fullName.empty()) {
+                ImGui::BeginTooltip();
+                ImGui::TextUnformatted(chips[i].fullName.c_str());
+                ImGui::EndTooltip();
+                // Brighten border on hover
+                dl->AddRect(chmin, chmax, IM_COL32(197, 161, 85, 220), 3.0f, 0, 1.0f);
+            }
+            ImGui::PopID();
+        }
+    }
+
+    // Final cursor advance for the whole banner
+    ImGui::SetCursorScreenPos(ImVec2(cmin.x, cmax.y + 4.0f));
+}
+
+// Get wing short name "W1"-"W8" from wing ID, fallback empty string.
+static const char* WingShortName(uint32_t wingId) {
+    switch (wingId) {
+        case 9128: return "W1";
+        case 9147: return "W2";
+        case 9182: return "W3";
+        case 9144: return "W4";
+        case 9111: return "W5";
+        case 9120: return "W6";
+        case 9156: return "W7";
+        case 9181: return "W8";
+    }
+    return "";
+}
+
+// Get clean wing name with "Weekly " stripped
+static std::string CleanWingName(const std::string& raw) {
+    if (raw.rfind("Weekly ", 0) == 0) return raw.substr(7);
+    return raw;
+}
+
 // =========================================================================
 // Clears - Vault tab rendering
 // =========================================================================
 
+// Per-track accent colour for objective rows
+static ImU32 VaultTrackColor(const std::string& track) {
+    if (track == "PvP") return IM_COL32(204, 84, 84, 255);   // red
+    if (track == "WvW") return IM_COL32(84, 135, 204, 255);  // blue
+    return IM_COL32(84, 186, 84, 255);                       // PvE green
+}
+
+// Slim two-column row for a single vault objective.
+static void RenderVaultObjectiveRow(const VaultObjective& obj, float width) {
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    ImVec2 cmin = ImGui::GetCursorScreenPos();
+    float h = 26.0f;
+    ImVec2 cmax(cmin.x + width, cmin.y + h);
+
+    bool done = obj.isDone();
+    bool claimed = obj.claimed;
+
+    // Subtle background (slightly lifted for unclaimed)
+    ImU32 bg = claimed ? IM_COL32(18, 20, 24, 200)
+                       : IM_COL32(26, 28, 34, 220);
+    dl->AddRectFilled(cmin, cmax, bg, 3.0f);
+    dl->AddRect(cmin, cmax, IM_COL32(0, 0, 0, 160), 3.0f, 0, 1.0f);
+
+    // Left accent strip — track colour, dimmed when claimed
+    ImU32 accent = VaultTrackColor(obj.track);
+    if (claimed) accent = (accent & 0x00FFFFFF) | (110 << 24);
+    dl->AddRectFilled(ImVec2(cmin.x, cmin.y + 2),
+                      ImVec2(cmin.x + 3, cmax.y - 2), accent);
+
+    float padX = 8.0f;
+    float midY = cmin.y + h * 0.5f;
+
+    // Track tag (compact)
+    float tagX = cmin.x + padX;
+    if (!obj.track.empty()) {
+        ImU32 tagCol = claimed ? IM_COL32(140, 130, 110, 200)
+                               : VaultTrackColor(obj.track);
+        ImVec2 tagSz = ImGui::CalcTextSize(obj.track.c_str());
+        dl->AddText(ImVec2(tagX, midY - tagSz.y * 0.5f), tagCol, obj.track.c_str());
+        tagX += tagSz.x + 8.0f;
+    }
+
+    // Acclaim pill (right-aligned)
+    char pill[16];
+    snprintf(pill, sizeof(pill), "+%d", obj.acclaim);
+    ImVec2 pillSz = ImGui::CalcTextSize(pill);
+    float pillPadX = 5.0f, pillPadY = 2.0f;
+    float pillW = pillSz.x + pillPadX * 2;
+    float pillH = pillSz.y + pillPadY * 2;
+    ImVec2 pillMin(cmax.x - padX - pillW, midY - pillH * 0.5f);
+    ImVec2 pillMax(pillMin.x + pillW, pillMin.y + pillH);
+
+    ImU32 pillBg, pillBorder, pillText;
+    if (claimed) {
+        pillBg     = IM_COL32(40, 60, 40, 180);
+        pillBorder = IM_COL32(80, 140, 90, 160);
+        pillText   = IM_COL32(140, 200, 150, 220);
+    } else if (done) {
+        // earned but unclaimed — the actionable state, brightest
+        pillBg     = IM_COL32(80, 60, 18, 230);
+        pillBorder = IM_COL32(232, 196, 122, 255);
+        pillText   = IM_COL32(245, 220, 150, 255);
+    } else {
+        pillBg     = IM_COL32(32, 28, 18, 200);
+        pillBorder = IM_COL32(140, 116, 60, 200);
+        pillText   = IM_COL32(220, 192, 122, 230);
+    }
+    dl->AddRectFilled(pillMin, pillMax, pillBg, 3.0f);
+    dl->AddRect(pillMin, pillMax, pillBorder, 3.0f, 0, 1.0f);
+    dl->AddText(ImVec2(pillMin.x + pillPadX, pillMin.y + pillPadY), pillText, pill);
+
+    // Title (clipped between tagX and pillMin.x)
+    ImU32 titleCol;
+    if (claimed)   titleCol = IM_COL32(130, 130, 120, 230);
+    else if (done) titleCol = IM_COL32(200, 200, 190, 255);
+    else           titleCol = IM_COL32(235, 230, 215, 255);
+
+    ImVec2 titleSz = ImGui::CalcTextSize(obj.title.c_str());
+    float titleX = tagX;
+    float titleEndX = pillMin.x - 8.0f;
+
+    // If there's room and the obj is in-progress, show "N/M" right before the pill
+    char progBuf[24] = {0};
+    bool showProg = !done && obj.progress_complete > 1;
+    float progW = 0.0f;
+    if (showProg) {
+        snprintf(progBuf, sizeof(progBuf), "%d/%d", obj.progress_current, obj.progress_complete);
+        progW = ImGui::CalcTextSize(progBuf).x + 6.0f;
+    }
+    float titleClipEnd = titleEndX - progW;
+
+    dl->PushClipRect(ImVec2(titleX, cmin.y), ImVec2(titleClipEnd, cmax.y), true);
+    dl->AddText(ImVec2(titleX, midY - titleSz.y * 0.5f), titleCol, obj.title.c_str());
+    dl->PopClipRect();
+
+    if (showProg) {
+        ImVec2 pSz = ImGui::CalcTextSize(progBuf);
+        dl->AddText(ImVec2(titleEndX - pSz.x, midY - pSz.y * 0.5f),
+            IM_COL32(150, 142, 120, 230), progBuf);
+    }
+
+    // Hit test (whole row) — tooltip with full title if it was truncated
+    ImGui::InvisibleButton("##vobj", ImVec2(width, h));
+    if (ImGui::IsItemHovered()) {
+        bool overflowed = (titleSz.x > (titleClipEnd - titleX));
+        if (overflowed) {
+            ImGui::BeginTooltip();
+            ImGui::TextUnformatted(obj.title.c_str());
+            ImGui::EndTooltip();
+        }
+        dl->AddRect(cmin, cmax, IM_COL32(197, 161, 85, 130), 3.0f, 0, 1.0f);
+    }
+}
+
 static void RenderVaultPeriodSection(const char* title, const char* resetLabel,
                                       ImVec4 color, const VaultPeriod& period)
 {
-    ImGui::TextColored(color, "%s", title);
-    ImGui::SameLine();
-    ImGui::TextColored(ImVec4(0.5f, 0.5f, 0.5f, 1.0f), "(%s)", resetLabel);
+    char suffix[64];
+    snprintf(suffix, sizeof(suffix), "(%s)", resetLabel);
+    RenderSectionHeader(title, color, suffix);
 
     if (period.objectives.empty()) {
         ImGui::TextColored(ImVec4(0.5f, 0.5f, 0.5f, 1.0f), "  No data");
         return;
     }
 
-    // Meta chest progress bar
+    // Inline summary: claimed count + total AA earned
+    int claimedCount = 0, totalAA = 0, earnedAA = 0;
+    for (const auto& o : period.objectives) {
+        if (o.claimed) { claimedCount++; earnedAA += o.acclaim; }
+        totalAA += o.acclaim;
+    }
+
+    ImGui::Indent(4.0f);
+    ImGui::TextColored(ImVec4(0.55f, 0.53f, 0.45f, 1.0f),
+        "%d / %d claimed   %d / %d AA",
+        claimedCount, (int)period.objectives.size(),
+        earnedAA, totalAA);
+
+    // Thin meta progress bar (only if API gave us meta data)
     if (period.meta_progress_complete > 0) {
         float frac = std::min(1.0f,
             (float)period.meta_progress_current / (float)period.meta_progress_complete);
         ImVec4 barColor = period.meta_reward_claimed
             ? ImVec4(0.35f, 0.82f, 0.35f, 1.0f) : color;
         ImGui::PushStyleColor(ImGuiCol_PlotHistogram, barColor);
-        ImGui::PushStyleColor(ImGuiCol_FrameBg, ImVec4(0.15f, 0.10f, 0.25f, 1.0f));
-        ImGui::ProgressBar(frac, ImVec2(-1.0f, 10.0f), "");
+        ImGui::PushStyleColor(ImGuiCol_FrameBg, ImVec4(0.10f, 0.10f, 0.13f, 1.0f));
+        ImGui::ProgressBar(frac, ImVec2(-4.0f, 3.0f), "");
         ImGui::PopStyleColor(2);
     }
 
-    // Objectives
-    for (const auto& obj : period.objectives) {
-        bool done = obj.isDone();
+    ImGui::Spacing();
 
-        ImGui::Text("  ");
-        ImGui::SameLine();
-        if (done)
-            ImGui::TextColored(ImVec4(0.35f, 0.82f, 0.35f, 1.0f), "[x]");
-        else
-            ImGui::TextColored(ImVec4(0.9f, 0.9f, 0.9f, 1.0f), "[ ]");
-        ImGui::SameLine();
+    // Two-column grid of objective rows
+    float availW = ImGui::GetContentRegionAvail().x - 4.0f;
+    float gap = 6.0f;
+    float halfW = (availW - gap) * 0.5f;
 
-        ImVec4 titleColor = obj.claimed ? ImVec4(0.35f, 0.82f, 0.35f, 1.0f)
-                          : done        ? ImVec4(0.70f, 0.70f, 0.70f, 1.0f)
-                                        : ImVec4(0.90f, 0.90f, 0.90f, 1.0f);
-        ImGui::TextColored(titleColor, "%s", obj.title.c_str());
+    for (size_t i = 0; i < period.objectives.size(); i++) {
+        const auto& obj = period.objectives[i];
 
-        if (!obj.track.empty()) {
-            ImVec4 trackColor = (obj.track == "PvP") ? ImVec4(0.80f, 0.33f, 0.33f, 1.0f)
-                              : (obj.track == "WvW") ? ImVec4(0.33f, 0.53f, 0.80f, 1.0f)
-                                                     : ImVec4(0.33f, 0.73f, 0.33f, 1.0f);
-            ImGui::SameLine();
-            ImGui::TextColored(trackColor, "[%s]", obj.track.c_str());
-        }
+        ImGui::PushID((int)i);
+        ImVec2 startPos = ImGui::GetCursorScreenPos();
+        RenderVaultObjectiveRow(obj, halfW);
+        ImGui::PopID();
 
-        if (!done && obj.progress_complete > 1) {
-            ImGui::SameLine();
-            ImGui::TextColored(ImVec4(0.5f, 0.5f, 0.5f, 1.0f),
-                "%d/%d", obj.progress_current, obj.progress_complete);
-        }
-
-        ImGui::SameLine();
-        ImGui::TextColored(ImVec4(0.91f, 0.78f, 0.29f, 1.0f), "+%d", obj.acclaim);
-
-        if (obj.claimed) {
-            ImGui::SameLine();
-            ImGui::TextColored(ImVec4(0.35f, 0.82f, 0.35f, 0.7f), "(claimed)");
+        if (i % 2 == 0 && i + 1 < period.objectives.size()) {
+            ImGui::SetCursorScreenPos(ImVec2(startPos.x + halfW + gap, startPos.y));
+        } else {
+            ImGui::Dummy(ImVec2(0, 2));
         }
     }
+
+    ImGui::Unindent(4.0f);
 }
 
 static void RenderVaultTab(const std::string& dailyResetStr, const std::string& weeklyResetStr)
@@ -1089,43 +1728,52 @@ static void RenderClearsTabContent(const std::string& dailyResetStr, const std::
     if (g_DailyFractals.empty()) {
         ImGui::TextColored(ImVec4(0.5f, 0.5f, 0.5f, 1.0f), "  No data");
     } else {
-        const char* tierOrder[] = {"T4", "T3", "T2", "T1", "Rec"};
-        for (const char* tier : tierOrder) {
+        ImGui::Indent(4.0f);
+        struct TierInfo { const char* tier; const char* label; const char* fullName; ImU32 accent; };
+        const TierInfo tierOrder[] = {
+            {"T1",  "T1",  "Tier 1 Fractal", IM_COL32(111, 204, 122, 255)},
+            {"T2",  "T2",  "Tier 2 Fractal", IM_COL32(110, 192, 224, 255)},
+            {"T3",  "T3",  "Tier 3 Fractal", IM_COL32(216, 161, 74, 255)},
+            {"T4",  "T4",  "Tier 4 Fractal", IM_COL32(217, 106, 106, 255)},
+            {"Rec", "REC", "Recommended",    IM_COL32(197, 161, 85, 255)},
+        };
+        for (const auto& ti : tierOrder) {
             std::vector<const ClearEntry*> tierEntries;
             for (const auto& e : g_DailyFractals) {
-                if (e.tier == tier) tierEntries.push_back(&e);
+                if (e.tier == ti.tier) tierEntries.push_back(&e);
             }
             if (tierEntries.empty()) continue;
 
-            // Sort by shortened name so order is consistent across tiers
             std::sort(tierEntries.begin(), tierEntries.end(),
                 [](const ClearEntry* a, const ClearEntry* b) {
                     return ShortenFractalName(a->name) < ShortenFractalName(b->name);
                 });
 
-            bool allDone = g_ClearsFetched;
+            std::vector<WingEncChip> chips;
+            int doneCount = 0;
             for (const auto* e : tierEntries) {
-                if (!e->done) { allDone = false; break; }
+                WingEncChip c;
+                c.label = ShortenFractalName(e->name);
+                c.fullName = e->name;
+                c.done = e->done;
+                chips.push_back(c);
+                if (e->done) doneCount++;
             }
 
-            if (allDone)
-                ImGui::TextColored(ImVec4(0.35f, 0.82f, 0.35f, 1.0f), "  %-4s", tier);
-            else
-                ImGui::TextColored(ImVec4(0.8f, 0.8f, 0.8f, 1.0f), "  %-4s", tier);
-
-            for (const auto* e : tierEntries) {
-                ImGui::SameLine();
-                std::string shortName = ShortenFractalName(e->name);
-                RenderClearStatus(g_ClearsFetched, e->done, shortName.c_str());
-            }
+            ImGui::PushID(ti.tier);
+            RenderTierRow(ti.label, ti.fullName,
+                doneCount, (int)tierEntries.size(), g_ClearsFetched,
+                FractalTierTheme(ti.tier), ti.accent, chips);
+            ImGui::PopID();
         }
-        // Uncategorized
+        // Uncategorized fractals (no tier) — show as plain rows
         for (const auto& e : g_DailyFractals) {
             if (!e.tier.empty()) continue;
             ImGui::Text("  ");
             ImGui::SameLine();
             RenderClearStatus(g_ClearsFetched, e.done, e.name.c_str());
         }
+        ImGui::Unindent(4.0f);
     }
 
     ImGui::Spacing();
@@ -1141,15 +1789,47 @@ static void RenderClearsTabContent(const std::string& dailyResetStr, const std::
     if (g_DailyBounties.empty()) {
         ImGui::TextColored(ImVec4(0.5f, 0.5f, 0.5f, 1.0f), "  No data");
     } else {
-        for (const auto& e : g_DailyBounties) {
-            // Strip "Raid Bounty: " prefix
+        ImGui::Indent(4.0f);
+        float availW = ImGui::GetContentRegionAvail().x - 4.0f;
+        float gapBnty = 6.0f;
+        float halfWBnty = (availW - gapBnty) * 0.5f;
+        for (size_t i = 0; i < g_DailyBounties.size(); i++) {
+            const auto& e = g_DailyBounties[i];
             std::string display = e.name;
             if (display.find("Raid Bounty: ") == 0)
                 display = display.substr(13);
-            ImGui::Text("  ");
-            ImGui::SameLine();
-            RenderClearStatus(g_ClearsFetched, e.done, display.c_str());
+
+            uint32_t wingId = BountyBossToWing(display);
+            std::string strikeName = wingId ? std::string() : BountyToStrikeName(display);
+            std::string subtitle = "Raid Bounty";
+            std::string bannerKey;
+            ThemeGrad theme;
+            if (wingId) {
+                const char* wingFull = BountyWingFullName(wingId);
+                if (wingFull && *wingFull) { subtitle += " \xC2\xB7 "; subtitle += wingFull; }
+                bannerKey = "wing:" + std::to_string(wingId);
+                theme = WingTheme(wingId);
+            } else if (!strikeName.empty()) {
+                subtitle += " \xC2\xB7 Strike Mission";
+                bannerKey = "strike:" + strikeName;
+                theme = StrikeTheme(strikeName);
+            } else {
+                theme = ThemeGrad{ IM_COL32(60, 44, 20, 255), IM_COL32(200, 154, 74, 255) };
+            }
+
+            ImGui::PushID((int)i);
+            ImVec2 startPos = ImGui::GetCursorScreenPos();
+            RenderClearBanner(display, subtitle,
+                g_ClearsFetched, e.done, theme,
+                /*tooltip*/ nullptr, /*widthOverride*/ halfWBnty,
+                bannerKey);
+            ImGui::PopID();
+
+            if (i % 2 == 0 && i + 1 < g_DailyBounties.size()) {
+                ImGui::SetCursorScreenPos(ImVec2(startPos.x + halfWBnty + gapBnty, startPos.y));
+            }
         }
+        ImGui::Unindent(4.0f);
     }
 
     ImGui::Spacing();
@@ -1165,12 +1845,33 @@ static void RenderClearsTabContent(const std::string& dailyResetStr, const std::
     if (g_WeeklyStrikes.id == 0) {
         ImGui::TextColored(ImVec4(0.5f, 0.5f, 0.5f, 1.0f), "  No data");
     } else {
+        ImGui::Indent(4.0f);
+        // Two-column layout
+        float availW = ImGui::GetContentRegionAvail().x - 4.0f;
+        float gap = 6.0f;
+        float halfW = (availW - gap) * 0.5f;
+
         for (size_t i = 0; i < g_WeeklyStrikes.bitNames.size(); i++) {
             bool bitDone = (i < g_WeeklyStrikes.bitDone.size()) ? g_WeeklyStrikes.bitDone[i] : false;
-            ImGui::Text("  ");
-            ImGui::SameLine();
-            RenderClearStatus(g_ClearsFetched, bitDone, g_WeeklyStrikes.bitNames[i].c_str());
+            const std::string& name = g_WeeklyStrikes.bitNames[i];
+            ImGui::PushID((int)i);
+            ImVec2 startPos = ImGui::GetCursorScreenPos();
+            const char* zone = StrikeZone(name);
+            std::string subtitle = "Strike Mission";
+            if (zone && *zone) { subtitle += " \xC2\xB7 "; subtitle += zone; }
+            RenderClearBanner(name, subtitle,
+                g_ClearsFetched, bitDone, StrikeTheme(name),
+                /*tooltip*/ nullptr, /*widthOverride*/ halfW,
+                /*bannerKey*/ "strike:" + name);
+            ImGui::PopID();
+
+            // Place next banner on same row or move to next row
+            if (i % 2 == 0 && i + 1 < g_WeeklyStrikes.bitNames.size()) {
+                // Reset cursor to right side of just-rendered banner
+                ImGui::SetCursorScreenPos(ImVec2(startPos.x + halfW + gap, startPos.y));
+            }
         }
+        ImGui::Unindent(4.0f);
         if (g_ClearsFetched && g_WeeklyStrikes.max > 0) {
             int doneCount = 0;
             for (bool b : g_WeeklyStrikes.bitDone) { if (b) doneCount++; }
@@ -1192,49 +1893,35 @@ static void RenderClearsTabContent(const std::string& dailyResetStr, const std::
     if (g_WeeklyWings.empty()) {
         ImGui::TextColored(ImVec4(0.5f, 0.5f, 0.5f, 1.0f), "  No data");
     } else {
-        if (ImGui::BeginTable("RaidWingsTable", 2, ImGuiTableFlags_BordersInnerH | ImGuiTableFlags_RowBg)) {
-            ImGui::TableSetupColumn("Wing", ImGuiTableColumnFlags_WidthFixed, 220);
-            ImGui::TableSetupColumn("Encounters", ImGuiTableColumnFlags_WidthStretch);
-            ImGui::TableHeadersRow();
+        ImGui::Indent(4.0f);
+        for (const auto& wing : g_WeeklyWings) {
+            std::string cleanName = CleanWingName(wing.name);
+            const char* shortW = WingShortName(wing.id);
 
-            for (const auto& wing : g_WeeklyWings) {
-                ImGui::TableNextRow();
-                ImGui::TableNextColumn();
-
-                // Strip "Weekly " prefix and add W# prefix
-                std::string wingName = wing.name;
-                if (wingName.find("Weekly ") == 0)
-                    wingName = wingName.substr(7);
-                {
-                    static const std::unordered_map<uint32_t, int> wingNum = {
-                        {9128, 1}, {9147, 2}, {9182, 3}, {9144, 4},
-                        {9111, 5}, {9120, 6}, {9156, 7}, {9181, 8},
-                    };
-                    auto it = wingNum.find(wing.id);
-                    if (it != wingNum.end())
-                        wingName = "W" + std::to_string(it->second) + ": " + wingName;
-                }
-
-                ImGui::Text("%s", wingName.c_str());
-
-                ImGui::TableNextColumn();
-                // Render encounters, skipping progress-only bits (empty short name)
-                bool firstEnc = true;
-                for (size_t i = 0; i < wing.bitNames.size(); i++) {
-                    std::string shortName = ShortenEncounterName(wing.bitNames[i]);
-                    if (shortName.empty()) continue; // skip progress-only bits
-                    bool bitDone = (i < wing.bitDone.size()) ? wing.bitDone[i] : false;
-                    if (!firstEnc) {
-                        ImGui::SameLine();
-                        ImGui::TextColored(ImVec4(0.3f, 0.3f, 0.3f, 1.0f), "|");
-                        ImGui::SameLine();
-                    }
-                    RenderClearStatus(g_ClearsFetched, bitDone, shortName.c_str());
-                    firstEnc = false;
-                }
+            // Build chip list, skipping progress-only bits (empty short name)
+            std::vector<WingEncChip> chips;
+            int doneCount = 0, totalCount = 0;
+            for (size_t i = 0; i < wing.bitNames.size(); i++) {
+                std::string shortEnc = ShortenEncounterName(wing.bitNames[i]);
+                if (shortEnc.empty()) continue; // skip
+                bool bitDone = (i < wing.bitDone.size()) ? wing.bitDone[i] : false;
+                WingEncChip c;
+                c.label = shortEnc;
+                c.fullName = wing.bitNames[i];
+                c.done = bitDone;
+                chips.push_back(c);
+                totalCount++;
+                if (bitDone) doneCount++;
             }
-            ImGui::EndTable();
+
+            ImGui::PushID((int)wing.id);
+            RenderWingBanner(shortW ? shortW : "", cleanName,
+                doneCount, totalCount, g_ClearsFetched,
+                WingTheme(wing.id), chips,
+                /*bannerKey*/ "wing:" + std::to_string(wing.id));
+            ImGui::PopID();
         }
+        ImGui::Unindent(4.0f);
     }
 }
 
