@@ -12962,19 +12962,18 @@ void AddonOptions() {
     ImGui::SameLine();
     ImGui::TextColored(ImVec4(0.5f, 0.5f, 0.5f, 1.0f), "|");
     ImGui::SameLine();
-    if (ImGui::SmallButton("Homepage")) {
+    if (RenderChipButton("Homepage", false)) {
         ShellExecuteA(NULL, "open", "https://pie.rocks.cc/projects/alter-ego/", NULL, NULL, SW_SHOWNORMAL);
     }
     ImGui::SameLine();
     ImGui::TextColored(ImVec4(0.5f, 0.5f, 0.5f, 1.0f), "|");
     ImGui::SameLine();
-    if (ImGui::SmallButton("Buy me a coffee!")) {
+    if (RenderChipButton("Buy me a coffee!", false)) {
         ShellExecuteA(NULL, "open", "https://ko-fi.com/pieorcake", NULL, NULL, SW_SHOWNORMAL);
     }
-    ImGui::Separator();
 
     // H&S connection status
-    ImGui::Text("Data Source: Hoard & Seek");
+    RenderSectionHeader("Data Source: Hoard & Seek", ImVec4(0.70f, 0.58f, 0.20f, 1.0f));
     auto hoardStatus = AlterEgo::GW2API::GetHoardStatus();
     switch (hoardStatus) {
         case AlterEgo::HoardStatus::Unknown:
@@ -12997,7 +12996,7 @@ void AddonOptions() {
             ImGui::TextColored(ImVec4(1.0f, 0.3f, 0.3f, 1.0f), "Status: Permission denied");
             ImGui::TextColored(ImVec4(0.7f, 0.7f, 0.7f, 1.0f),
                 "Re-enable in H&S settings under Permissions.");
-            if (ImGui::SmallButton("Retry Connection")) {
+            if (RenderGoldButton("Retry Connection")) {
                 AlterEgo::GW2API::PingHoard();
             }
             break;
@@ -13007,8 +13006,7 @@ void AddonOptions() {
     }
 
     ImGui::Spacing();
-    ImGui::Separator();
-    ImGui::Text("UI Settings:");
+    RenderSectionHeader("UI Settings", ImVec4(0.70f, 0.58f, 0.20f, 1.0f));
     if (ImGui::Checkbox("Show Quick Access icon", &g_ShowQAIcon)) {
         if (g_ShowQAIcon) {
             APIDefs->QuickAccess_Add(QA_ID, TEX_ICON, TEX_ICON_HOVER, "KB_ALTER_EGO_TOGGLE", "Alter Ego");
@@ -13018,8 +13016,7 @@ void AddonOptions() {
         SaveSettings();
     }
     ImGui::Spacing();
-    ImGui::Separator();
-    ImGui::Text("Chat Build Detection:");
+    RenderSectionHeader("Chat Build Detection", ImVec4(0.70f, 0.58f, 0.20f, 1.0f));
     ImGui::TextColored(ImVec4(0.5f, 0.5f, 0.5f, 1.0f), "Requires 'Events: Chat' addon from the Nexus library.");
     if (ImGui::Checkbox("Detect build links in chat", &g_ChatBuildDetection)) {
         SaveSettings();
@@ -13028,7 +13025,7 @@ void AddonOptions() {
         ImGui::Indent(16.0f);
         ImGui::TextColored(ImVec4(0.6f, 0.6f, 0.6f, 1.0f),
             "Drag the toast notification to reposition it.");
-        if (ImGui::Button("Reset Toast Position")) {
+        if (RenderChipButton("Reset Toast Position", false)) {
             g_ToastPosX = -1.0f;
             g_ToastPosY = 100.0f;
             g_ToastPosInitialized = false;
@@ -13037,8 +13034,7 @@ void AddonOptions() {
         ImGui::Unindent(16.0f);
     }
     ImGui::Spacing();
-    ImGui::Separator();
-    ImGui::Text("Character List:");
+    RenderSectionHeader("Character List", ImVec4(0.70f, 0.58f, 0.20f, 1.0f));
     if (ImGui::Checkbox("Compact mode", &g_CompactCharList)) {
         SaveSettings();
     }
