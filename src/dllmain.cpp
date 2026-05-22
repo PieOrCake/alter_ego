@@ -10108,6 +10108,36 @@ bool RenderChipButton(const char* label, bool active, ImVec4 accentColor) {
     return clicked;
 }
 
+// Gold-bordered combo box. Wraps ImGui::BeginCombo with themed styling for both
+// the closed combo button and the open popup.
+//
+// `id`:      ImGui id (e.g. "##AccountSelect").
+// `current`: the label shown when collapsed.
+// `width`:   <= 0 means caller already used SetNextItemWidth; > 0 sets the width here.
+//
+// Usage:
+//   if (RenderThemedCombo("##acct", currentLabel.c_str(), 180.0f)) {
+//       if (ImGui::Selectable("...", isSel)) {...}
+//       ImGui::EndCombo();
+//   }
+//
+// Returns true when the combo is open (same contract as ImGui::BeginCombo).
+// Caller is responsible for ImGui::EndCombo() when the function returns true.
+bool RenderThemedCombo(const char* id, const char* current, float width) {
+    ImGui::PushStyleColor(ImGuiCol_FrameBg,        ImVec4(0.10f, 0.09f, 0.06f, 0.85f));
+    ImGui::PushStyleColor(ImGuiCol_FrameBgHovered, ImVec4(0.16f, 0.13f, 0.08f, 0.95f));
+    ImGui::PushStyleColor(ImGuiCol_FrameBgActive,  ImVec4(0.20f, 0.16f, 0.09f, 1.00f));
+    ImGui::PushStyleColor(ImGuiCol_Border,         ImVec4(0.70f, 0.58f, 0.20f, 1.00f));
+    ImGui::PushStyleColor(ImGuiCol_Text,           ImVec4(0.95f, 0.85f, 0.55f, 1.00f));
+    ImGui::PushStyleColor(ImGuiCol_PopupBg,        ImVec4(0.08f, 0.07f, 0.05f, 0.98f));
+    ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, 1.5f);
+    if (width > 0.0f) ImGui::SetNextItemWidth(width);
+    bool open = ImGui::BeginCombo(id, current);
+    ImGui::PopStyleVar(1);
+    ImGui::PopStyleColor(6);
+    return open;
+}
+
 
 // =========================================================================
 // Achievement Tracker — UI

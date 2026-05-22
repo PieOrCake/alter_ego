@@ -24,6 +24,11 @@ bool RenderGoldButton(const char* label, ImVec2 size = ImVec2(0, 0));
 // active: highlighted when true. accentColor: pass ImVec4(0,0,0,0) for default gold tint.
 bool RenderChipButton(const char* label, bool active, ImVec4 accentColor = ImVec4(0, 0, 0, 0));
 
+// Gold-bordered combo box. Wraps ImGui::BeginCombo with themed styling.
+// width <= 0: caller sets width via SetNextItemWidth; > 0: sets width here.
+// Returns true when open — caller must call ImGui::EndCombo().
+bool RenderThemedCombo(const char* id, const char* current, float width = -1.0f);
+
 // Returns the account name to use for per-account H&S queries.
 // Returns an empty string when "All Accounts" is selected.
 std::string GetEffectiveAccountName();
