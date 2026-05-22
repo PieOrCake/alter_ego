@@ -12743,45 +12743,71 @@ void AddonRender() {
                         else ImGui::SetCursorPosY(endY + 2.0f);
                     }
 
-                    // Secondary info row: age / birthday / last login / crafting — all dim, single horizontal flow
+                    // Secondary info row: age / birthday / last login / crafting — all dim, single horizontal flow.
+                    // Crafting professions render as small icons + level so the row fits all 9 disciplines without overflow.
                     {
-                        std::string secondary;
                         int bdays = DaysUntilBirthday(ch.created);
                         int age = CharacterAgeYears(ch.created);
                         bool birthdayToday = (bdays == 0 && age >= 0);
-                        if (age >= 0) {
-                            secondary = "Age " + std::to_string(age);
-                        }
-                        if (bdays > 0) {
-                            if (!secondary.empty()) secondary += "  \xc2\xb7  ";
-                            secondary += "Birthday in " + std::to_string(bdays) + (bdays == 1 ? " day" : " days");
-                        }
-                        auto tsIt = g_LoginTimestamps.find(ch.name);
-                        if (tsIt != g_LoginTimestamps.end()) {
-                            time_t now_t = std::time(nullptr);
-                            int elapsed = (int)difftime(now_t, (time_t)tsIt->second);
-                            std::string ago;
-                            if (elapsed < 60) ago = "Just now";
-                            else if (elapsed < 3600) ago = std::to_string(elapsed / 60) + "m ago";
-                            else if (elapsed < 86400) ago = std::to_string(elapsed / 3600) + "h ago";
-                            else ago = std::to_string(elapsed / 86400) + "d ago";
-                            if (!secondary.empty()) secondary += "  \xc2\xb7  ";
-                            secondary += "Login " + ago;
-                        }
-                        if (!ch.crafting.empty()) {
-                            if (!secondary.empty()) secondary += "  \xc2\xb7  ";
-                            for (size_t ci = 0; ci < ch.crafting.size(); ci++) {
-                                if (ci > 0) secondary += " ";
-                                secondary += ch.crafting[ci];
-                                if (ci < ch.crafting_levels.size())
-                                    secondary += " " + std::to_string(ch.crafting_levels[ci]);
-                            }
-                        }
+
                         if (birthdayToday) {
                             ImGui::TextColored(ImVec4(1.0f, 0.85f, 0.0f, 1.0f),
                                 "\xe2\x9c\xa6 Happy Birthday! Turning %d today!", age + 1);
-                        } else if (!secondary.empty()) {
-                            ImGui::TextColored(ImVec4(0.50f, 0.47f, 0.40f, 1.0f), "%s", secondary.c_str());
+                        } else {
+                            const ImVec4 dim(0.50f, 0.47f, 0.40f, 1.0f);
+                            const ImVec4 dot(0.40f, 0.37f, 0.30f, 1.0f);
+                            bool first = true;
+                            auto Sep = [&]() {
+                                ImGui::SameLine(0, 6);
+                                ImGui::TextColored(dot, "\xc2\xb7");
+                                ImGui::SameLine(0, 6);
+                            };
+                            if (age >= 0) {
+                                ImGui::TextColored(dim, "Age %d", age);
+                                first = false;
+                            }
+                            if (bdays > 0) {
+                                if (!first) Sep(); else first = false;
+                                ImGui::TextColored(dim, "Birthday in %d %s",
+                                    bdays, bdays == 1 ? "day" : "days");
+                            }
+                            auto tsIt = g_LoginTimestamps.find(ch.name);
+                            if (tsIt != g_LoginTimestamps.end()) {
+                                time_t now_t = std::time(nullptr);
+                                int elapsed = (int)difftime(now_t, (time_t)tsIt->second);
+                                std::string ago;
+                                if (elapsed < 60) ago = "Just now";
+                                else if (elapsed < 3600) ago = std::to_string(elapsed / 60) + "m ago";
+                                else if (elapsed < 86400) ago = std::to_string(elapsed / 3600) + "h ago";
+                                else ago = std::to_string(elapsed / 86400) + "d ago";
+                                if (!first) Sep(); else first = false;
+                                ImGui::TextColored(dim, "Login %s", ago.c_str());
+                            }
+                            if (!ch.crafting.empty()) {
+                                if (!first) Sep(); else first = false;
+                                float iconSize = ImGui::GetTextLineHeight();
+                                for (size_t ci = 0; ci < ch.crafting.size(); ci++) {
+                                    if (ci > 0) ImGui::SameLine(0, 8);
+                                    const std::string& disc = ch.crafting[ci];
+                                    uint32_t iconId = GetCraftingIconId(disc);
+                                    const char* iconUrl = GetCraftingIconUrl(disc);
+                                    Texture_t* tex = AlterEgo::IconManager::GetIcon(iconId);
+                                    if ((!tex || !tex->Resource) && iconUrl) {
+                                        AlterEgo::IconManager::RequestIcon(iconId, iconUrl);
+                                    }
+                                    if (tex && tex->Resource) {
+                                        ImGui::Image(tex->Resource, ImVec2(iconSize, iconSize));
+                                    } else {
+                                        ImGui::TextColored(dim, "%.3s", disc.c_str());
+                                    }
+                                    if (ImGui::IsItemHovered()) {
+                                        ImGui::SetTooltip("%s", disc.c_str());
+                                    }
+                                    ImGui::SameLine(0, 3);
+                                    int lvl = (ci < ch.crafting_levels.size()) ? ch.crafting_levels[ci] : 0;
+                                    ImGui::TextColored(dim, "%d", lvl);
+                                }
+                            }
                         }
                     }
 
