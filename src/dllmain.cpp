@@ -10999,8 +10999,9 @@ static void RenderAchievements() {
         SaveAchTrackerState();
     }
     ImGui::SameLine();
-    if (g_AchProgressFetching) ImGui::PushStyleVar(ImGuiStyleVar_Alpha, 0.5f);
-    if (ImGui::Button(g_AchProgressFetching ? "Refreshing..." : "Refresh") && !g_AchProgressFetching) {
+    if (g_AchProgressFetching) {
+        RenderSpinner("", ImVec4(0.95f, 0.85f, 0.55f, 1.0f));
+    } else if (ImGui::Button("Refresh")) {
         g_AchGroupsFetched = false;
         g_AchActiveEventFetched = false;
         FetchAchGroups();
@@ -11015,7 +11016,6 @@ static void RenderAchievements() {
             SendAchProgressQuery(pinnedCopy);
         }
     }
-    if (g_AchProgressFetching) ImGui::PopStyleVar();
 
     // Status message
     {
@@ -11718,8 +11718,9 @@ static void RenderAchPopout() {
         // Toolbar
         ImGui::Checkbox("Show completed steps", &g_AchShowCompletedSteps);
         ImGui::SameLine();
-        if (g_AchProgressFetching) ImGui::PushStyleVar(ImGuiStyleVar_Alpha, 0.5f);
-        if (RenderChipButton(g_AchProgressFetching ? "Refreshing...##pop" : "Refresh##pop", false) && !g_AchProgressFetching) {
+        if (g_AchProgressFetching) {
+            RenderSpinner("", ImVec4(0.95f, 0.85f, 0.55f, 1.0f));
+        } else if (RenderChipButton("Refresh##pop", false)) {
             std::vector<uint32_t> pinnedCopy;
             {
                 std::lock_guard<std::recursive_mutex> lock(g_AchMutex);
@@ -11729,7 +11730,6 @@ static void RenderAchPopout() {
                 SendAchProgressQuery(pinnedCopy);
             }
         }
-        if (g_AchProgressFetching) ImGui::PopStyleVar();
         ImGui::Separator();
 
         if (s_popoutCache.empty()) {
