@@ -1566,12 +1566,16 @@ static void RenderVaultPeriodSection(const char* title, const char* resetLabel,
         return;
     }
 
-    // Inline summary: claimed count + total AA earned
+    // Inline summary: claimed count + total AA earned.
+    // Meta bonus AA is added to the totals so users see the true cap
+    // (e.g. daily 4/5 grants a meta bonus; weekly 6/8 grants a meta bonus).
     int claimedCount = 0, totalAA = 0, earnedAA = 0;
     for (const auto& o : period.objectives) {
         if (o.claimed) { claimedCount++; earnedAA += o.acclaim; }
         totalAA += o.acclaim;
     }
+    totalAA += period.meta_reward_astral;
+    if (period.meta_reward_claimed) earnedAA += period.meta_reward_astral;
 
     ImGui::Indent(4.0f);
     ImGui::TextColored(ImVec4(0.55f, 0.53f, 0.45f, 1.0f),
