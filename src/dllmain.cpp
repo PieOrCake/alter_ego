@@ -3940,6 +3940,50 @@ static void RenderBuildPanel(const AlterEgo::Character& ch) {
             ImVec2 selectedCenters[3] = {};
             bool hasSelected[3] = {false, false, false};
 
+            // Spec background banner (panoramic art) behind the trait grid.
+            // Scaled to fit row height, native aspect preserved, anchored left,
+            // with a fade-to-transparent overlay on the right so the trait icons
+            // remain readable. Drawn BEFORE the table so the table content draws
+            // on top of the banner.
+            if (!specInfo->background_url.empty()) {
+                uint32_t bgKey = spec.spec_id + 1000000;
+                Texture_t* bgTex = AlterEgo::IconManager::GetIcon(bgKey);
+                if (bgTex && bgTex->Resource && bgTex->Height > 0) {
+                    ImVec2 rowOrigin = ImGui::GetCursorScreenPos();
+                    float rowW = ImGui::GetContentRegionAvail().x;
+                    float rowH = iconSz * 3 + ImGui::GetStyle().CellPadding.y * 6;
+                    ImDrawList* dl = ImGui::GetWindowDrawList();
+                    float scale = rowH / (float)bgTex->Height;
+                    float drawW = (float)bgTex->Width * scale;
+                    dl->PushClipRect(rowOrigin,
+                        ImVec2(rowOrigin.x + rowW, rowOrigin.y + rowH), true);
+                    dl->AddImage(bgTex->Resource,
+                        rowOrigin,
+                        ImVec2(rowOrigin.x + drawW, rowOrigin.y + rowH),
+                        ImVec2(0, 0), ImVec2(1, 1),
+                        IM_COL32(255, 255, 255, 110));
+                    // Fade from transparent on the left half to dark on the right,
+                    // so trait icons sit on a dimmer backdrop and stay readable.
+                    float fadeStart = rowOrigin.x + drawW * 0.35f;
+                    float fadeEnd   = rowOrigin.x + drawW;
+                    dl->AddRectFilledMultiColor(
+                        ImVec2(fadeStart, rowOrigin.y),
+                        ImVec2(fadeEnd,   rowOrigin.y + rowH),
+                        IM_COL32(15, 17, 23, 0),   IM_COL32(15, 17, 23, 200),
+                        IM_COL32(15, 17, 23, 200), IM_COL32(15, 17, 23, 0));
+                    // Extend the dim beyond banner edge across remaining row width.
+                    if (fadeEnd < rowOrigin.x + rowW) {
+                        dl->AddRectFilled(
+                            ImVec2(fadeEnd, rowOrigin.y),
+                            ImVec2(rowOrigin.x + rowW, rowOrigin.y + rowH),
+                            IM_COL32(15, 17, 23, 200));
+                    }
+                    dl->PopClipRect();
+                } else {
+                    AlterEgo::IconManager::RequestIcon(bgKey, specInfo->background_url);
+                }
+            }
+
             // Outer 2-column table: [Spec Icon] [6-col trait grid]
             char outerId[32];
             snprintf(outerId, sizeof(outerId), "##so_%u", spec.spec_id);
@@ -3956,9 +4000,8 @@ static void RenderBuildPanel(const AlterEgo::Character& ch) {
                 float padY = (gridH - SPEC_PORTRAIT_SIZE) * 0.5f;
                 if (padY > 0) ImGui::SetCursorPosY(ImGui::GetCursorPosY() + padY);
 
-                if (specInfo && !specInfo->background_url.empty()) {
-                    uint32_t bgKey = spec.spec_id + 1000000;
-                    Texture_t* tex = AlterEgo::IconManager::GetIcon(bgKey);
+                if (specInfo && !specInfo->icon_url.empty()) {
+                    Texture_t* tex = AlterEgo::IconManager::GetIcon(spec.spec_id);
                     if (tex && tex->Resource) {
                         ImVec2 p = ImGui::GetCursorScreenPos();
                         specCenter = ImVec2(p.x + SPEC_PORTRAIT_SIZE * 0.5f,
@@ -3966,7 +4009,7 @@ static void RenderBuildPanel(const AlterEgo::Character& ch) {
                         ImGui::Image(tex->Resource,
                             ImVec2(SPEC_PORTRAIT_SIZE, SPEC_PORTRAIT_SIZE));
                     } else {
-                        AlterEgo::IconManager::RequestIcon(bgKey, specInfo->background_url);
+                        AlterEgo::IconManager::RequestIcon(spec.spec_id, specInfo->icon_url);
                         ImVec2 p = ImGui::GetCursorScreenPos();
                         specCenter = ImVec2(p.x + SPEC_PORTRAIT_SIZE * 0.5f,
                                             p.y + SPEC_PORTRAIT_SIZE * 0.5f);
@@ -7165,6 +7208,44 @@ static void RenderSavedBuildPreview(const AlterEgo::SavedBuild& build, bool show
             ImVec2 selectedCenters[3] = {};
             bool hasSelected[3] = {false, false, false};
 
+            // Spec background banner behind the trait grid (panoramic art,
+            // native aspect, anchored left, fade to dark on the right).
+            if (!specInfo->background_url.empty()) {
+                uint32_t bgKey = spec.spec_id + 1000000;
+                Texture_t* bgTex = AlterEgo::IconManager::GetIcon(bgKey);
+                if (bgTex && bgTex->Resource && bgTex->Height > 0) {
+                    ImVec2 rowOrigin = ImGui::GetCursorScreenPos();
+                    float rowW = ImGui::GetContentRegionAvail().x;
+                    float rowH = iconSz * 3 + ImGui::GetStyle().CellPadding.y * 6;
+                    ImDrawList* dl = ImGui::GetWindowDrawList();
+                    float scale = rowH / (float)bgTex->Height;
+                    float drawW = (float)bgTex->Width * scale;
+                    dl->PushClipRect(rowOrigin,
+                        ImVec2(rowOrigin.x + rowW, rowOrigin.y + rowH), true);
+                    dl->AddImage(bgTex->Resource,
+                        rowOrigin,
+                        ImVec2(rowOrigin.x + drawW, rowOrigin.y + rowH),
+                        ImVec2(0, 0), ImVec2(1, 1),
+                        IM_COL32(255, 255, 255, 110));
+                    float fadeStart = rowOrigin.x + drawW * 0.35f;
+                    float fadeEnd   = rowOrigin.x + drawW;
+                    dl->AddRectFilledMultiColor(
+                        ImVec2(fadeStart, rowOrigin.y),
+                        ImVec2(fadeEnd,   rowOrigin.y + rowH),
+                        IM_COL32(15, 17, 23, 0),   IM_COL32(15, 17, 23, 200),
+                        IM_COL32(15, 17, 23, 200), IM_COL32(15, 17, 23, 0));
+                    if (fadeEnd < rowOrigin.x + rowW) {
+                        dl->AddRectFilled(
+                            ImVec2(fadeEnd, rowOrigin.y),
+                            ImVec2(rowOrigin.x + rowW, rowOrigin.y + rowH),
+                            IM_COL32(15, 17, 23, 200));
+                    }
+                    dl->PopClipRect();
+                } else {
+                    AlterEgo::IconManager::RequestIcon(bgKey, specInfo->background_url);
+                }
+            }
+
             char outerId[32];
             snprintf(outerId, sizeof(outerId), "##lso_%u", spec.spec_id);
             if (ImGui::BeginTable(outerId, 2,
@@ -7179,9 +7260,8 @@ static void RenderSavedBuildPreview(const AlterEgo::SavedBuild& build, bool show
                 float padY = (gridH - SPEC_PORTRAIT_SIZE) * 0.5f;
                 if (padY > 0) ImGui::SetCursorPosY(ImGui::GetCursorPosY() + padY);
 
-                if (specInfo && !specInfo->background_url.empty()) {
-                    uint32_t bgKey = spec.spec_id + 1000000;
-                    Texture_t* tex = AlterEgo::IconManager::GetIcon(bgKey);
+                if (specInfo && !specInfo->icon_url.empty()) {
+                    Texture_t* tex = AlterEgo::IconManager::GetIcon(spec.spec_id);
                     if (tex && tex->Resource) {
                         ImVec2 p = ImGui::GetCursorScreenPos();
                         specCenter = ImVec2(p.x + SPEC_PORTRAIT_SIZE * 0.5f,
@@ -7189,7 +7269,7 @@ static void RenderSavedBuildPreview(const AlterEgo::SavedBuild& build, bool show
                         ImGui::Image(tex->Resource,
                             ImVec2(SPEC_PORTRAIT_SIZE, SPEC_PORTRAIT_SIZE));
                     } else {
-                        AlterEgo::IconManager::RequestIcon(bgKey, specInfo->background_url);
+                        AlterEgo::IconManager::RequestIcon(spec.spec_id, specInfo->icon_url);
                         ImVec2 p = ImGui::GetCursorScreenPos();
                         specCenter = ImVec2(p.x + SPEC_PORTRAIT_SIZE * 0.5f,
                                             p.y + SPEC_PORTRAIT_SIZE * 0.5f);
