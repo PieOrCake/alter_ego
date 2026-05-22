@@ -18,6 +18,7 @@
 
 #include "nexus/Nexus.h"
 #include "imgui.h"
+#include "imgui_internal.h"
 #include "GW2API.h"
 #include "IconManager.h"
 #include "ChatLink.h"
@@ -13048,38 +13049,46 @@ void AddonOptions() {
     if (ImGui::Checkbox("Compact mode", &g_CompactCharList)) {
         SaveSettings();
     }
-    if (!g_CompactCharList) {
-        ImGui::Indent(16.0f);
-        if (ImGui::Checkbox("Crafting Profession Icons", &g_ShowCraftingIcons)) {
-            SaveSettings();
-        }
-        if (ImGui::Checkbox("Age", &g_ShowAge)) {
-            SaveSettings();
-        }
-        if (ImGui::Checkbox("Playtime", &g_ShowPlaytime)) {
-            SaveSettings();
-        }
-        if (ImGui::Checkbox("Last Login", &g_ShowLastLogin)) {
-            SaveSettings();
-        }
-        ImGui::Text("Next Birthday");
-        ImGui::SameLine();
-        if (ImGui::RadioButton("Always", g_BirthdayMode == 0)) {
-            g_BirthdayMode = 0;
-            SaveSettings();
-        }
-        ImGui::SameLine();
-        if (ImGui::RadioButton("A week out", g_BirthdayMode == 1)) {
-            g_BirthdayMode = 1;
-            SaveSettings();
-        }
-        ImGui::SameLine();
-        if (ImGui::RadioButton("Never", g_BirthdayMode == 2)) {
-            g_BirthdayMode = 2;
-            SaveSettings();
-        }
-        ImGui::Unindent(16.0f);
+    ImGui::TextColored(ImVec4(0.55f, 0.53f, 0.45f, 1.0f),
+        "Columns shown when compact mode is off:");
+    ImGui::Indent(16.0f);
+    if (g_CompactCharList) {
+        ImGui::PushItemFlag(ImGuiItemFlags_Disabled, true);
+        ImGui::PushStyleVar(ImGuiStyleVar_Alpha, ImGui::GetStyle().Alpha * 0.45f);
     }
+    if (ImGui::Checkbox("Crafting Profession Icons", &g_ShowCraftingIcons)) {
+        SaveSettings();
+    }
+    if (ImGui::Checkbox("Age", &g_ShowAge)) {
+        SaveSettings();
+    }
+    if (ImGui::Checkbox("Playtime", &g_ShowPlaytime)) {
+        SaveSettings();
+    }
+    if (ImGui::Checkbox("Last Login", &g_ShowLastLogin)) {
+        SaveSettings();
+    }
+    ImGui::Text("Next Birthday");
+    ImGui::SameLine();
+    if (ImGui::RadioButton("Always", g_BirthdayMode == 0)) {
+        g_BirthdayMode = 0;
+        SaveSettings();
+    }
+    ImGui::SameLine();
+    if (ImGui::RadioButton("A week out", g_BirthdayMode == 1)) {
+        g_BirthdayMode = 1;
+        SaveSettings();
+    }
+    ImGui::SameLine();
+    if (ImGui::RadioButton("Never", g_BirthdayMode == 2)) {
+        g_BirthdayMode = 2;
+        SaveSettings();
+    }
+    if (g_CompactCharList) {
+        ImGui::PopStyleVar();
+        ImGui::PopItemFlag();
+    }
+    ImGui::Unindent(16.0f);
 }
 
 // --- Export: GetAddonDef ---
