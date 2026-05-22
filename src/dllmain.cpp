@@ -13046,11 +13046,13 @@ void AddonOptions() {
     }
     ImGui::Spacing();
     RenderSectionHeader("Character List", ImVec4(0.70f, 0.58f, 0.20f, 1.0f));
-    if (ImGui::Checkbox("Compact mode", &g_CompactCharList)) {
+    bool expanded = !g_CompactCharList;
+    if (ImGui::Checkbox("Expanded mode", &expanded)) {
+        g_CompactCharList = !expanded;
         SaveSettings();
     }
     ImGui::TextColored(ImVec4(0.55f, 0.53f, 0.45f, 1.0f),
-        "Columns shown when compact mode is off:");
+        "Columns shown in expanded mode:");
     ImGui::Indent(16.0f);
     if (g_CompactCharList) {
         ImGui::PushItemFlag(ImGuiItemFlags_Disabled, true);
