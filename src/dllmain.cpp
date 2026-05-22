@@ -3931,28 +3931,28 @@ static void RenderBuildPanel(const AlterEgo::Character& ch) {
         ImVec4 specColor = isElite ? ImVec4(1.0f, 0.8f, 0.2f, 1.0f) : ImVec4(0.8f, 0.8f, 0.8f, 1.0f);
 
         ImGui::PushID(spec.spec_id);
-        ImGui::TextColored(specColor, "%s", specName.c_str());
 
         if (specInfo && specInfo->major_traits.size() >= 9) {
-            // Positions for dotted lines
+            // Positions for dotted lines. specCenter stays at (0,0) — the hex
+            // icon has been replaced by the spec name overlay on the banner.
             ImVec2 specCenter(0, 0);
             ImVec2 minorCenters[3] = {};
             ImVec2 selectedCenters[3] = {};
             bool hasSelected[3] = {false, false, false};
 
+            // Row geometry — used for banner backdrop and name overlay.
+            ImVec2 rowOrigin = ImGui::GetCursorScreenPos();
+            float rowW = ImGui::GetContentRegionAvail().x;
+            float rowH = iconSz * 3 + ImGui::GetStyle().CellPadding.y * 6;
+            ImDrawList* dl = ImGui::GetWindowDrawList();
+
             // Spec background banner (panoramic art) behind the trait grid.
             // Scaled to fit row height, native aspect preserved, anchored left,
-            // with a fade-to-transparent overlay on the right so the trait icons
-            // remain readable. Drawn BEFORE the table so the table content draws
-            // on top of the banner.
+            // with a fade-to-dark overlay on the right so trait icons stay readable.
             if (!specInfo->background_url.empty()) {
                 uint32_t bgKey = spec.spec_id + 1000000;
                 Texture_t* bgTex = AlterEgo::IconManager::GetIcon(bgKey);
                 if (bgTex && bgTex->Resource && bgTex->Height > 0) {
-                    ImVec2 rowOrigin = ImGui::GetCursorScreenPos();
-                    float rowW = ImGui::GetContentRegionAvail().x;
-                    float rowH = iconSz * 3 + ImGui::GetStyle().CellPadding.y * 6;
-                    ImDrawList* dl = ImGui::GetWindowDrawList();
                     float scale = rowH / (float)bgTex->Height;
                     float drawW = (float)bgTex->Width * scale;
                     dl->PushClipRect(rowOrigin,
@@ -3962,8 +3962,6 @@ static void RenderBuildPanel(const AlterEgo::Character& ch) {
                         ImVec2(rowOrigin.x + drawW, rowOrigin.y + rowH),
                         ImVec2(0, 0), ImVec2(1, 1),
                         IM_COL32(255, 255, 255, 110));
-                    // Fade from transparent on the left half to dark on the right,
-                    // so trait icons sit on a dimmer backdrop and stay readable.
                     float fadeStart = rowOrigin.x + drawW * 0.35f;
                     float fadeEnd   = rowOrigin.x + drawW;
                     dl->AddRectFilledMultiColor(
@@ -3971,7 +3969,6 @@ static void RenderBuildPanel(const AlterEgo::Character& ch) {
                         ImVec2(fadeEnd,   rowOrigin.y + rowH),
                         IM_COL32(15, 17, 23, 0),   IM_COL32(15, 17, 23, 200),
                         IM_COL32(15, 17, 23, 200), IM_COL32(15, 17, 23, 0));
-                    // Extend the dim beyond banner edge across remaining row width.
                     if (fadeEnd < rowOrigin.x + rowW) {
                         dl->AddRectFilled(
                             ImVec2(fadeEnd, rowOrigin.y),
@@ -3984,7 +3981,49 @@ static void RenderBuildPanel(const AlterEgo::Character& ch) {
                 }
             }
 
-            // Outer 2-column table: [Spec Icon] [6-col trait grid]
+            // Spec name overlay on the banner's left. Drop shadow underneath
+            // for legibility against bright banner art. Tooltip is attached
+            // to an invisible button covering the same area.
+            {
+                const float nameScale = 1.5f;
+                float nameSize = ImGui::GetFontSize() * nameScale;
+                ImVec2 nameAnchor(rowOrigin.x + 14.0f,
+                                  rowOrigin.y + rowH * 0.5f - nameSize * 0.5f);
+                dl->AddText(NULL, nameSize,
+                    ImVec2(nameAnchor.x + 1.0f, nameAnchor.y + 1.0f),
+                    IM_COL32(0, 0, 0, 220), specName.c_str());
+                dl->AddText(NULL, nameSize, nameAnchor,
+                    ImGui::ColorConvertFloat4ToU32(specColor), specName.c_str());
+
+                ImVec2 hitSz = ImGui::CalcTextSize(specName.c_str());
+                hitSz.x *= nameScale; hitSz.y *= nameScale;
+                ImVec2 prevPos = ImGui::GetCursorScreenPos();
+                ImGui::SetCursorScreenPos(nameAnchor);
+                ImGui::InvisibleButton("##specname", hitSz);
+                if (ImGui::IsItemHovered()) {
+                    ImGui::BeginTooltip();
+                    ImGui::TextColored(specColor, "%s", specName.c_str());
+                    const auto* specDesc = AlterEgo::GetSpecDescription(specName);
+                    if (specDesc) {
+                        ImGui::Spacing();
+                        ImGui::TextColored(ImVec4(0.7f, 0.85f, 0.9f, 1.0f),
+                            "\"%s\"", specDesc->flavor);
+                        ImGui::Spacing();
+                        ImGui::PushTextWrapPos(350.0f);
+                        ImGui::TextColored(ImVec4(0.8f, 0.8f, 0.8f, 1.0f),
+                            "%s", specDesc->description);
+                        ImGui::PopTextWrapPos();
+                    } else {
+                        ImGui::TextColored(ImVec4(0.6f, 0.6f, 0.6f, 1.0f), "%s%s",
+                            specInfo->profession.c_str(),
+                            isElite ? " (Elite)" : "");
+                    }
+                    ImGui::EndTooltip();
+                }
+                ImGui::SetCursorScreenPos(prevPos);
+            }
+
+            // Outer 2-column table: [reserved left gutter] [6-col trait grid]
             char outerId[32];
             snprintf(outerId, sizeof(outerId), "##so_%u", spec.spec_id);
             if (ImGui::BeginTable(outerId, 2,
@@ -3994,57 +4033,10 @@ static void RenderBuildPanel(const AlterEgo::Character& ch) {
                 ImGui::TableSetupColumn("", ImGuiTableColumnFlags_WidthStretch);
                 ImGui::TableNextRow();
 
-                // Column 0: Spec icon, aligned with middle trait row
+                // Column 0: left gutter (banner art shows through; spec name
+                // is overlaid above via the drawlist).
                 ImGui::TableNextColumn();
-                float gridH = iconSz * 3 + ImGui::GetStyle().CellPadding.y * 6;
-                float padY = (gridH - SPEC_PORTRAIT_SIZE) * 0.5f;
-                if (padY > 0) ImGui::SetCursorPosY(ImGui::GetCursorPosY() + padY);
-
-                if (specInfo && !specInfo->name.empty()) {
-                    // Use the wiki's 256x256 highres hex icon instead of the
-                    // API's 64x64 PNG — sharper at trait-grid display size.
-                    uint32_t hiresKey = spec.spec_id + 2000000;
-                    Texture_t* tex = AlterEgo::IconManager::GetIcon(hiresKey);
-                    if (tex && tex->Resource) {
-                        ImVec2 p = ImGui::GetCursorScreenPos();
-                        specCenter = ImVec2(p.x + SPEC_PORTRAIT_SIZE * 0.5f,
-                                            p.y + SPEC_PORTRAIT_SIZE * 0.5f);
-                        ImGui::Image(tex->Resource,
-                            ImVec2(SPEC_PORTRAIT_SIZE, SPEC_PORTRAIT_SIZE));
-                    } else {
-                        std::string wikiName = specInfo->name;
-                        std::replace(wikiName.begin(), wikiName.end(), ' ', '_');
-                        std::string wikiUrl =
-                            "https://wiki.guildwars2.com/wiki/Special:FilePath/" +
-                            wikiName + "_icon_(highres).png";
-                        AlterEgo::IconManager::RequestIcon(hiresKey, wikiUrl);
-                        ImVec2 p = ImGui::GetCursorScreenPos();
-                        specCenter = ImVec2(p.x + SPEC_PORTRAIT_SIZE * 0.5f,
-                                            p.y + SPEC_PORTRAIT_SIZE * 0.5f);
-                        ImGui::Dummy(ImVec2(SPEC_PORTRAIT_SIZE, SPEC_PORTRAIT_SIZE));
-                    }
-                    // Spec tooltip
-                    if (ImGui::IsItemHovered()) {
-                        ImGui::BeginTooltip();
-                        ImGui::TextColored(specColor, "%s", specName.c_str());
-                        const auto* specDesc = AlterEgo::GetSpecDescription(specName);
-                        if (specDesc) {
-                            ImGui::Spacing();
-                            ImGui::TextColored(ImVec4(0.7f, 0.85f, 0.9f, 1.0f),
-                                "\"%s\"", specDesc->flavor);
-                            ImGui::Spacing();
-                            ImGui::PushTextWrapPos(350.0f);
-                            ImGui::TextColored(ImVec4(0.8f, 0.8f, 0.8f, 1.0f),
-                                "%s", specDesc->description);
-                            ImGui::PopTextWrapPos();
-                        } else {
-                            ImGui::TextColored(ImVec4(0.6f, 0.6f, 0.6f, 1.0f), "%s%s",
-                                specInfo->profession.c_str(),
-                                isElite ? " (Elite)" : "");
-                        }
-                        ImGui::EndTooltip();
-                    }
-                }
+                ImGui::Dummy(ImVec2(SPEC_PORTRAIT_SIZE, rowH - 2.0f));
 
                 // Column 1: 6-column × 3-row trait grid
                 ImGui::TableNextColumn();
@@ -4083,11 +4075,9 @@ static void RenderBuildPanel(const AlterEgo::Character& ch) {
                 ImGui::EndTable();
             }
 
-            // Draw dotted lines connecting: spec → minor0 → sel0 → minor1 → sel1 → minor2 → sel2
-            // Lines stop at icon edges (inset by radius) so they don't overlap icons
-            ImDrawList* dl = ImGui::GetWindowDrawList();
+            // Draw dotted lines connecting traits (spec→minor0 is skipped
+            // because the hex icon is gone). Lines stop at icon edges.
             ImU32 lineCol = IM_COL32(180, 230, 255, 180);
-            float specR = SPEC_PORTRAIT_SIZE * 0.5f;
             float minorR = MINOR_TRAIT_SIZE * 0.5f;
             float majorR = iconSz * 0.5f;
 
@@ -4101,22 +4091,28 @@ static void RenderBuildPanel(const AlterEgo::Character& ch) {
                 return true;
             };
 
-            ImVec2 prev = specCenter;
-            float prevR = specR;
+            // Skip the first connector — the hex spec icon is gone, so there
+            // is no anchor on the left for a leading dotted line.
+            ImVec2 prev;
+            float prevR = 0;
+            bool havePrev = false;
+            (void)specCenter;
             for (int tier = 0; tier < 3; tier++) {
                 if (minorCenters[tier].x > 0) {
-                    ImVec2 la, lb;
-                    if (InsetLine(prev, minorCenters[tier], prevR, minorR, la, lb))
-                        DrawDottedLine(dl, la, lb, lineCol);
-                    prev = minorCenters[tier];
-                    prevR = minorR;
+                    if (havePrev) {
+                        ImVec2 la, lb;
+                        if (InsetLine(prev, minorCenters[tier], prevR, minorR, la, lb))
+                            DrawDottedLine(dl, la, lb, lineCol);
+                    }
+                    prev = minorCenters[tier]; prevR = minorR; havePrev = true;
                 }
                 if (hasSelected[tier]) {
-                    ImVec2 la, lb;
-                    if (InsetLine(prev, selectedCenters[tier], prevR, majorR, la, lb))
-                        DrawDottedLine(dl, la, lb, lineCol);
-                    prev = selectedCenters[tier];
-                    prevR = majorR;
+                    if (havePrev) {
+                        ImVec2 la, lb;
+                        if (InsetLine(prev, selectedCenters[tier], prevR, majorR, la, lb))
+                            DrawDottedLine(dl, la, lb, lineCol);
+                    }
+                    prev = selectedCenters[tier]; prevR = majorR; havePrev = true;
                 }
             }
         }
@@ -7208,7 +7204,6 @@ static void RenderSavedBuildPreview(const AlterEgo::SavedBuild& build, bool show
         ImVec4 specColor = isElite ? ImVec4(1.0f, 0.8f, 0.2f, 1.0f) : ImVec4(0.8f, 0.8f, 0.8f, 1.0f);
 
         ImGui::PushID(spec.spec_id);
-        ImGui::TextColored(specColor, "%s", specName.c_str());
 
         if (specInfo && specInfo->major_traits.size() >= 9) {
             ImVec2 specCenter(0, 0);
@@ -7216,16 +7211,17 @@ static void RenderSavedBuildPreview(const AlterEgo::SavedBuild& build, bool show
             ImVec2 selectedCenters[3] = {};
             bool hasSelected[3] = {false, false, false};
 
+            ImVec2 rowOrigin = ImGui::GetCursorScreenPos();
+            float rowW = ImGui::GetContentRegionAvail().x;
+            float rowH = iconSz * 3 + ImGui::GetStyle().CellPadding.y * 6;
+            ImDrawList* dl = ImGui::GetWindowDrawList();
+
             // Spec background banner behind the trait grid (panoramic art,
             // native aspect, anchored left, fade to dark on the right).
             if (!specInfo->background_url.empty()) {
                 uint32_t bgKey = spec.spec_id + 1000000;
                 Texture_t* bgTex = AlterEgo::IconManager::GetIcon(bgKey);
                 if (bgTex && bgTex->Resource && bgTex->Height > 0) {
-                    ImVec2 rowOrigin = ImGui::GetCursorScreenPos();
-                    float rowW = ImGui::GetContentRegionAvail().x;
-                    float rowH = iconSz * 3 + ImGui::GetStyle().CellPadding.y * 6;
-                    ImDrawList* dl = ImGui::GetWindowDrawList();
                     float scale = rowH / (float)bgTex->Height;
                     float drawW = (float)bgTex->Width * scale;
                     dl->PushClipRect(rowOrigin,
@@ -7254,6 +7250,42 @@ static void RenderSavedBuildPreview(const AlterEgo::SavedBuild& build, bool show
                 }
             }
 
+            // Spec name overlay on the banner's left.
+            {
+                const float nameScale = 1.5f;
+                float nameSize = ImGui::GetFontSize() * nameScale;
+                ImVec2 nameAnchor(rowOrigin.x + 14.0f,
+                                  rowOrigin.y + rowH * 0.5f - nameSize * 0.5f);
+                dl->AddText(NULL, nameSize,
+                    ImVec2(nameAnchor.x + 1.0f, nameAnchor.y + 1.0f),
+                    IM_COL32(0, 0, 0, 220), specName.c_str());
+                dl->AddText(NULL, nameSize, nameAnchor,
+                    ImGui::ColorConvertFloat4ToU32(specColor), specName.c_str());
+
+                ImVec2 hitSz = ImGui::CalcTextSize(specName.c_str());
+                hitSz.x *= nameScale; hitSz.y *= nameScale;
+                ImVec2 prevPos = ImGui::GetCursorScreenPos();
+                ImGui::SetCursorScreenPos(nameAnchor);
+                ImGui::InvisibleButton("##specname", hitSz);
+                if (ImGui::IsItemHovered()) {
+                    ImGui::BeginTooltip();
+                    ImGui::TextColored(specColor, "%s", specName.c_str());
+                    const auto* specDesc = AlterEgo::GetSpecDescription(specName);
+                    if (specDesc) {
+                        ImGui::Spacing();
+                        ImGui::TextColored(ImVec4(0.7f, 0.85f, 0.9f, 1.0f),
+                            "\"%s\"", specDesc->flavor);
+                        ImGui::Spacing();
+                        ImGui::PushTextWrapPos(350.0f);
+                        ImGui::TextColored(ImVec4(0.8f, 0.8f, 0.8f, 1.0f),
+                            "%s", specDesc->description);
+                        ImGui::PopTextWrapPos();
+                    }
+                    ImGui::EndTooltip();
+                }
+                ImGui::SetCursorScreenPos(prevPos);
+            }
+
             char outerId[32];
             snprintf(outerId, sizeof(outerId), "##lso_%u", spec.spec_id);
             if (ImGui::BeginTable(outerId, 2,
@@ -7264,50 +7296,7 @@ static void RenderSavedBuildPreview(const AlterEgo::SavedBuild& build, bool show
                 ImGui::TableNextRow();
 
                 ImGui::TableNextColumn();
-                float gridH = iconSz * 3 + ImGui::GetStyle().CellPadding.y * 6;
-                float padY = (gridH - SPEC_PORTRAIT_SIZE) * 0.5f;
-                if (padY > 0) ImGui::SetCursorPosY(ImGui::GetCursorPosY() + padY);
-
-                if (specInfo && !specInfo->name.empty()) {
-                    // Use the wiki's 256x256 highres hex icon instead of the
-                    // API's 64x64 PNG — sharper at trait-grid display size.
-                    uint32_t hiresKey = spec.spec_id + 2000000;
-                    Texture_t* tex = AlterEgo::IconManager::GetIcon(hiresKey);
-                    if (tex && tex->Resource) {
-                        ImVec2 p = ImGui::GetCursorScreenPos();
-                        specCenter = ImVec2(p.x + SPEC_PORTRAIT_SIZE * 0.5f,
-                                            p.y + SPEC_PORTRAIT_SIZE * 0.5f);
-                        ImGui::Image(tex->Resource,
-                            ImVec2(SPEC_PORTRAIT_SIZE, SPEC_PORTRAIT_SIZE));
-                    } else {
-                        std::string wikiName = specInfo->name;
-                        std::replace(wikiName.begin(), wikiName.end(), ' ', '_');
-                        std::string wikiUrl =
-                            "https://wiki.guildwars2.com/wiki/Special:FilePath/" +
-                            wikiName + "_icon_(highres).png";
-                        AlterEgo::IconManager::RequestIcon(hiresKey, wikiUrl);
-                        ImVec2 p = ImGui::GetCursorScreenPos();
-                        specCenter = ImVec2(p.x + SPEC_PORTRAIT_SIZE * 0.5f,
-                                            p.y + SPEC_PORTRAIT_SIZE * 0.5f);
-                        ImGui::Dummy(ImVec2(SPEC_PORTRAIT_SIZE, SPEC_PORTRAIT_SIZE));
-                    }
-                    if (ImGui::IsItemHovered()) {
-                        ImGui::BeginTooltip();
-                        ImGui::TextColored(specColor, "%s", specName.c_str());
-                        const auto* specDesc = AlterEgo::GetSpecDescription(specName);
-                        if (specDesc) {
-                            ImGui::Spacing();
-                            ImGui::TextColored(ImVec4(0.7f, 0.85f, 0.9f, 1.0f),
-                                "\"%s\"", specDesc->flavor);
-                            ImGui::Spacing();
-                            ImGui::PushTextWrapPos(350.0f);
-                            ImGui::TextColored(ImVec4(0.8f, 0.8f, 0.8f, 1.0f),
-                                "%s", specDesc->description);
-                            ImGui::PopTextWrapPos();
-                        }
-                        ImGui::EndTooltip();
-                    }
-                }
+                ImGui::Dummy(ImVec2(SPEC_PORTRAIT_SIZE, rowH - 2.0f));
 
                 ImGui::TableNextColumn();
                 char innerId[32];
@@ -7350,11 +7339,10 @@ static void RenderSavedBuildPreview(const AlterEgo::SavedBuild& build, bool show
                 ImGui::EndTable();
             }
 
-            ImDrawList* dl = ImGui::GetWindowDrawList();
             ImU32 lineCol = IM_COL32(180, 230, 255, 180);
-            float specR = SPEC_PORTRAIT_SIZE * 0.5f;
             float minorR = MINOR_TRAIT_SIZE * 0.5f;
             float majorR = iconSz * 0.5f;
+            (void)specCenter;
 
             auto InsetLine = [](ImVec2 a, ImVec2 b, float rA, float rB, ImVec2& outA, ImVec2& outB) {
                 float dx = b.x - a.x, dy = b.y - a.y;
@@ -7366,22 +7354,26 @@ static void RenderSavedBuildPreview(const AlterEgo::SavedBuild& build, bool show
                 return true;
             };
 
-            ImVec2 prev = specCenter;
-            float prevR = specR;
+            // Skip the first connector — the hex spec icon is gone.
+            ImVec2 prev;
+            float prevR = 0;
+            bool havePrev = false;
             for (int tier = 0; tier < 3; tier++) {
                 if (minorCenters[tier].x > 0) {
-                    ImVec2 la, lb;
-                    if (InsetLine(prev, minorCenters[tier], prevR, minorR, la, lb))
-                        DrawDottedLine(dl, la, lb, lineCol);
-                    prev = minorCenters[tier];
-                    prevR = minorR;
+                    if (havePrev) {
+                        ImVec2 la, lb;
+                        if (InsetLine(prev, minorCenters[tier], prevR, minorR, la, lb))
+                            DrawDottedLine(dl, la, lb, lineCol);
+                    }
+                    prev = minorCenters[tier]; prevR = minorR; havePrev = true;
                 }
                 if (hasSelected[tier]) {
-                    ImVec2 la, lb;
-                    if (InsetLine(prev, selectedCenters[tier], prevR, majorR, la, lb))
-                        DrawDottedLine(dl, la, lb, lineCol);
-                    prev = selectedCenters[tier];
-                    prevR = majorR;
+                    if (havePrev) {
+                        ImVec2 la, lb;
+                        if (InsetLine(prev, selectedCenters[tier], prevR, majorR, la, lb))
+                            DrawDottedLine(dl, la, lb, lineCol);
+                    }
+                    prev = selectedCenters[tier]; prevR = majorR; havePrev = true;
                 }
             }
         }
