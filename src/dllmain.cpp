@@ -2500,9 +2500,23 @@ static void FetchDetailsForCharacter(const AlterEgo::Character& ch) {
     if (!ch.profession.empty()) AlterEgo::GW2API::FetchProfessionInfoAsync(ch.profession);
 }
 
+// Reject any string that contains path-traversal characters before joining
+// it into a filesystem path. Character names come from MumbleLink / H&S and
+// SHOULD never contain these, but we don't want a malformed source to escape
+// the portrait directory.
+static bool IsSafePathComponent(const std::string& s) {
+    if (s.empty()) return false;
+    if (s == "." || s == "..") return false;
+    for (char c : s) {
+        if (c == '/' || c == '\\' || c == ':' || c == '\0') return false;
+    }
+    return true;
+}
+
 // Resolve and load a per-character portrait texture (PNG/JPG from AlterEgo/portraits/<name>.<ext>)
 // Returns nullptr if not present; caches result. Same backing data as the Equipment-panel overlay.
 static Texture_t* GetCharacterPortraitTexture(const AlterEgo::Character& ch) {
+    if (!IsSafePathComponent(ch.name)) return nullptr;
     auto cacheIt = s_portraitPathCache.find(ch.name);
     if (cacheIt == s_portraitPathCache.end()) {
         if (s_portraitMissing.find(ch.name) != s_portraitMissing.end()) return nullptr;
@@ -3546,7 +3560,8 @@ static void RenderEquipmentPanel(const AlterEgo::Character& ch) {
                         overlayAspect = (float)overlayTex->Width / (float)overlayTex->Height;
                     overlayTint = IM_COL32(255, 255, 255, 55); // slightly more visible than race art
                 }
-            } else if (s_portraitMissing.find(ch.name) == s_portraitMissing.end()) {
+            } else if (s_portraitMissing.find(ch.name) == s_portraitMissing.end() &&
+                       IsSafePathComponent(ch.name)) {
                 // Haven't checked yet — scan for portrait file (ensure dir exists)
                 std::string portraitDir = AlterEgo::GW2API::GetDataDirectory() + "/portraits";
                 std::filesystem::create_directories(portraitDir);
@@ -4845,6 +4860,13 @@ static std::string g_RelayCache_Code;
 static std::string g_RelayCache_Body;
 
 static bool ImportBuildFromRelay(const std::string& code, AlterEgo::SavedBuild& out, std::string& error) {
+    // Defense in depth: callers validate via IsRelayCode, but reject anything
+    // unexpected here too before splicing it into the URL.
+    if (!IsRelayCode(code)) {
+        error = "Invalid code format.";
+        return false;
+    }
+
     std::string body;
 
     // Use cached response if this is a retry for the same code

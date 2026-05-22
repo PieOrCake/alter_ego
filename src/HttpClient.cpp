@@ -13,7 +13,7 @@ namespace Skinventory {
         if (!hInternet) return "";
 
         DWORD flags = INTERNET_FLAG_RELOAD | INTERNET_FLAG_NO_CACHE_WRITE |
-                      INTERNET_FLAG_SECURE | INTERNET_FLAG_IGNORE_CERT_CN_INVALID;
+                      INTERNET_FLAG_SECURE;
 
         HINTERNET hUrl = InternetOpenUrlA(hInternet, url.c_str(), NULL, 0, flags, 0);
         if (!hUrl) {
@@ -40,7 +40,7 @@ namespace Skinventory {
         if (!hInternet) return result;
 
         DWORD flags = INTERNET_FLAG_RELOAD | INTERNET_FLAG_NO_CACHE_WRITE |
-                      INTERNET_FLAG_SECURE | INTERNET_FLAG_IGNORE_CERT_CN_INVALID;
+                      INTERNET_FLAG_SECURE;
 
         HINTERNET hUrl = InternetOpenUrlA(hInternet, url.c_str(), NULL, 0, flags, 0);
         if (!hUrl) {
@@ -72,7 +72,7 @@ namespace Skinventory {
         if (!hInternet) return result;
 
         DWORD flags = INTERNET_FLAG_RELOAD | INTERNET_FLAG_NO_CACHE_WRITE |
-                      INTERNET_FLAG_SECURE | INTERNET_FLAG_IGNORE_CERT_CN_INVALID;
+                      INTERNET_FLAG_SECURE;
 
         HINTERNET hUrl = InternetOpenUrlA(hInternet, url.c_str(),
             headers.c_str(), (DWORD)headers.size(), flags, 0);
@@ -117,7 +117,7 @@ namespace Skinventory {
 
         DWORD flags = INTERNET_FLAG_RELOAD | INTERNET_FLAG_NO_CACHE_WRITE;
         if (uc.nScheme == INTERNET_SCHEME_HTTPS)
-            flags |= INTERNET_FLAG_SECURE | INTERNET_FLAG_IGNORE_CERT_CN_INVALID;
+            flags |= INTERNET_FLAG_SECURE;
 
         HINTERNET hConnect = InternetConnectA(hInternet, host, uc.nPort,
             NULL, NULL, INTERNET_SERVICE_HTTP, 0, 0);
