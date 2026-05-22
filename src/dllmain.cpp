@@ -12784,14 +12784,14 @@ void AddonRender() {
                             if (age >= 0) {
                                 IconValue(43766,
                                     "https://render.guildwars2.com/file/1932B731E2F70F2F1E3D453A4B7C26B24CF647C0/603246.png",
-                                    "Age", "%d", age);
+                                    "Age", "%dy", age);
                                 first = false;
                             }
                             if (bdays > 0) {
                                 if (!first) Sep(); else first = false;
                                 IconValue(98501,
                                     "https://render.guildwars2.com/file/5C759EC1C95F3BE53C167A7D9F0D27BF3AE56277/625611.png",
-                                    "Birthday", bdays == 1 ? "%d day" : "%d days", bdays);
+                                    "Birthday", "%dd away", bdays);
                             }
                             auto tsIt = g_LoginTimestamps.find(ch.name);
                             if (tsIt != g_LoginTimestamps.end()) {
