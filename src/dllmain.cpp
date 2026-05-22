@@ -599,6 +599,11 @@ static uint32_t g_AchSelectedCatId = 0;    // currently selected category ID
 static bool g_AchCatFetching = false;      // fetching defs for selected category
 static bool g_AchProgressFetching = false; // fetching account progress
 static bool g_AchNeedRequery = false;      // deferred requery on account change
+static bool g_AchProgressDirty = false;    // persistent cache needs flushing
+static std::string g_AchCachedAccount;     // account whose data is currently in g_AchProgress
+static std::chrono::steady_clock::time_point g_AchLastSave;
+static void SaveAchProgress(const std::string& account);
+static void LoadAchProgress(const std::string& account);
 static std::atomic<uint32_t> g_AchCatProgressPending{0}; // catId needing progress query (set by bg thread)
 static std::atomic<bool> g_AchRetryPending{false};       // PENDING retry for ach progress
 static uint64_t g_AchProgressGen = 0;      // incremented when progress updates, triggers popout cache rebuild
@@ -880,6 +885,7 @@ static void OnEvAlertAchievementCompleted(void* eventArgs) {
                 g_AchProgress[payload->ID] = std::move(p);
             }
             g_AchProgressGen++;
+            g_AchProgressDirty = true;
             g_AchOptimisticTime[payload->ID] = std::chrono::steady_clock::now();
         }
     }
@@ -2238,6 +2244,7 @@ static void OnAchProgressResponse(void* eventArgs) {
         }
         g_LastAchProgressQuery = std::chrono::steady_clock::now();
         g_AchProgressGen++;
+        g_AchProgressDirty = true;
     }
     g_AchProgressFetching = false;
 }
@@ -8649,6 +8656,9 @@ void AddonUnload() {
     SaveSettings();
     SaveAchTrackerState();
     if (g_LoginTimestampsDirty) SaveLoginTimestamps();
+    if (g_AchProgressDirty && !g_AchCachedAccount.empty()) {
+        SaveAchProgress(g_AchCachedAccount);
+    }
     AlterEgo::GW2API::SaveItemNameCache();
     APIDefs = nullptr;
 }
@@ -8676,6 +8686,91 @@ static void LoadLoginTimestamps() {
                 g_LoginTimestamps[it.key()] = it.value().get<int64_t>();
         }
     } catch (...) {}
+}
+
+// Sanitize an account name to a filename-safe slug (account names contain '.').
+static std::string SanitizeForFilename(const std::string& s) {
+    std::string out;
+    out.reserve(s.size());
+    for (char c : s) {
+        if (isalnum((unsigned char)c) || c == '-' || c == '_') out += c;
+        else out += '_';
+    }
+    return out;
+}
+
+// Persist g_AchProgress for the given account to disk. Per-account so that
+// switching accounts doesn't clobber the previous account's cache.
+static void SaveAchProgress(const std::string& account) {
+    if (account.empty()) return;
+    std::string dir = AlterEgo::GW2API::GetDataDirectory() + "/cache";
+    std::filesystem::create_directories(dir);
+    std::string path = dir + "/ach_progress_" + SanitizeForFilename(account) + ".json";
+
+    nlohmann::json j = nlohmann::json::object();
+    j["saved_at"] = (int64_t)std::time(nullptr);
+    nlohmann::json entries = nlohmann::json::object();
+    {
+        std::lock_guard<std::recursive_mutex> lock(g_AchMutex);
+        for (const auto& [id, p] : g_AchProgress) {
+            nlohmann::json e;
+            e["c"] = p.current;
+            e["m"] = p.max;
+            e["d"] = p.done;
+            e["r"] = p.repeated;
+            e["u"] = p.unlocked;
+            if (!p.completed_bits.empty()) {
+                nlohmann::json bits = nlohmann::json::array();
+                for (uint32_t b : p.completed_bits) bits.push_back(b);
+                e["b"] = bits;
+            }
+            entries[std::to_string(id)] = e;
+        }
+    }
+    j["entries"] = entries;
+
+    std::ofstream file(path);
+    if (file.is_open()) file << j.dump();
+    g_AchProgressDirty = false;
+    g_AchLastSave = std::chrono::steady_clock::now();
+}
+
+// Load achievement progress for an account from disk. Bumps the progress gen
+// so dependent UI caches (rail counts, popout) refresh.
+static void LoadAchProgress(const std::string& account) {
+    if (account.empty()) return;
+    std::string path = AlterEgo::GW2API::GetDataDirectory() + "/cache/ach_progress_" +
+                       SanitizeForFilename(account) + ".json";
+    std::ifstream file(path);
+    if (!file.is_open()) {
+        g_AchCachedAccount = account;
+        return;
+    }
+    try {
+        auto j = nlohmann::json::parse(file);
+        std::lock_guard<std::recursive_mutex> lock(g_AchMutex);
+        g_AchProgress.clear();
+        if (j.contains("entries") && j["entries"].is_object()) {
+            for (auto it = j["entries"].begin(); it != j["entries"].end(); ++it) {
+                AchProgress p;
+                p.id = (uint32_t)std::stoul(it.key());
+                const auto& e = it.value();
+                p.current = e.value("c", 0);
+                p.max = e.value("m", 0);
+                p.done = e.value("d", false);
+                p.repeated = e.value("r", 0);
+                p.unlocked = e.value("u", true);
+                if (e.contains("b") && e["b"].is_array()) {
+                    for (const auto& b : e["b"]) p.completed_bits.insert(b.get<uint32_t>());
+                }
+                g_AchProgress[p.id] = std::move(p);
+            }
+        }
+        g_AchProgressGen++;
+        g_AchCachedAccount = account;
+    } catch (...) {
+        g_AchCachedAccount = account;
+    }
 }
 
 void OnMumbleIdentityUpdated(void* eventArgs) {
@@ -10815,9 +10910,29 @@ static void RenderAchievements() {
         FetchActiveSpecialEvent();
     }
 
+    // Hydrate cache for the current account on first opportunity (post-H&S handshake).
+    {
+        const std::string& curAcct = AlterEgo::GW2API::GetCurrentAccountName();
+        if (!curAcct.empty() && g_AchCachedAccount != curAcct) {
+            LoadAchProgress(curAcct);
+        }
+    }
+
+    // Periodic flush: write dirty cache every 30s instead of on every change.
+    if (g_AchProgressDirty && !g_AchCachedAccount.empty()) {
+        auto now = std::chrono::steady_clock::now();
+        if (now - g_AchLastSave > std::chrono::seconds(30)) {
+            SaveAchProgress(g_AchCachedAccount);
+        }
+    }
+
     // Deferred requery on account change
     if (g_AchNeedRequery && !g_AchProgressFetching) {
         g_AchNeedRequery = false;
+        // Persist the outgoing account's progress before swapping.
+        if (g_AchProgressDirty && !g_AchCachedAccount.empty()) {
+            SaveAchProgress(g_AchCachedAccount);
+        }
         std::vector<uint32_t> pinnedCopy;
         {
             std::lock_guard<std::recursive_mutex> lock(g_AchMutex);
@@ -10826,6 +10941,10 @@ static void RenderAchievements() {
             g_AchProgressGen++;
             pinnedCopy = g_AchPinned;
         }
+        // Hydrate the new account from disk (instant rail counts; background refresh
+        // below catches any updates since the cache was written).
+        const std::string& newAcct = AlterEgo::GW2API::GetCurrentAccountName();
+        if (!newAcct.empty()) LoadAchProgress(newAcct);
         if (!pinnedCopy.empty()) {
             SendAchProgressQuery(pinnedCopy);
         }
