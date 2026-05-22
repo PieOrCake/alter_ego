@@ -12757,19 +12757,41 @@ void AddonRender() {
                             const ImVec4 dim(0.50f, 0.47f, 0.40f, 1.0f);
                             const ImVec4 dot(0.40f, 0.37f, 0.30f, 1.0f);
                             bool first = true;
+                            float iconSize = ImGui::GetTextLineHeight();
                             auto Sep = [&]() {
                                 ImGui::SameLine(0, 6);
                                 ImGui::TextColored(dot, "\xc2\xb7");
                                 ImGui::SameLine(0, 6);
                             };
+                            // Render an item-icon + value pair. Falls back to a
+                            // text label if the icon hasn't loaded yet.
+                            auto IconValue = [&](uint32_t iconId, const char* url,
+                                                 const char* tooltip, const char* fmt,
+                                                 auto value) {
+                                Texture_t* tex = AlterEgo::IconManager::GetIcon(iconId);
+                                if ((!tex || !tex->Resource) && url) {
+                                    AlterEgo::IconManager::RequestIcon(iconId, url);
+                                }
+                                if (tex && tex->Resource) {
+                                    ImGui::Image(tex->Resource, ImVec2(iconSize, iconSize));
+                                } else {
+                                    ImGui::TextColored(dim, "%s", tooltip);
+                                }
+                                if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", tooltip);
+                                ImGui::SameLine(0, 4);
+                                ImGui::TextColored(dim, fmt, value);
+                            };
                             if (age >= 0) {
-                                ImGui::TextColored(dim, "Age %d", age);
+                                IconValue(43766,
+                                    "https://render.guildwars2.com/file/1932B731E2F70F2F1E3D453A4B7C26B24CF647C0/603246.png",
+                                    "Age", "%d", age);
                                 first = false;
                             }
                             if (bdays > 0) {
                                 if (!first) Sep(); else first = false;
-                                ImGui::TextColored(dim, "Birthday in %d %s",
-                                    bdays, bdays == 1 ? "day" : "days");
+                                IconValue(98501,
+                                    "https://render.guildwars2.com/file/5C759EC1C95F3BE53C167A7D9F0D27BF3AE56277/625611.png",
+                                    "Birthday", bdays == 1 ? "%d day" : "%d days", bdays);
                             }
                             auto tsIt = g_LoginTimestamps.find(ch.name);
                             if (tsIt != g_LoginTimestamps.end()) {
@@ -12781,7 +12803,9 @@ void AddonRender() {
                                 else if (elapsed < 86400) ago = std::to_string(elapsed / 3600) + "h ago";
                                 else ago = std::to_string(elapsed / 86400) + "d ago";
                                 if (!first) Sep(); else first = false;
-                                ImGui::TextColored(dim, "Login %s", ago.c_str());
+                                IconValue(68326,
+                                    "https://render.guildwars2.com/file/01E7C8B0EB04F6E0CB25AA0403C96E0355B63A39/924581.png",
+                                    "Last login", "%s", ago.c_str());
                             }
                             if (!ch.crafting.empty()) {
                                 if (!first) Sep(); else first = false;
