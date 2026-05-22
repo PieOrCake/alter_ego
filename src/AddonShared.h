@@ -3,6 +3,7 @@
 // Implementations live in dllmain.cpp.
 
 #include <string>
+#include <functional>
 #include "nexus/Nexus.h"
 #include "imgui.h"
 
@@ -28,6 +29,15 @@ bool RenderChipButton(const char* label, bool active, ImVec4 accentColor = ImVec
 // width <= 0: caller sets width via SetNextItemWidth; > 0: sets width here.
 // Returns true when open — caller must call ImGui::EndCombo().
 bool RenderThemedCombo(const char* id, const char* current, float width = -1.0f);
+
+// Centered themed empty-state / first-run card.
+// iconTex: optional Nexus texture (pass nullptr to skip icon row).
+// primaryLabel / secondaryLabel: pass nullptr to omit the respective button.
+void RenderEmptyCard(Texture_t* iconTex,
+                     const char* headline,
+                     const char* body,
+                     const char* primaryLabel, std::function<void()> primaryCB,
+                     const char* secondaryLabel, std::function<void()> secondaryCB);
 
 // Returns the account name to use for per-account H&S queries.
 // Returns an empty string when "All Accounts" is selected.

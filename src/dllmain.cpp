@@ -14,6 +14,7 @@
 #include <filesystem>
 #include <chrono>
 #include <atomic>
+#include <functional>
 
 #include "nexus/Nexus.h"
 #include "imgui.h"
@@ -10136,6 +10137,93 @@ bool RenderThemedCombo(const char* id, const char* current, float width) {
     ImGui::PopStyleVar(1);
     ImGui::PopStyleColor(6);
     return open;
+}
+
+// Centered themed empty-state / first-run card.
+// iconTex:        optional Nexus texture. Pass nullptr to skip the icon row.
+// headline:       bold title text (gold).
+// body:           multi-line body text (wraps inside the card).
+// primaryLabel /  primary action button (gold). Pass nullptr to omit.
+//   primaryCB
+// secondaryLabel/ secondary action button (chip). Pass nullptr to omit.
+//   secondaryCB
+void RenderEmptyCard(Texture_t* iconTex,
+                     const char* headline,
+                     const char* body,
+                     const char* primaryLabel, std::function<void()> primaryCB,
+                     const char* secondaryLabel, std::function<void()> secondaryCB) {
+    const float cardW = 420.0f;
+    const float cardH = 260.0f;
+
+    ImVec2 avail = ImGui::GetContentRegionAvail();
+    float offsetX = (avail.x - cardW) * 0.5f;
+    float offsetY = (avail.y - cardH) * 0.5f;
+    if (offsetX < 0) offsetX = 0;
+    if (offsetY < 0) offsetY = 0;
+
+    ImGui::Dummy(ImVec2(0, offsetY));
+    ImGui::SetCursorPosX(ImGui::GetCursorPosX() + offsetX);
+
+    ImVec2 cardOrigin = ImGui::GetCursorScreenPos();
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+
+    dl->AddRectFilled(cardOrigin, ImVec2(cardOrigin.x + cardW, cardOrigin.y + cardH),
+                      IM_COL32(20, 17, 11, 235), 6.0f);
+    dl->AddRect(cardOrigin, ImVec2(cardOrigin.x + cardW, cardOrigin.y + cardH),
+                IM_COL32(178, 148, 51, 255), 6.0f, 0, 1.5f);
+
+    ImGui::BeginChild("##empty_card_inner", ImVec2(cardW, cardH), false,
+                      ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
+    ImGui::Dummy(ImVec2(0, 12));
+
+    if (iconTex && iconTex->Resource) {
+        float iconSize = 64.0f;
+        ImGui::SetCursorPosX((cardW - iconSize) * 0.5f);
+        ImGui::Image(iconTex->Resource, ImVec2(iconSize, iconSize));
+        ImGui::Dummy(ImVec2(0, 8));
+    }
+
+    if (headline && *headline) {
+        ImVec2 sz = ImGui::CalcTextSize(headline);
+        ImGui::SetCursorPosX((cardW - sz.x) * 0.5f);
+        ImGui::TextColored(ImVec4(0.95f, 0.85f, 0.55f, 1.0f), "%s", headline);
+        ImGui::Dummy(ImVec2(0, 6));
+    }
+
+    if (body && *body) {
+        float bodyW = cardW - 40.0f;
+        ImGui::SetCursorPosX((cardW - bodyW) * 0.5f);
+        ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + bodyW);
+        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.78f, 0.76f, 0.66f, 1.0f));
+        ImGui::TextWrapped("%s", body);
+        ImGui::PopStyleColor();
+        ImGui::PopTextWrapPos();
+        ImGui::Dummy(ImVec2(0, 14));
+    }
+
+    bool hasPrimary   = primaryLabel   && *primaryLabel;
+    bool hasSecondary = secondaryLabel && *secondaryLabel;
+    if (hasPrimary || hasSecondary) {
+        float pW = hasPrimary   ? ImGui::CalcTextSize(primaryLabel).x   + 24.0f : 0;
+        float sW = hasSecondary ? ImGui::CalcTextSize(secondaryLabel).x + 16.0f : 0;
+        float gap = (hasPrimary && hasSecondary) ? 10.0f : 0.0f;
+        float totalW = pW + sW + gap;
+        ImGui::SetCursorPosX((cardW - totalW) * 0.5f);
+
+        if (hasPrimary) {
+            if (RenderGoldButton(primaryLabel, ImVec2(pW, 0))) {
+                if (primaryCB) primaryCB();
+            }
+            if (hasSecondary) ImGui::SameLine(0, gap);
+        }
+        if (hasSecondary) {
+            if (RenderChipButton(secondaryLabel, false)) {
+                if (secondaryCB) secondaryCB();
+            }
+        }
+    }
+
+    ImGui::EndChild();
 }
 
 
