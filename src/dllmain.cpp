@@ -3956,8 +3956,9 @@ static void RenderBuildPanel(const AlterEgo::Character& ch) {
                 float padY = (gridH - SPEC_PORTRAIT_SIZE) * 0.5f;
                 if (padY > 0) ImGui::SetCursorPosY(ImGui::GetCursorPosY() + padY);
 
-                if (specInfo && !specInfo->icon_url.empty()) {
-                    Texture_t* tex = AlterEgo::IconManager::GetIcon(spec.spec_id);
+                if (specInfo && !specInfo->background_url.empty()) {
+                    uint32_t bgKey = spec.spec_id + 1000000;
+                    Texture_t* tex = AlterEgo::IconManager::GetIcon(bgKey);
                     if (tex && tex->Resource) {
                         ImVec2 p = ImGui::GetCursorScreenPos();
                         specCenter = ImVec2(p.x + SPEC_PORTRAIT_SIZE * 0.5f,
@@ -3965,7 +3966,7 @@ static void RenderBuildPanel(const AlterEgo::Character& ch) {
                         ImGui::Image(tex->Resource,
                             ImVec2(SPEC_PORTRAIT_SIZE, SPEC_PORTRAIT_SIZE));
                     } else {
-                        AlterEgo::IconManager::RequestIcon(spec.spec_id, specInfo->icon_url);
+                        AlterEgo::IconManager::RequestIcon(bgKey, specInfo->background_url);
                         ImVec2 p = ImGui::GetCursorScreenPos();
                         specCenter = ImVec2(p.x + SPEC_PORTRAIT_SIZE * 0.5f,
                                             p.y + SPEC_PORTRAIT_SIZE * 0.5f);
@@ -7178,8 +7179,9 @@ static void RenderSavedBuildPreview(const AlterEgo::SavedBuild& build, bool show
                 float padY = (gridH - SPEC_PORTRAIT_SIZE) * 0.5f;
                 if (padY > 0) ImGui::SetCursorPosY(ImGui::GetCursorPosY() + padY);
 
-                if (specInfo && !specInfo->icon_url.empty()) {
-                    Texture_t* tex = AlterEgo::IconManager::GetIcon(spec.spec_id);
+                if (specInfo && !specInfo->background_url.empty()) {
+                    uint32_t bgKey = spec.spec_id + 1000000;
+                    Texture_t* tex = AlterEgo::IconManager::GetIcon(bgKey);
                     if (tex && tex->Resource) {
                         ImVec2 p = ImGui::GetCursorScreenPos();
                         specCenter = ImVec2(p.x + SPEC_PORTRAIT_SIZE * 0.5f,
@@ -7187,7 +7189,7 @@ static void RenderSavedBuildPreview(const AlterEgo::SavedBuild& build, bool show
                         ImGui::Image(tex->Resource,
                             ImVec2(SPEC_PORTRAIT_SIZE, SPEC_PORTRAIT_SIZE));
                     } else {
-                        AlterEgo::IconManager::RequestIcon(spec.spec_id, specInfo->icon_url);
+                        AlterEgo::IconManager::RequestIcon(bgKey, specInfo->background_url);
                         ImVec2 p = ImGui::GetCursorScreenPos();
                         specCenter = ImVec2(p.x + SPEC_PORTRAIT_SIZE * 0.5f,
                                             p.y + SPEC_PORTRAIT_SIZE * 0.5f);
