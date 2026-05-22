@@ -27,14 +27,28 @@ If an LLM creating software upsets you, then perhaps this repo isn't for you. Mo
 
 ## Screenshots
 
-![Equipment panel](screenshots/equipment.png)
-![Build panel](screenshots/build.png)
-![Build library](screenshots/library.png)
-![Vault & Clears](screenshots/clears.png)
-![Wizard's Vault](screenshots/vault.png)
-![Achievements](screenshots/cheevs.png)
-![Achievement tracker popout](screenshots/tracker.png)
-![Skinventory](screenshots/skinventory.png)
+<details>
+<summary>Click to expand screenshots</summary>
+
+<table>
+  <tr>
+    <td align="center"><a href="screenshots/equipment.png"><img src="screenshots/thumbs/equipment.jpg" width="280" alt="Equipment panel"></a><br><sub>Equipment</sub></td>
+    <td align="center"><a href="screenshots/build.png"><img src="screenshots/thumbs/build.jpg" width="280" alt="Build panel"></a><br><sub>Build</sub></td>
+    <td align="center"><a href="screenshots/library.png"><img src="screenshots/thumbs/library.jpg" width="280" alt="Build library"></a><br><sub>Build Library</sub></td>
+  </tr>
+  <tr>
+    <td align="center"><a href="screenshots/clears.png"><img src="screenshots/thumbs/clears.jpg" width="280" alt="Vault & Clears"></a><br><sub>Vault &amp; Clears</sub></td>
+    <td align="center"><a href="screenshots/vault.png"><img src="screenshots/thumbs/vault.jpg" width="280" alt="Wizard's Vault"></a><br><sub>Wizard's Vault</sub></td>
+    <td align="center"><a href="screenshots/cheevs.png"><img src="screenshots/thumbs/cheevs.jpg" width="280" alt="Achievements"></a><br><sub>Achievements</sub></td>
+  </tr>
+  <tr>
+    <td align="center"><a href="screenshots/tracker.png"><img src="screenshots/thumbs/tracker.jpg" width="280" alt="Achievement tracker popout"></a><br><sub>Tracker popout</sub></td>
+    <td align="center"><a href="screenshots/skinventory.png"><img src="screenshots/thumbs/skinventory.jpg" width="280" alt="Skinventory"></a><br><sub>Skinventory</sub></td>
+    <td></td>
+  </tr>
+</table>
+
+</details>
 
 ## Character Portraits
 
