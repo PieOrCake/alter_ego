@@ -30,8 +30,10 @@ If an LLM creating software upsets you, then perhaps this repo isn't for you. Mo
 ![Equipment panel](screenshots/equipment.png)
 ![Build panel](screenshots/build.png)
 ![Build library](screenshots/library.png)
-![Clears](screenshots/clears.png)
+![Vault & Clears](screenshots/clears.png)
+![Wizard's Vault](screenshots/vault.png)
 ![Achievements](screenshots/cheevs.png)
+![Achievement tracker popout](screenshots/tracker.png)
 ![Skinventory](screenshots/skinventory.png)
 
 ## Character Portraits

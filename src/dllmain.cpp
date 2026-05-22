@@ -34,10 +34,10 @@
 #include "Clears.h"
 
 // Version constants
-#define V_MAJOR 0
-#define V_MINOR 9
-#define V_BUILD 5
-#define V_REVISION 2
+#define V_MAJOR 1
+#define V_MINOR 0
+#define V_BUILD 0
+#define V_REVISION 0
 
 // Quick Access icon identifiers
 #define QA_ID "QA_ALTER_EGO"
