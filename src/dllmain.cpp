@@ -7486,7 +7486,7 @@ static void RenderBuildLibrary() {
     const auto& builds = AlterEgo::GW2API::GetSavedBuilds();
 
     // Import toggle button
-    if (ImGui::Button(g_LibShowImport ? "Cancel Import" : "+ Import Build")) {
+    if (RenderGoldButton(g_LibShowImport ? "Cancel Import" : "+ Import Build")) {
         g_LibShowImport = !g_LibShowImport;
         g_LibImportBuf[0] = '\0';
         g_LibImportName[0] = '\0';
@@ -7496,11 +7496,13 @@ static void RenderBuildLibrary() {
 
     // Events: Chat addon status
     ImGui::SameLine();
-    if (g_ChatAddonConnected) {
-        ImGui::TextColored(ImVec4(0.35f, 0.82f, 0.35f, 1.0f), "Chat: Connected");
-    } else {
-        ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.4f, 1.0f), "Chat: Not detected");
-        if (ImGui::IsItemHovered()) {
+    {
+        ImVec4 green(0.35f, 0.82f, 0.35f, 1.0f);
+        ImVec4 red  (1.00f, 0.40f, 0.40f, 1.0f);
+        (void)RenderChipButton(g_ChatAddonConnected ? "Chat: Connected" : "Chat: Not detected",
+                               /*active=*/g_ChatAddonConnected,
+                               g_ChatAddonConnected ? green : red);
+        if (!g_ChatAddonConnected && ImGui::IsItemHovered()) {
             ImGui::BeginTooltip();
             ImGui::Text("Install 'Events: Chat' from the Nexus addon library");
             ImGui::Text("to import builds shared in GW2 chat.");
@@ -7538,7 +7540,7 @@ static void RenderBuildLibrary() {
         }
 
         ImGui::SameLine();
-        if (ImGui::Button("Import") || autoRetry) {
+        if (RenderGoldButton("Import") || autoRetry) {
             std::string input(g_LibImportBuf);
             std::string name(g_LibImportName);
             if (input.empty()) {
@@ -8122,7 +8124,7 @@ static void RenderBuildLibrary() {
         }
 
         // Done button to leave edit mode (also persists pending edits)
-        if (ImGui::SmallButton("Done##edit")) {
+        if (RenderChipButton("Done##edit", false)) {
             AlterEgo::GW2API::UpdateSavedBuild(build.id, g_LibEditName, g_LibEditNotes);
             g_LibEditMode = false;
         }
