@@ -8179,12 +8179,12 @@ static void RenderBuildLibrary() {
         ImGui::TextColored(ImVec4(0.5f, 0.5f, 0.5f, 1.0f), "Code expires in 15 minutes. Single use.");
 
         ImGui::Spacing();
-        if (ImGui::Button("Copy Code", ImVec2(100, 0))) {
+        if (RenderGoldButton("Copy Code", ImVec2(100, 0))) {
             CopyToClipboard(g_RelayResultCode);
             if (APIDefs) APIDefs->GUI_SendAlert("Relay code copied!");
         }
         ImGui::SameLine();
-        if (ImGui::Button("Done", ImVec2(80, 0))) {
+        if (RenderChipButton("Done", false)) {
             g_RelayResultCode.clear();
             ImGui::CloseCurrentPopup();
         }
@@ -8196,7 +8196,7 @@ static void RenderBuildLibrary() {
             ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoMove)) {
         ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.4f, 1.0f), "%s", g_RelayResultError.c_str());
         ImGui::Spacing();
-        if (ImGui::Button("OK", ImVec2(80, 0))) {
+        if (RenderChipButton("OK", false)) {
             g_RelayResultError.clear();
             ImGui::CloseCurrentPopup();
         }
