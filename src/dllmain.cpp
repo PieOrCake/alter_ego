@@ -10084,6 +10084,30 @@ bool RenderGoldButton(const char* label, ImVec2 size) {
     return clicked;
 }
 
+// Small chip-style button — secondary action vocabulary.
+// active: highlighted (gold tint) when true.
+// accentColor: optional accent (e.g. profession colour or status colour). Pass ImVec4(0,0,0,0) for default gold.
+// Returns true on click.
+bool RenderChipButton(const char* label, bool active, ImVec4 accentColor) {
+    bool hasAccent = (accentColor.w > 0.01f);
+    ImVec4 base    = hasAccent ? ImVec4(accentColor.x * 0.30f, accentColor.y * 0.30f, accentColor.z * 0.30f, 0.55f)
+                               : ImVec4(0.15f, 0.13f, 0.09f, 0.55f);
+    ImVec4 hover   = hasAccent ? ImVec4(accentColor.x * 0.45f, accentColor.y * 0.45f, accentColor.z * 0.45f, 0.75f)
+                               : ImVec4(0.25f, 0.20f, 0.10f, 0.75f);
+    ImVec4 actVar  = hasAccent ? ImVec4(accentColor.x * 0.55f, accentColor.y * 0.55f, accentColor.z * 0.55f, 0.90f)
+                               : ImVec4(0.50f, 0.40f, 0.18f, 0.80f);
+    ImVec4 text    = active    ? ImVec4(0.95f, 0.85f, 0.55f, 1.00f)
+                               : ImVec4(0.78f, 0.76f, 0.66f, 1.00f);
+
+    ImGui::PushStyleColor(ImGuiCol_Button,        active ? actVar : base);
+    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, hover);
+    ImGui::PushStyleColor(ImGuiCol_ButtonActive,  actVar);
+    ImGui::PushStyleColor(ImGuiCol_Text,          text);
+    bool clicked = ImGui::SmallButton(label);
+    ImGui::PopStyleColor(4);
+    return clicked;
+}
+
 
 // =========================================================================
 // Achievement Tracker — UI

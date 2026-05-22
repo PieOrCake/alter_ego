@@ -20,6 +20,10 @@ void RenderSectionHeader(const char* label, ImVec4 color, const char* suffix = n
 // Returns true on click. Pass explicit size for fixed-width rows.
 bool RenderGoldButton(const char* label, ImVec2 size = ImVec2(0, 0));
 
+// Small chip-style button — secondary action vocabulary.
+// active: highlighted when true. accentColor: pass ImVec4(0,0,0,0) for default gold tint.
+bool RenderChipButton(const char* label, bool active, ImVec4 accentColor = ImVec4(0, 0, 0, 0));
+
 // Returns the account name to use for per-account H&S queries.
 // Returns an empty string when "All Accounts" is selected.
 std::string GetEffectiveAccountName();
