@@ -3954,10 +3954,21 @@ static void RenderBuildPanel(const AlterEgo::Character& ch) {
                 Texture_t* bgTex = AlterEgo::IconManager::GetIcon(bgKey);
                 if (bgTex && bgTex->Resource && bgTex->Height > 0) {
                     // Zoom the banner and anchor it to the row's bottom-left.
-                    // Most source banners place their subject in the lower half
-                    // of the canvas, so bottom-anchor brings subjects into view
-                    // (matches gw2_rocks playground's "background-position: bottom left").
-                    const float zoom = 1.4f;
+                    // 15 specs ship with banners whose top ~66% is transparent
+                    // (opaque art lives only in the bottom band). Those need a
+                    // much higher zoom so the opaque content fills the row;
+                    // everyone else gets the standard 1.4x.
+                    auto IsTransparentTopSpec = [](uint32_t id) {
+                        switch (id) {
+                            case 4: case 7: case 11: case 20: case 22:
+                            case 28: case 35: case 36: case 44: case 51:
+                            case 54: case 68: case 70: case 71: case 72:
+                                return true;
+                            default:
+                                return false;
+                        }
+                    };
+                    const float zoom = IsTransparentTopSpec(spec.spec_id) ? 2.94f : 1.4f;
                     float drawH = rowH * zoom;
                     float scale = drawH / (float)bgTex->Height;
                     float drawW = (float)bgTex->Width * scale;
@@ -7233,10 +7244,21 @@ static void RenderSavedBuildPreview(const AlterEgo::SavedBuild& build, bool show
                 Texture_t* bgTex = AlterEgo::IconManager::GetIcon(bgKey);
                 if (bgTex && bgTex->Resource && bgTex->Height > 0) {
                     // Zoom the banner and anchor it to the row's bottom-left.
-                    // Most source banners place their subject in the lower half
-                    // of the canvas, so bottom-anchor brings subjects into view
-                    // (matches gw2_rocks playground's "background-position: bottom left").
-                    const float zoom = 1.4f;
+                    // 15 specs ship with banners whose top ~66% is transparent
+                    // (opaque art lives only in the bottom band). Those need a
+                    // much higher zoom so the opaque content fills the row;
+                    // everyone else gets the standard 1.4x.
+                    auto IsTransparentTopSpec = [](uint32_t id) {
+                        switch (id) {
+                            case 4: case 7: case 11: case 20: case 22:
+                            case 28: case 35: case 36: case 44: case 51:
+                            case 54: case 68: case 70: case 71: case 72:
+                                return true;
+                            default:
+                                return false;
+                        }
+                    };
+                    const float zoom = IsTransparentTopSpec(spec.spec_id) ? 2.94f : 1.4f;
                     float drawH = rowH * zoom;
                     float scale = drawH / (float)bgTex->Height;
                     float drawW = (float)bgTex->Width * scale;
