@@ -4000,8 +4000,11 @@ static void RenderBuildPanel(const AlterEgo::Character& ch) {
                 float padY = (gridH - SPEC_PORTRAIT_SIZE) * 0.5f;
                 if (padY > 0) ImGui::SetCursorPosY(ImGui::GetCursorPosY() + padY);
 
-                if (specInfo && !specInfo->icon_url.empty()) {
-                    Texture_t* tex = AlterEgo::IconManager::GetIcon(spec.spec_id);
+                if (specInfo && !specInfo->name.empty()) {
+                    // Use the wiki's 256x256 highres hex icon instead of the
+                    // API's 64x64 PNG — sharper at trait-grid display size.
+                    uint32_t hiresKey = spec.spec_id + 2000000;
+                    Texture_t* tex = AlterEgo::IconManager::GetIcon(hiresKey);
                     if (tex && tex->Resource) {
                         ImVec2 p = ImGui::GetCursorScreenPos();
                         specCenter = ImVec2(p.x + SPEC_PORTRAIT_SIZE * 0.5f,
@@ -4009,7 +4012,12 @@ static void RenderBuildPanel(const AlterEgo::Character& ch) {
                         ImGui::Image(tex->Resource,
                             ImVec2(SPEC_PORTRAIT_SIZE, SPEC_PORTRAIT_SIZE));
                     } else {
-                        AlterEgo::IconManager::RequestIcon(spec.spec_id, specInfo->icon_url);
+                        std::string wikiName = specInfo->name;
+                        std::replace(wikiName.begin(), wikiName.end(), ' ', '_');
+                        std::string wikiUrl =
+                            "https://wiki.guildwars2.com/wiki/Special:FilePath/" +
+                            wikiName + "_icon_(highres).png";
+                        AlterEgo::IconManager::RequestIcon(hiresKey, wikiUrl);
                         ImVec2 p = ImGui::GetCursorScreenPos();
                         specCenter = ImVec2(p.x + SPEC_PORTRAIT_SIZE * 0.5f,
                                             p.y + SPEC_PORTRAIT_SIZE * 0.5f);
@@ -7260,8 +7268,11 @@ static void RenderSavedBuildPreview(const AlterEgo::SavedBuild& build, bool show
                 float padY = (gridH - SPEC_PORTRAIT_SIZE) * 0.5f;
                 if (padY > 0) ImGui::SetCursorPosY(ImGui::GetCursorPosY() + padY);
 
-                if (specInfo && !specInfo->icon_url.empty()) {
-                    Texture_t* tex = AlterEgo::IconManager::GetIcon(spec.spec_id);
+                if (specInfo && !specInfo->name.empty()) {
+                    // Use the wiki's 256x256 highres hex icon instead of the
+                    // API's 64x64 PNG — sharper at trait-grid display size.
+                    uint32_t hiresKey = spec.spec_id + 2000000;
+                    Texture_t* tex = AlterEgo::IconManager::GetIcon(hiresKey);
                     if (tex && tex->Resource) {
                         ImVec2 p = ImGui::GetCursorScreenPos();
                         specCenter = ImVec2(p.x + SPEC_PORTRAIT_SIZE * 0.5f,
@@ -7269,7 +7280,12 @@ static void RenderSavedBuildPreview(const AlterEgo::SavedBuild& build, bool show
                         ImGui::Image(tex->Resource,
                             ImVec2(SPEC_PORTRAIT_SIZE, SPEC_PORTRAIT_SIZE));
                     } else {
-                        AlterEgo::IconManager::RequestIcon(spec.spec_id, specInfo->icon_url);
+                        std::string wikiName = specInfo->name;
+                        std::replace(wikiName.begin(), wikiName.end(), ' ', '_');
+                        std::string wikiUrl =
+                            "https://wiki.guildwars2.com/wiki/Special:FilePath/" +
+                            wikiName + "_icon_(highres).png";
+                        AlterEgo::IconManager::RequestIcon(hiresKey, wikiUrl);
                         ImVec2 p = ImGui::GetCursorScreenPos();
                         specCenter = ImVec2(p.x + SPEC_PORTRAIT_SIZE * 0.5f,
                                             p.y + SPEC_PORTRAIT_SIZE * 0.5f);
