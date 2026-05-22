@@ -3953,24 +3953,23 @@ static void RenderBuildPanel(const AlterEgo::Character& ch) {
                 uint32_t bgKey = spec.spec_id + 1000000;
                 Texture_t* bgTex = AlterEgo::IconManager::GetIcon(bgKey);
                 if (bgTex && bgTex->Resource && bgTex->Height > 0) {
-                    // Scale banner taller than the row (1.4x) and anchor it
-                    // so its horizontal center aligns with the old hex-icon
-                    // position. Vertically anchored to the row's bottom so
-                    // subjects (characters) pop into view; sky/top clips out.
+                    // Zoom the banner, anchor its left edge to the row left,
+                    // and vertically center it before scaling so equal slivers
+                    // clip off the top and bottom. Subjects designed around the
+                    // source's center band stay centered in the row.
                     const float zoom = 1.4f;
                     float drawH = rowH * zoom;
                     float scale = drawH / (float)bgTex->Height;
                     float drawW = (float)bgTex->Width * scale;
-                    float focalX = rowOrigin.x + SPEC_PORTRAIT_SIZE * 0.5f + 8.0f;
-                    float bannerLeft = focalX - drawW * 0.5f;
-                    float bannerTop  = rowOrigin.y + rowH - drawH;
+                    float bannerLeft = rowOrigin.x;
+                    float bannerTop  = rowOrigin.y + (rowH - drawH) * 0.5f;
                     dl->PushClipRect(rowOrigin,
                         ImVec2(rowOrigin.x + rowW, rowOrigin.y + rowH), true);
                     dl->AddImage(bgTex->Resource,
                         ImVec2(bannerLeft, bannerTop),
                         ImVec2(bannerLeft + drawW, bannerTop + drawH),
                         ImVec2(0, 0), ImVec2(1, 1),
-                        IM_COL32(255, 255, 255, 110));
+                        IM_COL32(255, 255, 255, 200));
                     // Fade-to-dark anchored to where the trait grid begins,
                     // not the banner. Trait icons start just past column 0.
                     float fadeStart = rowOrigin.x + SPEC_PORTRAIT_SIZE + 20.0f;
@@ -7233,24 +7232,23 @@ static void RenderSavedBuildPreview(const AlterEgo::SavedBuild& build, bool show
                 uint32_t bgKey = spec.spec_id + 1000000;
                 Texture_t* bgTex = AlterEgo::IconManager::GetIcon(bgKey);
                 if (bgTex && bgTex->Resource && bgTex->Height > 0) {
-                    // Scale banner taller than the row (1.4x) and anchor it
-                    // so its horizontal center aligns with the old hex-icon
-                    // position. Vertically anchored to the row's bottom so
-                    // subjects (characters) pop into view; sky/top clips out.
+                    // Zoom the banner, anchor its left edge to the row left,
+                    // and vertically center it before scaling so equal slivers
+                    // clip off the top and bottom. Subjects designed around the
+                    // source's center band stay centered in the row.
                     const float zoom = 1.4f;
                     float drawH = rowH * zoom;
                     float scale = drawH / (float)bgTex->Height;
                     float drawW = (float)bgTex->Width * scale;
-                    float focalX = rowOrigin.x + SPEC_PORTRAIT_SIZE * 0.5f + 8.0f;
-                    float bannerLeft = focalX - drawW * 0.5f;
-                    float bannerTop  = rowOrigin.y + rowH - drawH;
+                    float bannerLeft = rowOrigin.x;
+                    float bannerTop  = rowOrigin.y + (rowH - drawH) * 0.5f;
                     dl->PushClipRect(rowOrigin,
                         ImVec2(rowOrigin.x + rowW, rowOrigin.y + rowH), true);
                     dl->AddImage(bgTex->Resource,
                         ImVec2(bannerLeft, bannerTop),
                         ImVec2(bannerLeft + drawW, bannerTop + drawH),
                         ImVec2(0, 0), ImVec2(1, 1),
-                        IM_COL32(255, 255, 255, 110));
+                        IM_COL32(255, 255, 255, 200));
                     // Fade-to-dark anchored to where the trait grid begins,
                     // not the banner. Trait icons start just past column 0.
                     float fadeStart = rowOrigin.x + SPEC_PORTRAIT_SIZE + 20.0f;
