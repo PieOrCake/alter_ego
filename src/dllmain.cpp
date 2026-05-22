@@ -711,6 +711,12 @@ static int g_LibFilterMode = 0;        // 0=All, 1=PvE, 2=WvW, 3=PvP, 4=Raid, 5=
 static char g_LibSearchBuf[128] = "";
 static char g_LibImportBuf[4096] = "";
 static char g_LibImportName[128] = "";
+// Auto-retry pending import once the profession palette finishes loading
+static bool g_LibImportPending = false;
+static std::string g_LibImportPendingProfession;
+// Right-pane edit mode: by default the Name/Mode/Notes inputs are hidden
+// behind an Edit button to keep the preview clean.
+static bool g_LibEditMode = false;
 static int g_LibImportMode = 0;        // GameMode for import
 static bool g_LibShowImport = false;
 static std::string g_LibImportError;
@@ -2122,18 +2128,19 @@ static void FetchAchCategoryDefs(uint32_t catId) {
 
             std::string json = Skinventory::HttpClient::Get(
                 "https://api.guildwars2.com/v2/achievements?ids=" + idStr);
-            if (json.empty()) continue;
-
-            try {
-                auto j = nlohmann::json::parse(json);
-                if (j.is_array()) {
-                    std::lock_guard<std::recursive_mutex> lock(g_AchMutex);
-                    for (const auto& ach : j) {
-                        AchDef d = ParseAchDef(ach);
-                        if (d.id > 0) g_AchDefs[d.id] = std::move(d);
+            if (!json.empty()) {
+                try {
+                    auto j = nlohmann::json::parse(json);
+                    if (j.is_array()) {
+                        std::lock_guard<std::recursive_mutex> lock(g_AchMutex);
+                        for (const auto& ach : j) {
+                            AchDef d = ParseAchDef(ach);
+                            if (d.id > 0) g_AchDefs[d.id] = std::move(d);
+                        }
                     }
-                }
-            } catch (...) {}
+                } catch (...) {}
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(200));
         }
 
         g_AchCatFetching = false;
@@ -2290,27 +2297,28 @@ static void FetchAchNameIndex() {
 
             std::string batchJson = Skinventory::HttpClient::Get(
                 "https://api.guildwars2.com/v2/achievements?ids=" + idStr);
-            if (batchJson.empty()) continue;
+            if (!batchJson.empty()) {
+                try {
+                    auto j = nlohmann::json::parse(batchJson);
+                    if (j.is_array()) {
+                        for (const auto& ach : j) {
+                            uint32_t id = ach.value("id", 0u);
+                            std::string name = ach.value("name", "");
+                            if (id > 0 && !name.empty()) nameIndex[id] = name;
+                        }
 
-            try {
-                auto j = nlohmann::json::parse(batchJson);
-                if (j.is_array()) {
-                    for (const auto& ach : j) {
-                        uint32_t id = ach.value("id", 0u);
-                        std::string name = ach.value("name", "");
-                        if (id > 0 && !name.empty()) nameIndex[id] = name;
-                    }
-
-                    // Also cache full defs while we have them
-                    std::lock_guard<std::recursive_mutex> lock(g_AchMutex);
-                    for (const auto& ach : j) {
-                        AchDef d = ParseAchDef(ach);
-                        if (d.id > 0 && g_AchDefs.find(d.id) == g_AchDefs.end()) {
-                            g_AchDefs[d.id] = std::move(d);
+                        // Also cache full defs while we have them
+                        std::lock_guard<std::recursive_mutex> lock(g_AchMutex);
+                        for (const auto& ach : j) {
+                            AchDef d = ParseAchDef(ach);
+                            if (d.id > 0 && g_AchDefs.find(d.id) == g_AchDefs.end()) {
+                                g_AchDefs[d.id] = std::move(d);
+                            }
                         }
                     }
-                }
-            } catch (...) {}
+                } catch (...) {}
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(200));
         }
 
         {
@@ -2348,17 +2356,19 @@ static void FetchPinnedAchDefs() {
             }
             std::string json = Skinventory::HttpClient::Get(
                 "https://api.guildwars2.com/v2/achievements?ids=" + idStr);
-            if (json.empty()) continue;
-            try {
-                auto j = nlohmann::json::parse(json);
-                if (j.is_array()) {
-                    std::lock_guard<std::recursive_mutex> lock(g_AchMutex);
-                    for (const auto& ach : j) {
-                        AchDef d = ParseAchDef(ach);
-                        if (d.id > 0) g_AchDefs[d.id] = std::move(d);
+            if (!json.empty()) {
+                try {
+                    auto j = nlohmann::json::parse(json);
+                    if (j.is_array()) {
+                        std::lock_guard<std::recursive_mutex> lock(g_AchMutex);
+                        for (const auto& ach : j) {
+                            AchDef d = ParseAchDef(ach);
+                            if (d.id > 0) g_AchDefs[d.id] = std::move(d);
+                        }
                     }
-                }
-            } catch (...) {}
+                } catch (...) {}
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(200));
         }
         SaveAchDefCache();
         // Progress queried via OnHoardPongForAch when H&S is ready
@@ -7026,19 +7036,29 @@ static void ResolveBuildTraitPlaceholders(AlterEgo::SavedBuild& build) {
 }
 
 // Render the build preview panel for a saved build (reuses spec/trait rendering logic)
-static void RenderSavedBuildPreview(const AlterEgo::SavedBuild& build) {
+static void RenderSavedBuildPreview(const AlterEgo::SavedBuild& build, bool showEditButton = false) {
     // Try to resolve any placeholder traits (negative values from import without spec cache)
     // Safe to cast: we only mutate trait values from negative to positive
     ResolveBuildTraitPlaceholders(const_cast<AlterEgo::SavedBuild&>(build));
 
     ImVec4 profColor = GetProfessionColor(build.profession);
     {
+        // Detect elite spec — use its icon and name in the header when present
+        const AlterEgo::SpecializationInfo* eliteSpec = nullptr;
+        for (int s = 0; s < 3; s++) {
+            uint32_t sid = build.specializations[s].spec_id;
+            if (!sid) continue;
+            const auto* si = AlterEgo::GW2API::GetSpecInfo(sid);
+            if (si && si->elite) { eliteSpec = si; break; }
+        }
+
         // Build header card: gold accent bar, name in profession color, sub-line with prof + mode
         ImDrawList* dl = ImGui::GetWindowDrawList();
         ImVec2 pos = ImGui::GetCursorScreenPos();
         float w = ImGui::GetContentRegionAvail().x;
         float lineH = ImGui::GetTextLineHeightWithSpacing();
-        float h = lineH * 2.0f + 6.0f;
+        const float headerIconSz = 44.0f;
+        float h = std::max(lineH * 2.0f + 6.0f, headerIconSz + 10.0f);
         // Gradient bg using profession color
         ImU32 left = ImGui::ColorConvertFloat4ToU32(
             ImVec4(profColor.x * 0.24f, profColor.y * 0.24f, profColor.z * 0.24f, 0.55f));
@@ -7059,12 +7079,60 @@ static void RenderSavedBuildPreview(const AlterEgo::SavedBuild& build) {
             ImVec2(pos.x + w * 0.55f, pos.y + h),
             ImGui::ColorConvertFloat4ToU32(ImVec4(profColor.x, profColor.y, profColor.z, 0.35f)), 1.0f);
 
-        ImGui::SetCursorScreenPos(ImVec2(pos.x + 10, pos.y + 2));
+        // Class icon on the left — prefer elite-spec emblem, fall back to profession
+        float iconLeft = pos.x + 10.0f;
+        float iconTop = pos.y + (h - headerIconSz) * 0.5f;
+        Texture_t* iconTex = nullptr;
+        if (eliteSpec && !eliteSpec->profession_icon_big_url.empty()) {
+            uint32_t specIconId = 2000000u + (uint32_t)(std::hash<std::string>{}(eliteSpec->name) % 100000u);
+            iconTex = AlterEgo::IconManager::GetIcon(specIconId);
+            if (!iconTex || !iconTex->Resource) {
+                AlterEgo::IconManager::RequestIcon(specIconId,
+                    eliteSpec->profession_icon_big_url, /*priority=*/true);
+            }
+        }
+        if (!iconTex || !iconTex->Resource) {
+            uint32_t profIconId = 9100000u + (uint32_t)(std::hash<std::string>{}(build.profession) % 100000u);
+            iconTex = AlterEgo::IconManager::GetIcon(profIconId);
+            if (!iconTex || !iconTex->Resource) {
+                const auto* prof = AlterEgo::GW2API::GetProfessionInfo(build.profession);
+                if (prof && !prof->icon_big_url.empty())
+                    AlterEgo::IconManager::RequestIcon(profIconId, prof->icon_big_url, /*priority=*/true);
+            }
+        }
+        if (iconTex && iconTex->Resource) {
+            dl->AddImage(iconTex->Resource,
+                ImVec2(iconLeft, iconTop),
+                ImVec2(iconLeft + headerIconSz, iconTop + headerIconSz),
+                ImVec2(0,0), ImVec2(1,1), IM_COL32(255, 255, 255, 255));
+        }
+
+        // Title + subtitle to the right of the icon. Use elite spec name as the
+        // primary identifier when present; profession name as a subtitle line.
+        float textX = iconLeft + headerIconSz + 10.0f;
+        float textTop = pos.y + (h - lineH * 2.0f) * 0.5f - 2.0f;
+
+        // Title: build name. Subtitle: elite spec + profession + mode.
+        ImGui::SetCursorScreenPos(ImVec2(textX, textTop));
         ImGui::TextColored(profColor, "%s", build.name.c_str());
 
-        ImGui::SetCursorScreenPos(ImVec2(pos.x + 10, pos.y + 2 + lineH));
-        std::string sub = build.profession + "  \xc2\xb7  " + GameModeLabel(build.game_mode);
+        ImGui::SetCursorScreenPos(ImVec2(textX, textTop + lineH));
+        std::string sub;
+        if (eliteSpec) { sub = eliteSpec->name; sub += " "; }
+        sub += build.profession;
+        sub += "  \xc2\xb7  ";
+        sub += GameModeLabel(build.game_mode);
         ImGui::TextColored(ImVec4(0.55f, 0.50f, 0.40f, 1.0f), "%s", sub.c_str());
+
+        // Edit button overlaid in the top-right of the header card
+        if (showEditButton) {
+            const float btnW = 50.0f;
+            const float btnGap = 8.0f;
+            ImVec2 prevCursor = ImGui::GetCursorScreenPos();
+            ImGui::SetCursorScreenPos(ImVec2(pos.x + w - btnW - btnGap, pos.y + 6.0f));
+            if (ImGui::SmallButton("Edit##headerBuild")) g_LibEditMode = true;
+            ImGui::SetCursorScreenPos(prevCursor);
+        }
 
         ImGui::SetCursorScreenPos(ImVec2(pos.x, pos.y + h + 4));
     }
@@ -7459,8 +7527,17 @@ static void RenderBuildLibrary() {
         ImGui::SameLine();
         ImGui::TextColored(ImVec4(0.5f, 0.5f, 0.5f, 1.0f), "(for chat links)");
 
+        // Auto-retry once the profession's palette data finishes loading
+        bool autoRetry = false;
+        if (g_LibImportPending && !g_LibImportPendingProfession.empty() &&
+            AlterEgo::GW2API::HasPaletteData(g_LibImportPendingProfession)) {
+            g_LibImportPending = false;
+            g_LibImportPendingProfession.clear();
+            autoRetry = true;
+        }
+
         ImGui::SameLine();
-        if (ImGui::Button("Import")) {
+        if (ImGui::Button("Import") || autoRetry) {
             std::string input(g_LibImportBuf);
             std::string name(g_LibImportName);
             if (input.empty()) {
@@ -7470,16 +7547,29 @@ static void RenderBuildLibrary() {
                 AlterEgo::SavedBuild sharedBuild;
                 std::string sharedError;
                 if (ImportSharedBuild(input, sharedBuild, sharedError)) {
-                    AlterEgo::GW2API::AddSavedBuild(std::move(sharedBuild));
+                    // If the user entered a name, honour it (AE2/relay imports
+                    // fall back to the profession as a placeholder otherwise).
+                    if (!name.empty()) sharedBuild.name = name;
+                    int newIdx = AlterEgo::GW2API::AddSavedBuild(std::move(sharedBuild));
                     g_LibShowImport = false;
                     g_LibImportBuf[0] = '\0';
                     g_LibImportName[0] = '\0';
                     g_LibImportError.clear();
-                    g_LibSelectedIdx = (int)AlterEgo::GW2API::GetSavedBuilds().size() - 1;
+                    if (newIdx >= 0) g_LibSelectedIdx = newIdx;
                     g_LibDetailsFetched = false;
                     if (APIDefs) APIDefs->GUI_SendAlert("Shared build imported!");
                 } else if (!sharedError.empty()) {
-                    // Shared format detected but failed
+                    // Shared format detected but failed. If the failure is just
+                    // that the palette is still loading, arm an auto-retry so
+                    // the import happens once the data arrives.
+                    if (sharedError.rfind("Loading ", 0) == 0) {
+                        // Extract profession from "Loading <Prof> skill data..."
+                        size_t end = sharedError.find(' ', 8);
+                        if (end != std::string::npos) {
+                            g_LibImportPendingProfession = sharedError.substr(8, end - 8);
+                            g_LibImportPending = true;
+                        }
+                    }
                     g_LibImportError = sharedError;
                 } else {
                     // Not a shared format — try as chat link
@@ -7504,12 +7594,12 @@ static void RenderBuildLibrary() {
                                     AlterEgo::SavedBuild build;
                                     if (DecodeBuildLink(input, name,
                                             GameModeFromIndex(g_LibImportMode), build)) {
-                                        AlterEgo::GW2API::AddSavedBuild(std::move(build));
+                                        int newIdx = AlterEgo::GW2API::AddSavedBuild(std::move(build));
                                         g_LibShowImport = false;
                                         g_LibImportBuf[0] = '\0';
                                         g_LibImportName[0] = '\0';
                                         g_LibImportError.clear();
-                                        g_LibSelectedIdx = (int)AlterEgo::GW2API::GetSavedBuilds().size() - 1;
+                                        if (newIdx >= 0) g_LibSelectedIdx = newIdx;
                                         g_LibDetailsFetched = false;
                                         if (APIDefs) APIDefs->GUI_SendAlert("Build imported!");
                                     } else {
@@ -7570,28 +7660,35 @@ static void RenderBuildLibrary() {
                 if (nameLower.find(search) == std::string::npos) continue;
             }
 
-            // Profession group header with gradient background
+            // Profession group header — gold-bar treatment with prof-coloured dot
             if (b.profession != lastProf) {
-                if (!lastProf.empty()) ImGui::Spacing();
+                if (!lastProf.empty()) ImGui::Dummy(ImVec2(0, 6.0f));
                 ImVec4 profColor = GetProfessionColor(b.profession);
 
                 ImVec2 hdrPos = ImGui::GetCursorScreenPos();
                 float hdrW = ImGui::GetContentRegionAvail().x;
-                float hdrH = ImGui::GetTextLineHeightWithSpacing() + 2.0f;
+                float hdrH = ImGui::GetTextLineHeight() + 6.0f;
                 ImDrawList* dl = ImGui::GetWindowDrawList();
-                ImU32 hdrLeft = ImGui::ColorConvertFloat4ToU32(
-                    ImVec4(profColor.x * 0.25f, profColor.y * 0.25f, profColor.z * 0.25f, 0.60f));
-                ImU32 hdrRight = IM_COL32(0, 0, 0, 0);
-                dl->AddRectFilledMultiColor(
-                    hdrPos, ImVec2(hdrPos.x + hdrW, hdrPos.y + hdrH),
-                    hdrLeft, hdrRight, hdrRight, hdrLeft);
-                // Gold underline
-                dl->AddLine(
-                    ImVec2(hdrPos.x, hdrPos.y + hdrH),
-                    ImVec2(hdrPos.x + hdrW * 0.6f, hdrPos.y + hdrH),
-                    ImGui::ColorConvertFloat4ToU32(ImVec4(profColor.x, profColor.y, profColor.z, 0.35f)), 1.0f);
 
-                ImGui::TextColored(profColor, "%s", b.profession.c_str());
+                // Gold left bar (matches RenderSectionHeader vocabulary)
+                dl->AddRectFilled(ImVec2(hdrPos.x, hdrPos.y + 2),
+                                  ImVec2(hdrPos.x + 2, hdrPos.y + hdrH - 2),
+                                  IM_COL32(232, 196, 122, 230));
+                // Profession-coloured dot
+                float dotR = 3.5f;
+                dl->AddCircleFilled(ImVec2(hdrPos.x + 11.0f, hdrPos.y + hdrH * 0.5f),
+                    dotR, ImGui::ColorConvertFloat4ToU32(profColor));
+                // Faint trailing rule
+                dl->AddLine(ImVec2(hdrPos.x + 18.0f + ImGui::CalcTextSize(b.profession.c_str()).x + 8.0f,
+                                   hdrPos.y + hdrH * 0.5f),
+                            ImVec2(hdrPos.x + hdrW - 4.0f, hdrPos.y + hdrH * 0.5f),
+                            IM_COL32(197, 161, 85, 60), 1.0f);
+
+                // Name (uppercase via Cinzel-style spacing not possible in ImGui — just bold/gold)
+                ImGui::Dummy(ImVec2(18.0f, 0)); ImGui::SameLine(0, 0);
+                ImGui::TextColored(ImVec4(0.93f, 0.86f, 0.65f, 1.0f), "%s",
+                    b.profession.c_str());
+
                 lastProf = b.profession;
             }
 
@@ -7599,47 +7696,175 @@ static void RenderBuildLibrary() {
             bool selected = (g_LibSelectedIdx == i);
             ImVec4 bProfColor = GetProfessionColor(b.profession);
 
-            // Profession-tinted selection highlight
-            ImVec4 bSelCol(bProfColor.x * 0.35f, bProfColor.y * 0.35f, bProfColor.z * 0.35f, 0.65f);
-            ImVec4 bHovCol(bProfColor.x * 0.25f, bProfColor.y * 0.25f, bProfColor.z * 0.25f, 0.50f);
-            ImVec4 bActCol(bProfColor.x * 0.40f, bProfColor.y * 0.40f, bProfColor.z * 0.40f, 0.75f);
-            ImGui::PushStyleColor(ImGuiCol_Header, bSelCol);
-            ImGui::PushStyleColor(ImGuiCol_HeaderHovered, bHovCol);
-            ImGui::PushStyleColor(ImGuiCol_HeaderActive, bActCol);
+            // ===== Compact row card =====
+            float rowH = 30.0f;
+            ImVec2 cmin = ImGui::GetCursorScreenPos();
+            float availW = ImGui::GetContentRegionAvail().x;
+            ImVec2 cmax(cmin.x + availW, cmin.y + rowH);
 
-            if (ImGui::Selectable("##build", selected, 0, ImVec2(0, 32))) {
-                g_LibSelectedIdx = i;
-                g_LibDetailsFetched = false;
+            ImGui::InvisibleButton("##buildrow", ImVec2(availW, rowH));
+            bool hovered = ImGui::IsItemHovered();
+            bool clicked = ImGui::IsItemClicked();
+            // Record rect for drag-and-drop (needs to wrap the InvisibleButton)
+            ImVec2 rMin = cmin, rMax = cmax;
+            libItemRects.push_back({ rMin.y, rMax.y, i });
+
+            ImDrawList* dl = ImGui::GetWindowDrawList();
+
+            // Background
+            if (selected) {
+                dl->AddRectFilled(cmin, cmax, IM_COL32(80, 64, 28, 70), 3.0f);
+            } else if (hovered) {
+                dl->AddRectFilled(cmin, cmax, IM_COL32(255, 255, 255, 18), 3.0f);
+            }
+            // Selection outline
+            if (selected) {
+                dl->AddRect(cmin, cmax, IM_COL32(232, 196, 122, 180), 3.0f, 0, 1.0f);
             }
 
-            // Profession-colored left accent bar
+            // Profession-coloured 2px left accent
+            ImU32 accentCol = ImGui::ColorConvertFloat4ToU32(
+                ImVec4(bProfColor.x, bProfColor.y, bProfColor.z,
+                    selected ? 1.0f : (hovered ? 0.8f : 0.55f)));
+            dl->AddRectFilled(ImVec2(cmin.x, cmin.y + 2),
+                              ImVec2(cmin.x + 2, cmax.y - 2), accentCol);
+
+            // Determine elite spec for this build (if any). Search all three
+            // specialization slots — elite isn't always in position 2.
+            uint32_t eliteSpecId = 0;
+            const AlterEgo::SpecializationInfo* eliteSpec = nullptr;
+            for (int s = 0; s < 3; s++) {
+                uint32_t sid = b.specializations[s].spec_id;
+                if (!sid) continue;
+                const auto* si = AlterEgo::GW2API::GetSpecInfo(sid);
+                if (si && si->elite) { eliteSpecId = sid; eliteSpec = si; break; }
+            }
+            // If we have a spec id but no info yet, kick off a fetch so we can
+            // tell whether it's elite next frame.
             {
-                ImVec2 bRMin = ImGui::GetItemRectMin();
-                ImVec2 bRMax = ImGui::GetItemRectMax();
-                ImDrawList* dl = ImGui::GetWindowDrawList();
-                float barW = 3.0f;
-                ImU32 barCol = ImGui::ColorConvertFloat4ToU32(
-                    ImVec4(bProfColor.x, bProfColor.y, bProfColor.z,
-                           selected ? 1.0f : (ImGui::IsItemHovered() ? 0.7f : 0.35f)));
-                dl->AddRectFilled(
-                    ImVec2(bRMin.x, bRMin.y + 1), ImVec2(bRMin.x + barW, bRMax.y - 1),
-                    barCol, 1.0f);
-                if (selected) {
-                    ImU32 glowCol = ImGui::ColorConvertFloat4ToU32(
-                        ImVec4(bProfColor.x, bProfColor.y, bProfColor.z, 0.08f));
-                    dl->AddRectFilledMultiColor(
-                        ImVec2(bRMin.x + barW, bRMin.y),
-                        ImVec2(bRMin.x + barW + 30.0f, bRMax.y),
-                        glowCol, IM_COL32(0, 0, 0, 0), IM_COL32(0, 0, 0, 0), glowCol);
+                std::vector<uint32_t> toFetch;
+                for (int s = 0; s < 3; s++) {
+                    uint32_t sid = b.specializations[s].spec_id;
+                    if (sid && !AlterEgo::GW2API::GetSpecInfo(sid)) toFetch.push_back(sid);
+                }
+                if (!toFetch.empty()) AlterEgo::GW2API::FetchSpecDetailsAsync(toFetch);
+            }
+
+            // Icon (18px), priority-loaded. Prefer the elite spec's emblem
+            // when present; fall back to the profession icon.
+            const float iconSz = 18.0f;
+            float iconX = cmin.x + 8.0f;
+            float iconY = cmin.y + (rowH - iconSz) * 0.5f;
+            Texture_t* iconTex = nullptr;
+            if (eliteSpecId && eliteSpec && !eliteSpec->profession_icon_big_url.empty()) {
+                uint32_t specIconId = 2000000u + eliteSpecId;
+                iconTex = AlterEgo::IconManager::GetIcon(specIconId);
+                if (!iconTex || !iconTex->Resource) {
+                    AlterEgo::IconManager::RequestIcon(specIconId,
+                        eliteSpec->profession_icon_big_url, /*priority=*/true);
+                }
+            }
+            if (!iconTex || !iconTex->Resource) {
+                uint32_t profIconId = 9100000u + (uint32_t)(std::hash<std::string>{}(b.profession) % 100000u);
+                iconTex = AlterEgo::IconManager::GetIcon(profIconId);
+                if (!iconTex || !iconTex->Resource) {
+                    const auto* prof = AlterEgo::GW2API::GetProfessionInfo(b.profession);
+                    if (prof && !prof->icon_big_url.empty())
+                        AlterEgo::IconManager::RequestIcon(profIconId, prof->icon_big_url, /*priority=*/true);
+                }
+            }
+            if (iconTex && iconTex->Resource) {
+                dl->AddImage(iconTex->Resource,
+                    ImVec2(iconX, iconY), ImVec2(iconX + iconSz, iconY + iconSz),
+                    ImVec2(0,0), ImVec2(1,1),
+                    selected ? IM_COL32(255, 255, 255, 255) : IM_COL32(220, 220, 220, 220));
+            } else {
+                // Fallback: profession-coloured tile with a dim ring
+                dl->AddRectFilled(ImVec2(iconX, iconY), ImVec2(iconX + iconSz, iconY + iconSz),
+                    ImGui::ColorConvertFloat4ToU32(ImVec4(bProfColor.x * 0.25f, bProfColor.y * 0.25f, bProfColor.z * 0.25f, 0.7f)), 2.0f);
+                dl->AddRect(ImVec2(iconX, iconY), ImVec2(iconX + iconSz, iconY + iconSz),
+                    accentCol, 2.0f, 0, 1.0f);
+            }
+
+            // Game-mode chip (right side)
+            const char* mode = GameModeLabel(b.game_mode);
+            ImU32 chipFg, chipBg, chipBorder;
+            switch (b.game_mode) {
+                case AlterEgo::GameMode::PvE:
+                    chipFg = IM_COL32(160, 220, 170, 255);
+                    chipBg = IM_COL32(40, 70, 45, 200);
+                    chipBorder = IM_COL32(120, 200, 130, 200);
+                    break;
+                case AlterEgo::GameMode::WvW:
+                    chipFg = IM_COL32(230, 160, 160, 255);
+                    chipBg = IM_COL32(70, 30, 30, 200);
+                    chipBorder = IM_COL32(200, 110, 110, 200);
+                    break;
+                case AlterEgo::GameMode::PvP:
+                    chipFg = IM_COL32(240, 220, 130, 255);
+                    chipBg = IM_COL32(70, 60, 18, 200);
+                    chipBorder = IM_COL32(220, 190, 90, 200);
+                    break;
+                case AlterEgo::GameMode::Raid:
+                    chipFg = IM_COL32(232, 196, 122, 255);
+                    chipBg = IM_COL32(60, 44, 18, 200);
+                    chipBorder = IM_COL32(200, 160, 90, 200);
+                    break;
+                case AlterEgo::GameMode::Fractal:
+                    chipFg = IM_COL32(140, 220, 240, 255);
+                    chipBg = IM_COL32(20, 60, 75, 200);
+                    chipBorder = IM_COL32(100, 180, 220, 200);
+                    break;
+                default:
+                    chipFg = IM_COL32(190, 180, 160, 230);
+                    chipBg = IM_COL32(40, 40, 44, 180);
+                    chipBorder = IM_COL32(120, 110, 90, 170);
+                    break;
+            }
+            ImVec2 mSz = ImGui::CalcTextSize(mode);
+            float chipPadX = 6.0f, chipPadY = 2.0f;
+            float chipW = mSz.x + chipPadX * 2;
+            float chipH = mSz.y + chipPadY * 2;
+            ImVec2 chipMin(cmax.x - 8.0f - chipW, cmin.y + (rowH - chipH) * 0.5f);
+            ImVec2 chipMax(chipMin.x + chipW, chipMin.y + chipH);
+            dl->AddRectFilled(chipMin, chipMax, chipBg, 3.0f);
+            dl->AddRect(chipMin, chipMax, chipBorder, 3.0f, 0, 1.0f);
+            dl->AddText(ImVec2(chipMin.x + chipPadX, chipMin.y + chipPadY), chipFg, mode);
+
+            // Build name (clipped between icon and chip)
+            float nameX = iconX + iconSz + 8.0f;
+            float nameEndX = chipMin.x - 8.0f;
+            ImU32 nameCol = selected ? IM_COL32(245, 220, 150, 255)
+                          : hovered  ? IM_COL32(245, 240, 220, 255)
+                                     : IM_COL32(225, 220, 205, 255);
+            ImVec2 nSz = ImGui::CalcTextSize(b.name.c_str());
+            float nameY = cmin.y + (rowH - nSz.y) * 0.5f;
+            dl->PushClipRect(ImVec2(nameX, cmin.y), ImVec2(nameEndX, cmax.y), true);
+            dl->AddText(ImVec2(nameX, nameY), nameCol, b.name.c_str());
+            dl->PopClipRect();
+
+            // Hover tooltip: full name (if clipped) + elite spec (if any)
+            if (hovered) {
+                bool nameOverflowed = nSz.x > (nameEndX - nameX);
+                bool hasSpec = eliteSpec && !eliteSpec->name.empty();
+                if (nameOverflowed || hasSpec) {
+                    ImGui::BeginTooltip();
+                    ImGui::TextUnformatted(b.name.c_str());
+                    if (hasSpec) {
+                        ImGui::TextColored(ImVec4(bProfColor.x, bProfColor.y, bProfColor.z, 1.0f),
+                            "%s %s", eliteSpec->name.c_str(), b.profession.c_str());
+                    } else {
+                        ImGui::TextColored(ImVec4(bProfColor.x, bProfColor.y, bProfColor.z, 1.0f),
+                            "%s", b.profession.c_str());
+                    }
+                    ImGui::EndTooltip();
                 }
             }
 
-            ImGui::PopStyleColor(3);
-
-            // Record rect for drag-and-drop
-            ImVec2 rMin = ImGui::GetItemRectMin();
-            ImVec2 rMax = ImGui::GetItemRectMax();
-            libItemRects.push_back({ rMin.y, rMax.y, i });
+            if (clicked) {
+                g_LibSelectedIdx = i;
+                g_LibDetailsFetched = false;
+            }
 
             // Drag source
             if (ImGui::BeginDragDropSource(ImGuiDragDropFlags_None)) {
@@ -7685,11 +7910,6 @@ static void RenderBuildLibrary() {
                 ImGui::EndPopup();
             }
 
-            ImGui::SameLine(8);
-            ImGui::BeginGroup();
-            ImGui::Text("%s", b.name.c_str());
-            ImGui::TextColored(ImVec4(0.55f, 0.50f, 0.38f, 1.0f), "%s", GameModeLabel(b.game_mode));
-            ImGui::EndGroup();
             ImGui::PopID();
         }
 
@@ -7806,6 +8026,22 @@ static void RenderBuildLibrary() {
             if (!AlterEgo::GW2API::HasPaletteData(build.profession)) {
                 AlterEgo::GW2API::FetchProfessionPaletteAsync(build.profession);
             }
+            // Prefetch all gear-slot icons up front so the preview doesn't
+            // sit on letter-badge placeholders waiting for per-slot fetches.
+            {
+                const char* slots[] = {
+                    "Helm","Shoulders","Coat","Gloves","Leggings","Boots",
+                    "WeaponA1","WeaponA2","WeaponB1","WeaponB2",
+                    "Backpack","Accessory1","Accessory2","Amulet","Ring1","Ring2","Relic"
+                };
+                std::vector<uint32_t> gearItemIds;
+                for (const char* s : slots) {
+                    uint32_t id = GetGearSlotIconItemId(build, s);
+                    if (id != 0) gearItemIds.push_back(id);
+                }
+                if (!gearItemIds.empty())
+                    AlterEgo::GW2API::FetchItemDetailsAsync(gearItemIds);
+            }
             g_LibDetailsFetched = true;
         }
 
@@ -7816,8 +8052,22 @@ static void RenderBuildLibrary() {
             g_LibEditName[sizeof(g_LibEditName) - 1] = '\0';
             strncpy(g_LibEditNotes, build.notes.c_str(), sizeof(g_LibEditNotes) - 1);
             g_LibEditNotes[sizeof(g_LibEditNotes) - 1] = '\0';
+            // Exit edit mode when switching to a different build
+            g_LibEditMode = false;
         }
 
+        if (!g_LibEditMode) {
+            // Read-only: notes (if any) above the preview. Edit button is
+            // drawn inside the preview header's top-right.
+            if (!build.notes.empty()) {
+                ImGui::TextColored(ImVec4(0.55f, 0.53f, 0.45f, 1.0f), "Notes:");
+                ImGui::SameLine();
+                ImGui::PushTextWrapPos(0.0f);
+                ImGui::TextColored(ImVec4(0.78f, 0.76f, 0.66f, 1.0f), "%s", build.notes.c_str());
+                ImGui::PopTextWrapPos();
+            }
+        } else {
+        // ===== Edit mode =====
         ImGui::Text("Name:");
         ImGui::SameLine();
         ImGui::SetNextItemWidth(250.0f);
@@ -7827,6 +8077,37 @@ static void RenderBuildLibrary() {
         }
         if (ImGui::IsItemDeactivatedAfterEdit()) {
             AlterEgo::GW2API::UpdateSavedBuild(build.id, g_LibEditName, g_LibEditNotes);
+        }
+
+        // Game-mode chip strip — fix mis-imported modes after the fact
+        ImGui::SameLine(0, 12);
+        ImGui::TextColored(ImVec4(0.55f, 0.53f, 0.45f, 1.0f), "Mode:");
+        ImGui::SameLine(0, 6);
+        {
+            struct ModeChip { AlterEgo::GameMode mode; const char* lbl; };
+            const ModeChip modes[] = {
+                { AlterEgo::GameMode::PvE,     "PvE" },
+                { AlterEgo::GameMode::WvW,     "WvW" },
+                { AlterEgo::GameMode::PvP,     "PvP" },
+                { AlterEgo::GameMode::Raid,    "Raid" },
+                { AlterEgo::GameMode::Fractal, "Fractal" },
+            };
+            for (int i = 0; i < (int)(sizeof(modes)/sizeof(modes[0])); i++) {
+                bool active = (build.game_mode == modes[i].mode);
+                if (active) {
+                    ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.50f, 0.40f, 0.18f, 0.80f));
+                    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.58f, 0.46f, 0.22f, 0.90f));
+                    ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.58f, 0.46f, 0.22f, 0.90f));
+                    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.95f, 0.85f, 0.55f, 1.0f));
+                }
+                ImGui::PushID(i);
+                if (ImGui::SmallButton(modes[i].lbl)) {
+                    AlterEgo::GW2API::SetSavedBuildGameMode(build.id, modes[i].mode);
+                }
+                ImGui::PopID();
+                if (active) ImGui::PopStyleColor(4);
+                if (i < (int)(sizeof(modes)/sizeof(modes[0])) - 1) ImGui::SameLine(0, 3);
+            }
         }
 
         ImGui::Text("Notes:");
@@ -7839,9 +8120,16 @@ static void RenderBuildLibrary() {
             AlterEgo::GW2API::UpdateSavedBuild(build.id, g_LibEditName, g_LibEditNotes);
         }
 
+        // Done button to leave edit mode (also persists pending edits)
+        if (ImGui::SmallButton("Done##edit")) {
+            AlterEgo::GW2API::UpdateSavedBuild(build.id, g_LibEditName, g_LibEditNotes);
+            g_LibEditMode = false;
+        }
+        } // end of edit-mode else
+
         ImGui::Separator();
 
-        RenderSavedBuildPreview(build);
+        RenderSavedBuildPreview(build, /*showEditButton=*/!g_LibEditMode);
     } else {
         ImGui::TextColored(ImVec4(0.5f, 0.5f, 0.5f, 1.0f), "Select a build from the list.");
     }
@@ -9779,6 +10067,23 @@ void RenderSectionHeader(const char* label, ImVec4 color, const char* suffix) {
     ImGui::SetCursorScreenPos(ImVec2(pos.x, pos.y + h + 3.0f));
 }
 
+// Gold-trimmed button — primary-action vocabulary matching RenderSectionHeader.
+// size = ImVec2(0,0) auto-sizes to label; pass explicit size for fixed-width rows.
+// Returns true on click.
+bool RenderGoldButton(const char* label, ImVec2 size) {
+    ImGui::PushStyleColor(ImGuiCol_Button,        ImVec4(0.18f, 0.14f, 0.06f, 0.85f));
+    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.28f, 0.22f, 0.10f, 0.95f));
+    ImGui::PushStyleColor(ImGuiCol_ButtonActive,  ImVec4(0.36f, 0.28f, 0.12f, 1.00f));
+    ImGui::PushStyleColor(ImGuiCol_Border,        ImVec4(0.70f, 0.58f, 0.20f, 1.00f));
+    ImGui::PushStyleColor(ImGuiCol_Text,          ImVec4(0.95f, 0.85f, 0.55f, 1.00f));
+    ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, 1.5f);
+    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(10.0f, 4.0f));
+    bool clicked = ImGui::Button(label, size);
+    ImGui::PopStyleVar(2);
+    ImGui::PopStyleColor(5);
+    return clicked;
+}
+
 
 // =========================================================================
 // Achievement Tracker — UI
@@ -10302,25 +10607,37 @@ static void RenderAchievements() {
 
     if (!g_AchGroupsFetched) return;
 
-    // One-shot prefetch: query progress for every achievement in every group so
-    // the rail's owned/total counts populate without the user having to click
-    // each category. SendAchProgressQuery already batches in chunks of 200.
+    // Throttled prefetch: rail counts need progress for every achievement, but
+    // firing all ~40 H&S batches at once will trip GW2 API rate limits and put
+    // H&S into a bad state. Build a queue once per account, then drain it one
+    // batch per ~750ms while idle.
+    static std::vector<uint32_t> s_progressQueue;
+    static std::string s_prefetchedAccount;
     {
-        static std::string s_prefetchedAccount;
         std::string currentAccount = GetEffectiveAccountName();
-        if (!g_AchProgressFetching && s_prefetchedAccount != currentAccount) {
-            std::vector<uint32_t> allIds;
+        if (s_prefetchedAccount != currentAccount) {
+            s_prefetchedAccount = currentAccount;
+            s_progressQueue.clear();
             {
                 std::lock_guard<std::recursive_mutex> lock(g_AchMutex);
                 for (const auto& [catId, cat] : g_AchCategories) {
                     if (g_AchHiddenCatIds.count(catId)) continue;
-                    for (uint32_t aid : cat.achievements) allIds.push_back(aid);
+                    for (uint32_t aid : cat.achievements) s_progressQueue.push_back(aid);
                 }
             }
-            if (!allIds.empty()) {
-                s_prefetchedAccount = currentAccount;
-                SendAchProgressQuery(allIds);
-            }
+        }
+    }
+    if (!s_progressQueue.empty() && !g_AchProgressFetching) {
+        static auto s_lastBatchTime = std::chrono::steady_clock::time_point{};
+        auto now = std::chrono::steady_clock::now();
+        if (s_lastBatchTime == std::chrono::steady_clock::time_point{} ||
+            (now - s_lastBatchTime) >= std::chrono::milliseconds(750)) {
+            s_lastBatchTime = now;
+            constexpr size_t BATCH = 200;
+            size_t take = std::min(BATCH, s_progressQueue.size());
+            std::vector<uint32_t> batch(s_progressQueue.end() - take, s_progressQueue.end());
+            s_progressQueue.erase(s_progressQueue.end() - take, s_progressQueue.end());
+            SendAchProgressQuery(batch);
         }
     }
 
