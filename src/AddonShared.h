@@ -39,6 +39,9 @@ void RenderEmptyCard(Texture_t* iconTex,
                      const char* primaryLabel, std::function<void()> primaryCB,
                      const char* secondaryLabel, std::function<void()> secondaryCB);
 
+// Inline animated loading spinner: rotating arc + label.
+void RenderSpinner(const char* label, ImVec4 color = ImVec4(0.7f, 0.85f, 0.95f, 1.0f));
+
 // Returns the account name to use for per-account H&S queries.
 // Returns an empty string when "All Accounts" is selected.
 std::string GetEffectiveAccountName();

@@ -3739,7 +3739,7 @@ static void RenderHeroChallengesPanel(const AlterEgo::Character& ch) {
     }
 
     if (!g_HeroChallengesReady) {
-        ImGui::TextColored(ImVec4(0.6f, 0.6f, 0.6f, 1.0f), "Loading hero challenge data...");
+        RenderSpinner("Loading hero challenge data...");
         return;
     }
 
@@ -4253,7 +4253,7 @@ static void RenderBuildPanel(const AlterEgo::Character& ch) {
     if (ImGui::IsItemHovered()) {
         ImGui::BeginTooltip();
         if (!hasPalette)
-            ImGui::Text("Loading profession data...");
+            RenderSpinner("Loading profession data...");
         else
             ImGui::Text("Export this build as a GW2 chat link");
         ImGui::EndTooltip();
@@ -6587,7 +6587,7 @@ static void RenderGearCustomizeDialog() {
             const auto* profWeapons = AlterEgo::GW2API::GetProfessionWeapons(editBuild->profession);
             if (!profWeapons) {
                 AlterEgo::GW2API::FetchProfessionPaletteAsync(editBuild->profession);
-                ImGui::TextColored(ImVec4(0.6f, 0.6f, 0.6f, 1.0f), "Loading weapon data...");
+                RenderSpinner("Loading weapon data...");
             } else {
                 std::string filterLower;
                 if (g_GearStatSearch[0]) {
@@ -9674,7 +9674,7 @@ static void RenderSkinDetailPanel() {
 
         ImGui::Image(wikiTex->Resource, ImVec2(displayW, displayH));
     } else if (Skinventory::WikiImage::IsLoading(g_SkinSelectedId)) {
-        ImGui::TextColored(ImVec4(1.0f, 0.85f, 0.0f, 1.0f), "Loading wiki image...");
+        RenderSpinner("Loading wiki image...", ImVec4(1.0f, 0.85f, 0.0f, 1.0f));
     }
 
     // Action buttons
@@ -10365,6 +10365,26 @@ void RenderEmptyCard(Texture_t* iconTex,
     ImGui::EndChild();
 }
 
+// Small inline loading spinner: rotating partial arc + label.
+// Used in place of plain "Loading..." text to signal active work.
+void RenderSpinner(const char* label, ImVec4 color) {
+    float lineH = ImGui::GetTextLineHeight();
+    float radius = lineH * 0.40f;
+    ImVec2 cursor = ImGui::GetCursorScreenPos();
+    ImVec2 center(cursor.x + radius + 2.0f, cursor.y + lineH * 0.5f);
+    float t = (float)ImGui::GetTime();
+    float start = t * 6.0f;
+    float end = start + IM_PI * 1.5f;
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    dl->PathClear();
+    dl->PathArcTo(center, radius, start, end, 32);
+    dl->PathStroke(ImGui::ColorConvertFloat4ToU32(color), false, 2.0f);
+    ImGui::Dummy(ImVec2(radius * 2.0f + 6.0f, lineH));
+    if (label && *label) {
+        ImGui::SameLine(0, 6);
+        ImGui::TextColored(color, "%s", label);
+    }
+}
 
 // =========================================================================
 // Achievement Tracker — UI
@@ -10929,7 +10949,7 @@ static void RenderAchievements() {
         std::transform(query.begin(), query.end(), query.begin(), ::tolower);
 
         if (!g_AchNameIndexReady) {
-            ImGui::TextColored(ImVec4(0.6f, 0.6f, 0.6f, 1.0f), "Loading search index...");
+            RenderSpinner("Loading search index...");
             return;
         }
 
@@ -11276,7 +11296,7 @@ static void RenderAchievements() {
                 auto catIt = g_AchCategories.find(g_AchSelectedCatId);
                 if (catIt != g_AchCategories.end()) {
                     if (g_AchCatFetching) {
-                        ImGui::TextColored(ImVec4(1.0f, 0.85f, 0.0f, 1.0f), "Loading...");
+                        RenderSpinner("Loading...", ImVec4(1.0f, 0.85f, 0.0f, 1.0f));
                     }
 
                     for (uint32_t achId : catIt->second.achievements) {
@@ -11587,7 +11607,7 @@ static void RenderAchPopout() {
         ImGui::Checkbox("Show completed steps", &g_AchShowCompletedSteps);
         ImGui::SameLine();
         if (g_AchProgressFetching) ImGui::PushStyleVar(ImGuiStyleVar_Alpha, 0.5f);
-        if (ImGui::SmallButton(g_AchProgressFetching ? "Refreshing...##pop" : "Refresh##pop") && !g_AchProgressFetching) {
+        if (RenderChipButton(g_AchProgressFetching ? "Refreshing...##pop" : "Refresh##pop", false) && !g_AchProgressFetching) {
             std::vector<uint32_t> pinnedCopy;
             {
                 std::lock_guard<std::recursive_mutex> lock(g_AchMutex);
@@ -11965,7 +11985,7 @@ void AddonRender() {
 
     // H&S connection warnings (shown globally, above tab bar)
     if (hoardStatus == AlterEgo::HoardStatus::Unknown) {
-        ImGui::TextColored(ImVec4(0.6f, 0.6f, 0.6f, 1.0f), "Checking for H&S...");
+        RenderSpinner("Checking for Hoard & Seek...");
         static auto lastPing = std::chrono::steady_clock::time_point{};
         auto now = std::chrono::steady_clock::now();
         if (now - lastPing > std::chrono::seconds(5)) {
@@ -12898,11 +12918,9 @@ void AddonRender() {
                     ImGui::TextColored(ImVec4(0.6f, 0.6f, 0.6f, 1.0f),
                         "Click Refresh to fetch full data.");
                 } else if (hoardReady) {
-                    ImGui::TextColored(ImVec4(0.6f, 0.6f, 0.6f, 1.0f),
-                        "Loading character list...");
+                    RenderSpinner("Loading character list...");
                 } else if (hoardStatus == AlterEgo::HoardStatus::Unknown) {
-                    ImGui::TextColored(ImVec4(0.6f, 0.6f, 0.6f, 1.0f),
-                        "Waiting for Hoard & Seek...");
+                    RenderSpinner("Waiting for Hoard & Seek...");
                 } else {
                     ImGui::TextColored(ImVec4(0.6f, 0.6f, 0.6f, 1.0f),
                         "Hoard & Seek required for character data.");
