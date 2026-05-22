@@ -12,6 +12,13 @@ A focused polish pass: nothing in this release is brand new functionality. The g
 - **Animated loading spinners.** Plain "Loading..." text in profession data, weapon data, wiki images, hero-challenge data, the search index, and the character list has been replaced with a small rotating spinner + label.
 - **Character header.** Age, birthday, last login, and crafting professions are now icon-driven (Tome of Knowledge / Birthday Gift / Chest of Loyalty / discipline icons) instead of long text labels — fits all 9 crafting disciplines without overflow.
 - **Options tab pass.** Section headers now use the gold-bar vocabulary; "Compact mode" → "Expanded mode" with all column toggles always visible (greyed when expanded mode is off); cleaner first-run defaults for new users.
+- **Account selector on the tab row.** When multiple accounts are detected, the account dropdown now sits on the same row as the tabs (right-aligned), reclaiming a full row of vertical space.
+- **Persistent achievement progress.** Per-account progress is now cached to disk and reloaded on startup — daily/weekly/monthly rails fill in instantly instead of waiting for a fresh fetch. Completions while running are flushed durably.
+- **Pinned tracker auto-refresh.** Pinned achievements now refresh every 10 minutes globally, regardless of which tab is open, and pinned IDs are drained first from the bulk-progress queue.
+
+## Fixes
+
+- **Vault summary totals** now include the daily 20 AA and weekly 450 AA meta-completion bonuses (previously the bar showed 4/5 and 6/8 short of the true total).
 
 ## Tweaks
 
@@ -20,6 +27,13 @@ A focused polish pass: nothing in this release is brand new functionality. The g
 - Marching-ants dotted line from the spec hex to the first trait removed (the hex is gone).
 - Relay popup buttons (Copy Code / Done / OK) themed.
 - "Show Quick Access icon" and other settings get sensible defaults for new installations.
+- Achievement "Refreshing…" label replaced with an inline spinner so the row doesn't visibly resize.
+
+## Security
+
+- TLS hostname checks now enforced on all HTTPS requests (cert CN/SAN mismatches are rejected).
+- Character portrait paths sanitized before disk access — rejects path-traversal and reserved components.
+- Relay codes re-validated before being spliced into the AE2 relay URL.
 
 ## Internal
 

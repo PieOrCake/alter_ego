@@ -1748,6 +1748,8 @@ namespace AlterEgo {
                     }
                 }
             } catch (...) {}
+
+            std::this_thread::sleep_for(std::chrono::milliseconds(200));
         }
     }
 
@@ -1813,6 +1815,8 @@ namespace AlterEgo {
                     }
                 }
             } catch (...) {}
+
+            std::this_thread::sleep_for(std::chrono::milliseconds(200));
         }
     }
 
@@ -1948,6 +1952,8 @@ namespace AlterEgo {
                     }
                 }
             } catch (...) {}
+
+            std::this_thread::sleep_for(std::chrono::milliseconds(200));
         }
     }
 
@@ -2004,6 +2010,8 @@ namespace AlterEgo {
                         }
                     }
                 } catch (...) {}
+
+                std::this_thread::sleep_for(std::chrono::milliseconds(200));
             }
         }).detach();
     }
@@ -2055,6 +2063,8 @@ namespace AlterEgo {
                         }
                     }
                 } catch (...) {}
+
+                std::this_thread::sleep_for(std::chrono::milliseconds(200));
             }
         }).detach();
     }
@@ -2384,18 +2394,28 @@ namespace AlterEgo {
         return s_saved_builds;
     }
 
-    bool GW2API::AddSavedBuild(SavedBuild build) {
+    int GW2API::AddSavedBuild(SavedBuild build) {
         if (build.id.empty()) {
             build.id = std::to_string(std::time(nullptr)) + "_" +
                        std::to_string(s_saved_builds.size());
         }
         if (build.created == 0) build.created = std::time(nullptr);
 
+        int insertIdx;
         {
             std::lock_guard<std::mutex> lock(s_mutex);
-            s_saved_builds.push_back(std::move(build));
+            // Find the last existing build with the same profession and insert
+            // right after it; otherwise append.
+            insertIdx = (int)s_saved_builds.size();
+            for (int i = (int)s_saved_builds.size() - 1; i >= 0; i--) {
+                if (s_saved_builds[i].profession == build.profession) {
+                    insertIdx = i + 1;
+                    break;
+                }
+            }
+            s_saved_builds.insert(s_saved_builds.begin() + insertIdx, std::move(build));
         }
-        return SaveBuildLibrary();
+        return SaveBuildLibrary() ? insertIdx : -1;
     }
 
     bool GW2API::RemoveSavedBuild(const std::string& id) {
@@ -2418,6 +2438,16 @@ namespace AlterEgo {
                     b.notes = notes;
                     break;
                 }
+            }
+        }
+        return SaveBuildLibrary();
+    }
+
+    bool GW2API::SetSavedBuildGameMode(const std::string& id, GameMode mode) {
+        {
+            std::lock_guard<std::mutex> lock(s_mutex);
+            for (auto& b : s_saved_builds) {
+                if (b.id == id) { b.game_mode = mode; break; }
             }
         }
         return SaveBuildLibrary();

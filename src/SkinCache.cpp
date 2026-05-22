@@ -279,7 +279,7 @@ namespace Skinventory {
                     s_status_message = "Fetching skins " + std::to_string(i) + "/" + std::to_string(total) + "...";
                 }
                 FetchSkinBatch(ids, i, end, fetched);
-                std::this_thread::sleep_for(std::chrono::milliseconds(50));
+                std::this_thread::sleep_for(std::chrono::milliseconds(200));
             }
 
             if (fetched.empty()) {
@@ -349,7 +349,7 @@ namespace Skinventory {
             for (size_t i = 0; i < new_ids.size(); i += BATCH_SIZE) {
                 size_t end = std::min(i + BATCH_SIZE, new_ids.size());
                 FetchSkinBatch(new_ids, i, end, fetched);
-                std::this_thread::sleep_for(std::chrono::milliseconds(50));
+                std::this_thread::sleep_for(std::chrono::milliseconds(200));
             }
 
             // Step 4: Merge into existing cache

@@ -12187,49 +12187,10 @@ void AddonRender() {
         }
     }
 
-    // Account selector (only when multi-account)
+    // Account selector (only when multi-account) — rendered on the same row as
+    // the tab bar (right-aligned) to save vertical space.
     static bool g_ForceCharactersTab = false;
-    if (AlterEgo::GW2API::IsMultiAccount()) {
-        const auto& accounts = AlterEgo::GW2API::GetAccounts();
-        // Find current display label
-        std::string currentLabel = "All Accounts";
-        for (const auto& acct : accounts) {
-            if (acct.name == g_SelectedAccountFilter) {
-                currentLabel = acct.display_name;
-                break;
-            }
-        }
-        float comboWidth = 180.0f;
-        float avail = ImGui::GetContentRegionAvail().x;
-        ImGui::SameLine(avail - comboWidth);
-        if (RenderThemedCombo("##AccountSelect", currentLabel.c_str(), comboWidth)) {
-            std::string prevFilter = g_SelectedAccountFilter;
-            if (ImGui::Selectable("All Accounts", g_SelectedAccountFilter.empty())) {
-                g_SelectedAccountFilter.clear();
-                // If on an account-scoped tab, switch to Characters
-                if (g_MainTab >= 2) g_ForceCharactersTab = true;
-            }
-            for (const auto& acct : accounts) {
-                bool selected = (g_SelectedAccountFilter == acct.name);
-                if (ImGui::Selectable(acct.display_name.c_str(), selected)) {
-                    g_SelectedAccountFilter = acct.name;
-                }
-            }
-            // When selection changes to a specific account, set flags for deferred requery
-            // (each tab handles its own H&S queries when it renders — avoids synchronous
-            //  Events_Raise calls during the dropdown handler which can freeze/crash)
-            if (g_SelectedAccountFilter != prevFilter && !g_SelectedAccountFilter.empty()) {
-                Skinventory::OwnedSkins::SetAccountName(g_SelectedAccountFilter);
-                g_SkinRefreshOwned = true;
-                g_ClearsNeedRequery = true;
-                g_VaultNeedRequery = true;
-                g_AchNeedRequery = true;
-            }
-            ImGui::EndCombo();
-        }
-    }
-
-    ImGui::Separator();
+    float tabRowY = ImGui::GetCursorPosY();
 
     // Top-level tab bar: Characters | Build Library
     if (ImGui::BeginTabBar("##main_tabs")) {
@@ -13322,6 +13283,47 @@ void AddonRender() {
             g_MainTab = 4;
             RenderAchievements();
             ImGui::EndTabItem();
+        }
+
+        // Right-aligned account selector on the same row as the tab strip.
+        // Drawn after tab items so it overlays the empty right-hand portion of
+        // the tab bar row (which has no clickable items there).
+        if (AlterEgo::GW2API::IsMultiAccount()) {
+            const auto& accounts = AlterEgo::GW2API::GetAccounts();
+            std::string currentLabel = "All Accounts";
+            for (const auto& acct : accounts) {
+                if (acct.name == g_SelectedAccountFilter) {
+                    currentLabel = acct.display_name;
+                    break;
+                }
+            }
+            const float comboWidth = 180.0f;
+            float afterY = ImGui::GetCursorPosY();
+            ImGui::SetCursorPos(ImVec2(
+                ImGui::GetContentRegionMax().x - comboWidth - ImGui::GetStyle().ItemSpacing.x,
+                tabRowY - 3.0f));
+            if (RenderThemedCombo("##AccountSelect", currentLabel.c_str(), comboWidth)) {
+                std::string prevFilter = g_SelectedAccountFilter;
+                if (ImGui::Selectable("All Accounts", g_SelectedAccountFilter.empty())) {
+                    g_SelectedAccountFilter.clear();
+                    if (g_MainTab >= 2) g_ForceCharactersTab = true;
+                }
+                for (const auto& acct : accounts) {
+                    bool selected = (g_SelectedAccountFilter == acct.name);
+                    if (ImGui::Selectable(acct.display_name.c_str(), selected)) {
+                        g_SelectedAccountFilter = acct.name;
+                    }
+                }
+                if (g_SelectedAccountFilter != prevFilter && !g_SelectedAccountFilter.empty()) {
+                    Skinventory::OwnedSkins::SetAccountName(g_SelectedAccountFilter);
+                    g_SkinRefreshOwned = true;
+                    g_ClearsNeedRequery = true;
+                    g_VaultNeedRequery = true;
+                    g_AchNeedRequery = true;
+                }
+                ImGui::EndCombo();
+            }
+            ImGui::SetCursorPosY(afterY);
         }
 
         ImGui::EndTabBar();

@@ -20,4 +20,8 @@ build/
 .DS_Store
 Thumbs.db
 
+# LLM session artifacts
+handover.md
+tools/.banner_cache/
+
 # Dependencies are vendored from Crafty Legend boilerplate (lib/imgui, lib/nlohmann, include/nexus)

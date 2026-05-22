@@ -380,9 +380,14 @@ namespace AlterEgo {
 
         // --- Build Library ---
         static const std::vector<SavedBuild>& GetSavedBuilds();
-        static bool AddSavedBuild(SavedBuild build);
+        // Inserts the build into the library, grouping by profession so newly
+        // imported builds appear under their profession's existing section
+        // instead of being appended as a new one. Returns the insertion index,
+        // or -1 if persistence failed.
+        static int AddSavedBuild(SavedBuild build);
         static bool RemoveSavedBuild(const std::string& id);
         static bool UpdateSavedBuild(const std::string& id, const std::string& name, const std::string& notes);
+        static bool SetSavedBuildGameMode(const std::string& id, GameMode mode);
         static bool ReorderSavedBuild(int fromIdx, int toIdx);
         static bool LoadBuildLibrary();
         static bool SaveBuildLibrary();
