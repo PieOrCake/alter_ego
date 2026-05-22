@@ -3953,16 +3953,16 @@ static void RenderBuildPanel(const AlterEgo::Character& ch) {
                 uint32_t bgKey = spec.spec_id + 1000000;
                 Texture_t* bgTex = AlterEgo::IconManager::GetIcon(bgKey);
                 if (bgTex && bgTex->Resource && bgTex->Height > 0) {
-                    // Zoom the banner, anchor its left edge to the row left,
-                    // and vertically center it before scaling so equal slivers
-                    // clip off the top and bottom. Subjects designed around the
-                    // source's center band stay centered in the row.
+                    // Zoom the banner and anchor it to the row's bottom-left.
+                    // Most source banners place their subject in the lower half
+                    // of the canvas, so bottom-anchor brings subjects into view
+                    // (matches gw2_rocks playground's "background-position: bottom left").
                     const float zoom = 1.4f;
                     float drawH = rowH * zoom;
                     float scale = drawH / (float)bgTex->Height;
                     float drawW = (float)bgTex->Width * scale;
                     float bannerLeft = rowOrigin.x;
-                    float bannerTop  = rowOrigin.y + (rowH - drawH) * 0.5f;
+                    float bannerTop  = rowOrigin.y + rowH - drawH;
                     dl->PushClipRect(rowOrigin,
                         ImVec2(rowOrigin.x + rowW, rowOrigin.y + rowH), true);
                     dl->AddImage(bgTex->Resource,
@@ -7232,16 +7232,16 @@ static void RenderSavedBuildPreview(const AlterEgo::SavedBuild& build, bool show
                 uint32_t bgKey = spec.spec_id + 1000000;
                 Texture_t* bgTex = AlterEgo::IconManager::GetIcon(bgKey);
                 if (bgTex && bgTex->Resource && bgTex->Height > 0) {
-                    // Zoom the banner, anchor its left edge to the row left,
-                    // and vertically center it before scaling so equal slivers
-                    // clip off the top and bottom. Subjects designed around the
-                    // source's center band stay centered in the row.
+                    // Zoom the banner and anchor it to the row's bottom-left.
+                    // Most source banners place their subject in the lower half
+                    // of the canvas, so bottom-anchor brings subjects into view
+                    // (matches gw2_rocks playground's "background-position: bottom left").
                     const float zoom = 1.4f;
                     float drawH = rowH * zoom;
                     float scale = drawH / (float)bgTex->Height;
                     float drawW = (float)bgTex->Width * scale;
                     float bannerLeft = rowOrigin.x;
-                    float bannerTop  = rowOrigin.y + (rowH - drawH) * 0.5f;
+                    float bannerTop  = rowOrigin.y + rowH - drawH;
                     dl->PushClipRect(rowOrigin,
                         ImVec2(rowOrigin.x + rowW, rowOrigin.y + rowH), true);
                     dl->AddImage(bgTex->Resource,
