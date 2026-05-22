@@ -11038,12 +11038,20 @@ static void RenderAchievements() {
         if (s_prefetchedAccount != currentAccount) {
             s_prefetchedAccount = currentAccount;
             s_progressQueue.clear();
+            // Build the queue so pinned achievements end up at the back —
+            // the drain consumes from the back, so pinned go first.
             {
                 std::lock_guard<std::recursive_mutex> lock(g_AchMutex);
+                std::unordered_set<uint32_t> pinnedSet(g_AchPinned.begin(), g_AchPinned.end());
                 for (const auto& [catId, cat] : g_AchCategories) {
                     if (g_AchHiddenCatIds.count(catId)) continue;
-                    for (uint32_t aid : cat.achievements) s_progressQueue.push_back(aid);
+                    for (uint32_t aid : cat.achievements) {
+                        if (pinnedSet.count(aid)) continue;
+                        s_progressQueue.push_back(aid);
+                    }
                 }
+                // Append pinned last → drained first.
+                for (uint32_t aid : g_AchPinned) s_progressQueue.push_back(aid);
             }
         }
     }
@@ -11654,23 +11662,8 @@ static void RebuildPopoutCache() {
 }
 
 static void RenderAchPopout() {
-    // Auto-refresh pinned achievement progress every 10 minutes
-    {
-        auto now = std::chrono::steady_clock::now();
-        if (!g_AchProgressFetching &&
-            g_LastAchProgressQuery != std::chrono::steady_clock::time_point{} &&
-            (now - g_LastAchProgressQuery) >= std::chrono::minutes(10)) {
-            g_LastAchProgressQuery = now;
-            std::vector<uint32_t> pinnedCopy;
-            {
-                std::lock_guard<std::recursive_mutex> lock(g_AchMutex);
-                pinnedCopy = g_AchPinned;
-            }
-            if (!pinnedCopy.empty()) {
-                SendAchProgressQuery(pinnedCopy);
-            }
-        }
-    }
+    // Pinned-progress 10-minute auto-refresh is handled globally in
+    // AddonRender so it fires regardless of popout / tab visibility.
 
     // Refresh pinned progress whenever the popout becomes visible
     // (button-pressed, or first time after addon load). Resets when hidden
@@ -12074,6 +12067,34 @@ void AddonRender() {
 
     // Persist login timestamps when dirty (crash-safe)
     if (g_LoginTimestampsDirty) SaveLoginTimestamps();
+
+    // Pinned-achievement priority refresh — runs every frame regardless of
+    // tab/popout visibility. Pinned achievements matter to the user most, so
+    // they get a 10-minute refresh cycle independent of UI state.
+    {
+        static auto s_lastPinnedRefresh = std::chrono::steady_clock::time_point{};
+        auto hStatus = AlterEgo::GW2API::GetHoardStatus();
+        bool hReady = (hStatus == AlterEgo::HoardStatus::Available ||
+                       hStatus == AlterEgo::HoardStatus::Ready);
+        if (hReady && !g_AchProgressFetching) {
+            auto now = std::chrono::steady_clock::now();
+            bool firstRun = (s_lastPinnedRefresh == std::chrono::steady_clock::time_point{});
+            bool expired  = !firstRun &&
+                (now - s_lastPinnedRefresh) >= std::chrono::minutes(10);
+            if (firstRun || expired) {
+                std::vector<uint32_t> pinnedCopy;
+                {
+                    std::lock_guard<std::recursive_mutex> lock(g_AchMutex);
+                    pinnedCopy = g_AchPinned;
+                }
+                if (!pinnedCopy.empty()) {
+                    s_lastPinnedRefresh = now;
+                    g_LastAchProgressQuery = now;
+                    SendAchProgressQuery(pinnedCopy);
+                }
+            }
+        }
+    }
 
     ThemeGuard themeGuard;
 
