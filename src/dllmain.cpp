@@ -11873,8 +11873,7 @@ void AddonRender() {
         float comboWidth = 180.0f;
         float avail = ImGui::GetContentRegionAvail().x;
         ImGui::SameLine(avail - comboWidth);
-        ImGui::SetNextItemWidth(comboWidth);
-        if (ImGui::BeginCombo("##AccountSelect", currentLabel.c_str())) {
+        if (RenderThemedCombo("##AccountSelect", currentLabel.c_str(), comboWidth)) {
             std::string prevFilter = g_SelectedAccountFilter;
             if (ImGui::Selectable("All Accounts", g_SelectedAccountFilter.empty())) {
                 g_SelectedAccountFilter.clear();
