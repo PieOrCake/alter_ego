@@ -8,27 +8,7 @@ This addon has been largely created using Claude. I understand that some folks h
 
 If an LLM creating software upsets you, then perhaps this repo isn't for you. Move on, and enjoy your day.
 
-## Features
-
-- **Multi-Account Support** — Switch between GW2 accounts from a single dropdown; all data is per-account
-- **Characters** — Full character list with profession, level, and birthday countdown; sortable and drag-to-reorder
-- **Equipment** — Paper-doll layout with rarity borders, sigil/rune/infusion tooltips, dye swatches, and custom portraits
-- **Builds** — Trait grid and skill bar viewer; copy build chat link to clipboard
-- **Build Library** — Save and manage builds with full trait/gear preview; filter by profession and game mode
-  - Share full builds (including gear, runes, sigils) via `AE2:` compact codes ([spec →](docs/shared-build-spec.md)) or build-only using in-game chat links
-  - Online relay to share builds with the (upcoming) Alter Ego mobile app via short codes
-  - Detects AE2 codes in GW2 chat and offers one-click import
-- **Skinventory** — Browse all skins, track ownership per account, shopping list, wiki images and prices
-- **Vault & Clears** — Wizard's Vault objectives (daily/weekly/special) and raid/fractal completion tracking
-  - Vault: meta progress, per-objective acclaim, track, progress, and claimed state
-  - Clears: Daily Fractals by tier, Daily Bounties, Weekly Strikes, Weekly Raids per-encounter
-- **Achievements** — Full achievement tree with search, pin up to 20 for tracking, floating tracker window, waypoint copy, real-time completion alerts
-- **Hoard & Seek Integration** — All API data sourced via [Hoard & Seek](https://github.com/PieOrCake/hoard_and_seek)
-
 ## Screenshots
-
-<details>
-<summary>Click to expand screenshots</summary>
 
 <table>
   <tr>
@@ -48,7 +28,22 @@ If an LLM creating software upsets you, then perhaps this repo isn't for you. Mo
   </tr>
 </table>
 
-</details>
+## Features
+
+- **Multi-Account Support** — Switch between GW2 accounts from a single dropdown; all data is per-account
+- **Characters** — Full character list with profession, level, and birthday countdown; sortable and drag-to-reorder
+- **Equipment** — Paper-doll layout with rarity borders, sigil/rune/infusion tooltips, dye swatches, and custom portraits
+- **Builds** — Trait grid and skill bar viewer; copy build chat link to clipboard
+- **Build Library** — Save and manage builds with full trait/gear preview; filter by profession and game mode
+  - Share full builds (including gear, runes, sigils) via `AE2:` compact codes ([spec →](docs/shared-build-spec.md)) or build-only using in-game chat links
+  - Online relay to share builds with the (upcoming) Alter Ego mobile app via short codes
+  - Detects AE2 codes in GW2 chat and offers one-click import
+- **Skinventory** — Browse all skins, track ownership per account, shopping list, wiki images and prices
+- **Vault & Clears** — Wizard's Vault objectives (daily/weekly/special) and raid/fractal completion tracking
+  - Vault: meta progress, per-objective acclaim, track, progress, and claimed state
+  - Clears: Daily Fractals by tier, Daily Bounties, Weekly Strikes, Weekly Raids per-encounter
+- **Achievements** — Full achievement tree with search, pin up to 20 for tracking, floating tracker window, waypoint copy, real-time completion alerts
+- **Hoard & Seek Integration** — All API data sourced via [Hoard & Seek](https://github.com/PieOrCake/hoard_and_seek)
 
 ## Character Portraits
 
