@@ -21,8 +21,10 @@ public:
     // Get icon texture for a given identifier (returns nullptr if not loaded yet)
     static Texture_t* GetIcon(uint32_t id);
 
-    // Request icon to be loaded (async) - uses GW2 API icon URL
-    static void RequestIcon(uint32_t id, const std::string& iconUrl);
+    // Request icon to be loaded (async) - uses GW2 API icon URL.
+    // When priority=true, the request jumps to the front of the queue —
+    // useful for icons currently visible in the viewport.
+    static void RequestIcon(uint32_t id, const std::string& iconUrl, bool priority = false);
 
     // Process icon queue (call every frame, even when window is hidden)
     static void Tick();

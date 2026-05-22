@@ -474,6 +474,7 @@ static uint32_t g_SkinSelectedId = 0;
 static char g_SkinSearchFilter[256] = "";
 static bool g_SkinShowOwned = true;
 static bool g_SkinShowUnowned = true;
+static int  g_SkinViewMode = 0; // 0 = List, 1 = Grid
 static bool g_SkinRefreshOwned = false;
 static bool g_SkinInitialized = false;
 static bool g_SwitchToSkinventory = false; // set by achievements tab to navigate to Skinventory
@@ -601,6 +602,8 @@ static std::atomic<bool> g_AchRetryPending{false};       // PENDING retry for ac
 static uint64_t g_AchProgressGen = 0;      // incremented when progress updates, triggers popout cache rebuild
 static char g_AchSearchBuf[128] = "";
 static bool g_AchPopoutVisible = false;    // popout tracker window visibility
+static bool g_AchHideEmptyCats = false;    // rail filter: hide categories with no progress data
+static bool g_AchHideCompletedCats = false; // rail filter: hide categories where all achievements are done
 static std::unordered_map<uint32_t, bool> g_AchExpandedInPopout; // expanded state per pinned ach
 static bool g_AchShowCompletedSteps = false; // popout: show completed bits/steps
 static std::unordered_set<uint32_t> g_AchExpandedInList; // expanded state per achievement in main list
@@ -1332,6 +1335,7 @@ static void SaveSession() {
     j["skin_selected_id"] = g_SkinSelectedId;
     j["skin_show_owned"] = g_SkinShowOwned;
     j["skin_show_unowned"] = g_SkinShowUnowned;
+    j["skin_view_mode"] = g_SkinViewMode;
 
     std::ofstream file(path);
     if (file.is_open()) file << j.dump(2);
@@ -1376,6 +1380,7 @@ static void LoadSession() {
         if (j.contains("skin_selected_id")) g_SkinSelectedId = j["skin_selected_id"].get<uint32_t>();
         if (j.contains("skin_show_owned")) g_SkinShowOwned = j["skin_show_owned"].get<bool>();
         if (j.contains("skin_show_unowned")) g_SkinShowUnowned = j["skin_show_unowned"].get<bool>();
+        if (j.contains("skin_view_mode")) g_SkinViewMode = j["skin_view_mode"].get<int>();
     } catch (...) {}
 }
 
@@ -1395,6 +1400,8 @@ static void SaveAchTrackerState() {
         j["pinned"] = g_AchPinned;
         j["popout_visible"] = g_AchPopoutVisible;
         j["show_completed_steps"] = g_AchShowCompletedSteps;
+        j["hide_empty_cats"] = g_AchHideEmptyCats;
+        j["hide_completed_cats"] = g_AchHideCompletedCats;
         j["selected_group"] = g_AchSelectedGroupId;
         j["selected_category"] = g_AchSelectedCatId;
         j["tree_width"] = g_AchTreeWidth;
@@ -1426,6 +1433,8 @@ static void LoadAchTrackerState() {
         }
         g_AchPopoutVisible = j.value("popout_visible", false);
         g_AchShowCompletedSteps = j.value("show_completed_steps", !j.value("show_remaining", true));
+        g_AchHideEmptyCats = j.value("hide_empty_cats", false);
+        g_AchHideCompletedCats = j.value("hide_completed_cats", false);
         g_AchSelectedGroupId = j.value("selected_group", "");
         g_AchSelectedCatId = j.value("selected_category", 0u);
         g_AchTreeWidth = j.value("tree_width", 220.0f);
@@ -8342,48 +8351,163 @@ static void RenderCoins(int copper) {
     DrawCoinIcon(COIN_COPPER, 5.0f);
 }
 
+// Cached owned/total counts per skin category — recomputed when the
+// OwnedSkins generation changes (i.e. after a Refresh).
+static std::pair<int,int> SkinCategoryCounts(const std::string& type,
+                                             const std::string& sub,
+                                             const std::string& wc) {
+    static std::unordered_map<std::string, std::pair<int,int>> s_cache;
+    static uint64_t s_gen = (uint64_t)-1;
+    uint64_t gen = Skinventory::OwnedSkins::GetGeneration();
+    if (gen != s_gen) { s_cache.clear(); s_gen = gen; }
+
+    std::string key = type + "|" + sub + "|" + wc;
+    auto it = s_cache.find(key);
+    if (it != s_cache.end()) return it->second;
+
+    auto skins = Skinventory::SkinCache::GetSkinsByCategory(type, sub, wc);
+    int owned = 0;
+    for (uint32_t id : skins) {
+        if (Skinventory::OwnedSkins::IsOwned(id)) owned++;
+    }
+    auto result = std::make_pair(owned, (int)skins.size());
+    s_cache[key] = result;
+    return result;
+}
+
+// Single nav row with optional owned/total count and active gold accent.
+static bool RenderSkinNavRow(const char* label, bool active,
+                             int owned, int total,
+                             ImVec4 dotColor, bool indent) {
+    ImGui::PushID(label);
+    ImVec2 startPos = ImGui::GetCursorScreenPos();
+    float availW = ImGui::GetContentRegionAvail().x;
+    float rowH = ImGui::GetTextLineHeight() + 4.0f;
+
+    if (indent) ImGui::Indent(8.0f);
+
+    // Active gold-bar background fill behind text
+    if (active) {
+        ImDrawList* dl = ImGui::GetWindowDrawList();
+        ImVec2 bgMin(startPos.x, startPos.y);
+        ImVec2 bgMax(startPos.x + availW, startPos.y + rowH);
+        dl->AddRectFilled(bgMin, bgMax, IM_COL32(80, 64, 28, 60), 2.0f);
+        dl->AddRectFilled(ImVec2(bgMin.x, bgMin.y + 2),
+                          ImVec2(bgMin.x + 2, bgMax.y - 2),
+                          IM_COL32(232, 196, 122, 230));
+    }
+
+    // Small coloured dot as a category accent
+    {
+        ImDrawList* dl = ImGui::GetWindowDrawList();
+        ImVec2 p = ImGui::GetCursorScreenPos();
+        float cx = p.x + 4.0f;
+        float cy = p.y + ImGui::GetTextLineHeight() * 0.5f;
+        dl->AddCircleFilled(ImVec2(cx, cy), 3.5f, ImGui::GetColorU32(dotColor));
+        ImGui::Dummy(ImVec2(12.0f, ImGui::GetTextLineHeight()));
+        ImGui::SameLine(0, 2);
+    }
+
+    // Tag the count to the label so Selectable owns the full row width
+    char countBuf[32] = {0};
+    if (total > 0) {
+        if (owned >= 0) snprintf(countBuf, sizeof(countBuf), "  %d/%d", owned, total);
+        else            snprintf(countBuf, sizeof(countBuf), "  (%d)", total);
+    }
+
+    // Compute right-aligned count and use Selectable for hit-testing
+    ImVec4 textCol = active ? ImVec4(0.95f, 0.85f, 0.55f, 1.0f)
+                            : ImVec4(0.85f, 0.83f, 0.75f, 1.0f);
+    ImGui::PushStyleColor(ImGuiCol_Text, textCol);
+    bool clicked = ImGui::Selectable(label, false, 0, ImVec2(0, 0));
+    ImGui::PopStyleColor();
+
+    // Right-align count (drawn on top of selectable)
+    if (countBuf[0]) {
+        ImDrawList* dl = ImGui::GetWindowDrawList();
+        ImVec2 cSize = ImGui::CalcTextSize(countBuf);
+        float cx = startPos.x + availW - cSize.x - 6.0f;
+        float cy = startPos.y + (rowH - cSize.y) * 0.5f - 2.0f;
+        ImU32 countCol = (owned >= 0 && total > 0 && owned == total)
+            ? IM_COL32(120, 200, 120, 220)
+            : active ? IM_COL32(232, 196, 122, 220) : IM_COL32(140, 132, 110, 220);
+        dl->AddText(ImVec2(cx, cy), countCol, countBuf);
+    }
+
+    if (indent) ImGui::Unindent(8.0f);
+    ImGui::PopID();
+    return clicked;
+}
+
 static void RenderSkinCategoryNav() {
     ImGui::BeginChild("CategoryNav", ImVec2(180, 0), true);
 
-    auto drawBullet = [](ImVec4 color) {
-        ImVec2 pos = ImGui::GetCursorScreenPos();
-        float y_center = pos.y + ImGui::GetTextLineHeight() * 0.5f;
-        ImGui::GetWindowDrawList()->AddCircleFilled(
-            ImVec2(pos.x + 4.0f, y_center), 4.0f,
-            ImGui::GetColorU32(color));
-        ImGui::Dummy(ImVec2(12.0f, ImGui::GetTextLineHeight()));
-        ImGui::SameLine(0, 2);
+    bool hasOwner = Skinventory::OwnedSkins::HasData();
+
+    // Compute aggregate count for a top-level type by summing its sub-categories
+    auto typeTotals = [&](const std::string& type) -> std::pair<int,int> {
+        int owned = 0, total = 0;
+        if (type == "Armor") {
+            for (const auto& wc : Skinventory::SkinCache::GetArmorWeights()) {
+                if (wc == "Clothing") continue;
+                for (const auto& slot : Skinventory::SkinCache::GetArmorSlots(wc)) {
+                    auto p = SkinCategoryCounts("Armor", slot, wc);
+                    owned += p.first; total += p.second;
+                }
+            }
+        } else if (type == "Weapon") {
+            for (const auto& wt : Skinventory::SkinCache::GetWeaponTypes()) {
+                auto p = SkinCategoryCounts("Weapon", wt, "");
+                owned += p.first; total += p.second;
+            }
+        } else if (type == "Back") {
+            auto p = SkinCategoryCounts("Back", "", "");
+            owned += p.first; total += p.second;
+        }
+        return {owned, total};
     };
 
-    ImGui::Text("Category");
+    ImGui::TextColored(ImVec4(0.55f, 0.53f, 0.45f, 1.0f), "CATEGORY");
     ImGui::Separator();
 
-    drawBullet(ImVec4(0.45f, 0.65f, 0.85f, 1.0f));
-    if (ImGui::Selectable("Armor", g_SkinSelectedType == "Armor")) {
-        g_SkinSelectedType = "Armor";
-        g_SkinSelectedWeightClass = "Heavy";
-        g_SkinSelectedSubtype = "Helm";
-        g_SkinSelectedId = 0;
+    {
+        auto p = typeTotals("Armor");
+        if (RenderSkinNavRow("Armor", g_SkinSelectedType == "Armor",
+                             hasOwner ? p.first : -1, p.second,
+                             ImVec4(0.45f, 0.65f, 0.85f, 1.0f), false)) {
+            g_SkinSelectedType = "Armor";
+            g_SkinSelectedWeightClass = "Heavy";
+            g_SkinSelectedSubtype = "Helm";
+            g_SkinSelectedId = 0;
+        }
     }
-    drawBullet(ImVec4(0.85f, 0.45f, 0.35f, 1.0f));
-    if (ImGui::Selectable("Weapons", g_SkinSelectedType == "Weapon")) {
-        g_SkinSelectedType = "Weapon";
-        g_SkinSelectedWeightClass = "";
-        g_SkinSelectedSubtype = "Axe";
-        g_SkinSelectedId = 0;
+    {
+        auto p = typeTotals("Weapon");
+        if (RenderSkinNavRow("Weapons", g_SkinSelectedType == "Weapon",
+                             hasOwner ? p.first : -1, p.second,
+                             ImVec4(0.85f, 0.45f, 0.35f, 1.0f), false)) {
+            g_SkinSelectedType = "Weapon";
+            g_SkinSelectedWeightClass = "";
+            g_SkinSelectedSubtype = "Axe";
+            g_SkinSelectedId = 0;
+        }
     }
-    drawBullet(ImVec4(0.65f, 0.50f, 0.80f, 1.0f));
-    if (ImGui::Selectable("Back", g_SkinSelectedType == "Back")) {
-        g_SkinSelectedType = "Back";
-        g_SkinSelectedWeightClass = "";
-        g_SkinSelectedSubtype = "";
-        g_SkinSelectedId = 0;
+    {
+        auto p = typeTotals("Back");
+        if (RenderSkinNavRow("Back", g_SkinSelectedType == "Back",
+                             hasOwner ? p.first : -1, p.second,
+                             ImVec4(0.65f, 0.50f, 0.80f, 1.0f), false)) {
+            g_SkinSelectedType = "Back";
+            g_SkinSelectedWeightClass = "";
+            g_SkinSelectedSubtype = "";
+            g_SkinSelectedId = 0;
+        }
     }
 
     ImGui::Separator();
 
     if (g_SkinSelectedType == "Armor") {
-        ImGui::Text("Weight Class");
+        ImGui::TextColored(ImVec4(0.55f, 0.53f, 0.45f, 1.0f), "WEIGHT CLASS");
         auto wcColor = [](const std::string& wc) -> ImVec4 {
             if (wc == "Heavy")  return ImVec4(0.65f, 0.65f, 0.70f, 1.0f);
             if (wc == "Medium") return ImVec4(0.65f, 0.50f, 0.30f, 1.0f);
@@ -8392,33 +8516,37 @@ static void RenderSkinCategoryNav() {
         };
         for (const auto& wc : Skinventory::SkinCache::GetArmorWeights()) {
             if (wc == "Clothing") continue;
-            size_t count = Skinventory::SkinCache::GetCategorySkinCount("Armor", g_SkinSelectedSubtype, wc);
-            std::string label = wc + " (" + std::to_string(count) + ")";
-            drawBullet(wcColor(wc));
-            if (ImGui::Selectable(label.c_str(), g_SkinSelectedWeightClass == wc)) {
+            int owned = 0, total = 0;
+            for (const auto& slot : Skinventory::SkinCache::GetArmorSlots(wc)) {
+                auto p = SkinCategoryCounts("Armor", slot, wc);
+                owned += p.first; total += p.second;
+            }
+            if (RenderSkinNavRow(wc.c_str(), g_SkinSelectedWeightClass == wc,
+                                 hasOwner ? owned : -1, total,
+                                 wcColor(wc), false)) {
                 g_SkinSelectedWeightClass = wc;
                 g_SkinSelectedId = 0;
             }
         }
 
         ImGui::Separator();
-        ImGui::Text("Slot");
+        ImGui::TextColored(ImVec4(0.55f, 0.53f, 0.45f, 1.0f), "SLOT");
         for (const auto& slot : Skinventory::SkinCache::GetArmorSlots(g_SkinSelectedWeightClass)) {
-            size_t count = Skinventory::SkinCache::GetCategorySkinCount("Armor", slot, g_SkinSelectedWeightClass);
-            std::string label = slot + " (" + std::to_string(count) + ")";
-            drawBullet(ImVec4(0.45f, 0.65f, 0.85f, 1.0f));
-            if (ImGui::Selectable(label.c_str(), g_SkinSelectedSubtype == slot)) {
+            auto p = SkinCategoryCounts("Armor", slot, g_SkinSelectedWeightClass);
+            if (RenderSkinNavRow(slot.c_str(), g_SkinSelectedSubtype == slot,
+                                 hasOwner ? p.first : -1, p.second,
+                                 ImVec4(0.45f, 0.65f, 0.85f, 1.0f), true)) {
                 g_SkinSelectedSubtype = slot;
                 g_SkinSelectedId = 0;
             }
         }
     } else if (g_SkinSelectedType == "Weapon") {
-        ImGui::Text("Weapon Type");
+        ImGui::TextColored(ImVec4(0.55f, 0.53f, 0.45f, 1.0f), "WEAPON TYPE");
         for (const auto& wt : Skinventory::SkinCache::GetWeaponTypes()) {
-            size_t count = Skinventory::SkinCache::GetCategorySkinCount("Weapon", wt, "");
-            std::string label = wt + " (" + std::to_string(count) + ")";
-            drawBullet(ImVec4(0.85f, 0.45f, 0.35f, 1.0f));
-            if (ImGui::Selectable(label.c_str(), g_SkinSelectedSubtype == wt)) {
+            auto p = SkinCategoryCounts("Weapon", wt, "");
+            if (RenderSkinNavRow(wt.c_str(), g_SkinSelectedSubtype == wt,
+                                 hasOwner ? p.first : -1, p.second,
+                                 ImVec4(0.85f, 0.45f, 0.35f, 1.0f), false)) {
                 g_SkinSelectedSubtype = wt;
                 g_SkinSelectedId = 0;
             }
@@ -8431,14 +8559,64 @@ static void RenderSkinCategoryNav() {
 static void RenderSkinList() {
     ImGui::BeginChild("SkinList", ImVec2(300, 0), true);
 
-    ImGui::PushItemWidth(-1);
-    ImGui::InputTextWithHint("##skinfilter", "Filter skins...", g_SkinSearchFilter, sizeof(g_SkinSearchFilter));
-    ImGui::PopItemWidth();
+    // Search input + view toggle on the same row
+    {
+        const char* opts[] = { "List", "Grid" };
+        float btnW = 44.0f;
+        float gap = 2.0f;
+        float toggleW = btnW * 2 + gap;
+        float spacing = ImGui::GetStyle().ItemSpacing.x;
+        float inputW = ImGui::GetContentRegionAvail().x - toggleW - spacing;
+        if (inputW < 60.0f) inputW = 60.0f;
 
-    if (Skinventory::OwnedSkins::HasData()) {
-        ImGui::Checkbox("Owned", &g_SkinShowOwned);
+        ImGui::SetNextItemWidth(inputW);
+        ImGui::InputTextWithHint("##skinfilter", "Filter skins...", g_SkinSearchFilter, sizeof(g_SkinSearchFilter));
+
         ImGui::SameLine();
-        ImGui::Checkbox("Unowned", &g_SkinShowUnowned);
+        for (int i = 0; i < 2; i++) {
+            bool active = (g_SkinViewMode == i);
+            if (active) {
+                ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.50f, 0.40f, 0.18f, 0.80f));
+                ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.58f, 0.46f, 0.22f, 0.90f));
+                ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.58f, 0.46f, 0.22f, 0.90f));
+                ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.95f, 0.85f, 0.55f, 1.0f));
+            }
+            if (ImGui::Button(opts[i], ImVec2(btnW, 0))) {
+                g_SkinViewMode = i;
+                SaveSettings();
+            }
+            if (active) ImGui::PopStyleColor(4);
+            if (i == 0) ImGui::SameLine(0, gap);
+        }
+    }
+
+    {
+        // Chip strip: All / Owned / Unowned (filters only take effect once owned data is loaded)
+        bool hasOwnerForFilter = Skinventory::OwnedSkins::HasData();
+        if (!hasOwnerForFilter) ImGui::PushStyleVar(ImGuiStyleVar_Alpha, 0.55f);
+        struct Chip { const char* lbl; bool sOwned; bool sUnowned; };
+        const Chip chips[] = {
+            { "All",     true,  true  },
+            { "Owned",   true,  false },
+            { "Unowned", false, true  },
+        };
+        for (int i = 0; i < 3; i++) {
+            bool active = (g_SkinShowOwned == chips[i].sOwned) &&
+                          (g_SkinShowUnowned == chips[i].sUnowned);
+            if (active) {
+                ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.50f, 0.40f, 0.18f, 0.80f));
+                ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.58f, 0.46f, 0.22f, 0.90f));
+                ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.58f, 0.46f, 0.22f, 0.90f));
+                ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.95f, 0.85f, 0.55f, 1.0f));
+            }
+            if (ImGui::SmallButton(chips[i].lbl)) {
+                g_SkinShowOwned = chips[i].sOwned;
+                g_SkinShowUnowned = chips[i].sUnowned;
+            }
+            if (active) ImGui::PopStyleColor(4);
+            if (i < 2) ImGui::SameLine(0, 4);
+        }
+        if (!hasOwnerForFilter) ImGui::PopStyleVar();
     }
 
     ImGui::Separator();
@@ -8540,42 +8718,241 @@ static void RenderSkinList() {
             }
         }
     }
-    ImGuiListClipper clipper;
-    clipper.Begin((int)displaySkins.size());
-    while (clipper.Step()) {
-        for (int row = clipper.DisplayStart; row < clipper.DisplayEnd; row++) {
-            const auto& entry = displaySkins[row];
-            auto skinOpt = Skinventory::SkinCache::GetSkin(entry.id);
-            if (!skinOpt) continue;
-            const auto& skin = *skinOpt;
+    if (g_SkinViewMode == 1) {
+        // ===== Grid view =====
+        const float tileSize = 36.0f;
+        const float tileGap  = 3.0f;
+        float availW = ImGui::GetContentRegionAvail().x;
+        int cols = std::max(1, (int)((availW + tileGap) / (tileSize + tileGap)));
+        int rows = ((int)displaySkins.size() + cols - 1) / cols;
 
-            if (row % 2 == 1) {
-                ImVec2 rowMin = ImGui::GetCursorScreenPos();
-                ImVec2 rowMax(rowMin.x + ImGui::GetContentRegionAvail().x,
-                              rowMin.y + ImGui::GetTextLineHeightWithSpacing());
-                ImGui::GetWindowDrawList()->AddRectFilled(rowMin, rowMax,
-                    ImGui::GetColorU32(ImVec4(0.25f, 0.25f, 0.28f, 0.35f)));
-            }
-
-            bool selected = (g_SkinSelectedId == entry.id);
-            if (hasOwnerData) {
-                if (entry.owned) {
-                    ImGui::TextColored(ImVec4(0.35f, 0.82f, 0.35f, 1.0f), "+");
-                } else {
-                    ImGui::TextColored(ImVec4(0.4f, 0.4f, 0.4f, 1.0f), " -");
+        // Scroll-to-selected
+        if (g_SkinScrollToSkin) {
+            for (int i = 0; i < (int)displaySkins.size(); i++) {
+                if (displaySkins[i].id == g_SkinSelectedId) {
+                    float rowH = tileSize + tileGap;
+                    int r = i / cols;
+                    float targetY = r * rowH;
+                    float winH = ImGui::GetWindowHeight();
+                    ImGui::SetScrollY(targetY - winH * 0.5f + rowH * 0.5f);
+                    g_SkinScrollToSkin = false;
+                    break;
                 }
-                ImGui::SameLine(0, 4);
             }
-            std::string label = skin.name + "##" + std::to_string(entry.id);
-            ImGui::PushStyleColor(ImGuiCol_Text, GetSkinRarityColor(skin.rarity));
-            if (ImGui::Selectable(label.c_str(), selected)) {
-                g_SkinSelectedId = entry.id;
-                Skinventory::WikiImage::RequestImage(entry.id, skin.name, skin.weight_class);
-                Skinventory::Commerce::FetchPriceForSkin(entry.id);
+        }
+
+        ImGuiListClipper clipper;
+        clipper.Begin(rows, tileSize + tileGap);
+        ImDrawList* dl = ImGui::GetWindowDrawList();
+        while (clipper.Step()) {
+            for (int r = clipper.DisplayStart; r < clipper.DisplayEnd; r++) {
+                for (int c = 0; c < cols; c++) {
+                    int idx = r * cols + c;
+                    if (idx >= (int)displaySkins.size()) break;
+                    const auto& entry = displaySkins[idx];
+                    auto skinOpt = Skinventory::SkinCache::GetSkin(entry.id);
+                    if (!skinOpt) continue;
+                    const auto& skin = *skinOpt;
+
+                    if (c > 0) ImGui::SameLine(0, tileGap);
+
+                    bool selected = (g_SkinSelectedId == entry.id);
+                    bool dim = hasOwnerData && !entry.owned;
+
+                    uint32_t displayId = entry.id + 5000000;
+                    Texture_t* tex = AlterEgo::IconManager::GetIcon(displayId);
+                    if (!tex || !tex->Resource) {
+                        if (!skin.icon_url.empty())
+                            AlterEgo::IconManager::RequestIcon(displayId, skin.icon_url, /*priority=*/true);
+                    }
+
+                    ImVec2 pos = ImGui::GetCursorScreenPos();
+                    ImVec2 tmin = pos;
+                    ImVec2 tmax(pos.x + tileSize, pos.y + tileSize);
+
+                    // Background fill (rarity-tinted placeholder)
+                    ImVec4 rc = GetSkinRarityColor(skin.rarity);
+                    ImU32 bgCol = ImGui::ColorConvertFloat4ToU32(ImVec4(rc.x * 0.18f, rc.y * 0.18f, rc.z * 0.18f, 1.0f));
+                    dl->AddRectFilled(tmin, tmax, bgCol, 2.0f);
+
+                    if (tex && tex->Resource) {
+                        ImU32 tint = dim
+                            ? IM_COL32(160, 160, 160, 110)
+                            : IM_COL32(255, 255, 255, 255);
+                        dl->AddImage(tex->Resource, tmin, tmax,
+                            ImVec2(0,0), ImVec2(1,1), tint);
+                    }
+
+                    // Rarity border
+                    ImU32 borderCol = ImGui::ColorConvertFloat4ToU32(
+                        dim ? ImVec4(rc.x * 0.55f, rc.y * 0.55f, rc.z * 0.55f, 0.85f) : rc);
+                    dl->AddRect(tmin, tmax, borderCol, 2.0f, 0, 1.5f);
+
+                    // Selection ring (gold)
+                    if (selected) {
+                        dl->AddRect(ImVec2(tmin.x - 1, tmin.y - 1), ImVec2(tmax.x + 1, tmax.y + 1),
+                            IM_COL32(232, 196, 122, 255), 2.5f, 0, 2.0f);
+                    }
+
+                    // Owned check (small green corner mark)
+                    if (hasOwnerData && entry.owned) {
+                        float cx = tmax.x - 6.0f;
+                        float cy = tmin.y + 6.0f;
+                        dl->AddCircleFilled(ImVec2(cx, cy), 4.0f, IM_COL32(0, 0, 0, 200));
+                        dl->AddCircle(ImVec2(cx, cy), 4.0f, IM_COL32(111, 204, 122, 255), 12, 1.2f);
+                        dl->AddLine(ImVec2(cx - 2, cy + 0), ImVec2(cx - 0.5f, cy + 1.5f),
+                            IM_COL32(160, 230, 170, 255), 1.5f);
+                        dl->AddLine(ImVec2(cx - 0.5f, cy + 1.5f), ImVec2(cx + 2.5f, cy - 2),
+                            IM_COL32(160, 230, 170, 255), 1.5f);
+                    }
+
+                    ImGui::PushID((int)entry.id);
+                    ImGui::InvisibleButton("##tile", ImVec2(tileSize, tileSize));
+                    bool hovered = ImGui::IsItemHovered();
+                    if (hovered) {
+                        dl->AddRect(tmin, tmax, IM_COL32(232, 196, 122, 180), 2.0f, 0, 1.5f);
+                        ImGui::BeginTooltip();
+                        ImGui::TextColored(rc, "%s", skin.name.c_str());
+                        if (hasOwnerData) {
+                            ImGui::TextColored(entry.owned
+                                ? ImVec4(0.35f, 0.82f, 0.35f, 1.0f)
+                                : ImVec4(0.55f, 0.55f, 0.55f, 1.0f),
+                                entry.owned ? "Owned" : "Not owned");
+                        }
+                        ImGui::EndTooltip();
+                    }
+                    if (ImGui::IsItemClicked()) {
+                        g_SkinSelectedId = entry.id;
+                        Skinventory::WikiImage::RequestImage(entry.id, skin.name, skin.weight_class);
+                        Skinventory::Commerce::FetchPriceForSkin(entry.id);
+                    }
+                    ImGui::PopID();
+                }
+                ImGui::Dummy(ImVec2(0, 0)); // newline
             }
-            ImGui::PopStyleColor();
-            if (selected && g_SkinScrollToSkin) {
-                g_SkinScrollToSkin = false;
+        }
+    } else {
+        // ===== Compact list view =====
+        const float rowH   = 22.0f;
+        const float iconSz = 16.0f;
+
+        // Scroll-to-selected for list mode
+        if (g_SkinScrollToSkin) {
+            for (int i = 0; i < (int)displaySkins.size(); i++) {
+                if (displaySkins[i].id == g_SkinSelectedId) {
+                    float winH = ImGui::GetWindowHeight();
+                    ImGui::SetScrollY(i * rowH - winH * 0.5f + rowH * 0.5f);
+                    g_SkinScrollToSkin = false;
+                    break;
+                }
+            }
+        }
+
+        ImDrawList* dl = ImGui::GetWindowDrawList();
+        ImGuiListClipper clipper;
+        clipper.Begin((int)displaySkins.size(), rowH);
+        while (clipper.Step()) {
+            for (int row = clipper.DisplayStart; row < clipper.DisplayEnd; row++) {
+                const auto& entry = displaySkins[row];
+                auto skinOpt = Skinventory::SkinCache::GetSkin(entry.id);
+                if (!skinOpt) { ImGui::Dummy(ImVec2(0, rowH)); continue; }
+                const auto& skin = *skinOpt;
+
+                ImVec2 cmin = ImGui::GetCursorScreenPos();
+                float availW = ImGui::GetContentRegionAvail().x;
+                ImVec2 cmax(cmin.x + availW, cmin.y + rowH);
+
+                bool selected = (g_SkinSelectedId == entry.id);
+                bool dim = hasOwnerData && !entry.owned;
+                ImVec4 rc = GetSkinRarityColor(skin.rarity);
+
+                // Hit-test full row
+                ImGui::PushID((int)entry.id);
+                ImGui::InvisibleButton("##lrow", ImVec2(availW, rowH));
+                bool hovered = ImGui::IsItemHovered();
+                bool clicked = ImGui::IsItemClicked();
+                ImGui::PopID();
+
+                // Background
+                ImU32 bgCol;
+                if (selected)      bgCol = IM_COL32(80, 64, 28, 90);
+                else if (hovered)  bgCol = IM_COL32(60, 56, 40, 60);
+                else if (row & 1)  bgCol = IM_COL32(255, 255, 255, 10);
+                else               bgCol = IM_COL32(0, 0, 0, 0);
+                if ((bgCol & 0xFF000000) != 0)
+                    dl->AddRectFilled(cmin, cmax, bgCol, 2.0f);
+
+                // Selection / hover border
+                if (selected)
+                    dl->AddRect(cmin, cmax, IM_COL32(232, 196, 122, 220), 2.0f, 0, 1.0f);
+                else if (hovered)
+                    dl->AddRect(cmin, cmax, IM_COL32(197, 161, 85, 110), 2.0f, 0, 1.0f);
+
+                // Rarity left accent
+                ImU32 accent = ImGui::ColorConvertFloat4ToU32(
+                    dim ? ImVec4(rc.x * 0.55f, rc.y * 0.55f, rc.z * 0.55f, 0.85f) : rc);
+                dl->AddRectFilled(ImVec2(cmin.x, cmin.y + 2),
+                                  ImVec2(cmin.x + 3, cmax.y - 2), accent);
+
+                // Icon (lazy, priority-loaded)
+                float iconX = cmin.x + 8.0f;
+                float iconY = cmin.y + (rowH - iconSz) * 0.5f;
+                uint32_t displayId = entry.id + 5000000;
+                Texture_t* tex = AlterEgo::IconManager::GetIcon(displayId);
+                if (!tex || !tex->Resource) {
+                    if (!skin.icon_url.empty())
+                        AlterEgo::IconManager::RequestIcon(displayId, skin.icon_url, /*priority=*/true);
+                }
+                ImVec2 imin(iconX, iconY);
+                ImVec2 imax(iconX + iconSz, iconY + iconSz);
+                ImU32 iconBg = ImGui::ColorConvertFloat4ToU32(
+                    ImVec4(rc.x * 0.18f, rc.y * 0.18f, rc.z * 0.18f, 1.0f));
+                dl->AddRectFilled(imin, imax, iconBg, 1.5f);
+                if (tex && tex->Resource) {
+                    ImU32 tint = dim ? IM_COL32(170, 170, 170, 130) : IM_COL32(255, 255, 255, 255);
+                    dl->AddImage(tex->Resource, imin, imax, ImVec2(0,0), ImVec2(1,1), tint);
+                }
+
+                // Name (clipped between icon + status)
+                float textX = imax.x + 6.0f;
+                float textEndX = cmax.x - (hasOwnerData ? 22.0f : 6.0f);
+                ImU32 nameCol = dim
+                    ? ImGui::ColorConvertFloat4ToU32(ImVec4(rc.x * 0.65f, rc.y * 0.65f, rc.z * 0.65f, 0.85f))
+                    : ImGui::ColorConvertFloat4ToU32(rc);
+                ImVec2 nameSz = ImGui::CalcTextSize(skin.name.c_str());
+                float nameY = cmin.y + (rowH - nameSz.y) * 0.5f;
+                dl->PushClipRect(ImVec2(textX, cmin.y), ImVec2(textEndX, cmax.y), true);
+                dl->AddText(ImVec2(textX, nameY), nameCol, skin.name.c_str());
+                dl->PopClipRect();
+
+                // Status dot
+                if (hasOwnerData) {
+                    float dotX = cmax.x - 12.0f;
+                    float dotY = cmin.y + rowH * 0.5f;
+                    if (entry.owned) {
+                        dl->AddCircleFilled(ImVec2(dotX, dotY), 4.0f, IM_COL32(50, 110, 60, 220));
+                        dl->AddCircle(ImVec2(dotX, dotY), 4.0f, IM_COL32(111, 204, 122, 255), 14, 1.2f);
+                        dl->AddLine(ImVec2(dotX - 2, dotY + 0), ImVec2(dotX - 0.5f, dotY + 1.5f),
+                            IM_COL32(180, 240, 190, 255), 1.5f);
+                        dl->AddLine(ImVec2(dotX - 0.5f, dotY + 1.5f), ImVec2(dotX + 2.5f, dotY - 2),
+                            IM_COL32(180, 240, 190, 255), 1.5f);
+                    } else {
+                        dl->AddCircle(ImVec2(dotX, dotY), 3.5f, IM_COL32(120, 110, 90, 200), 14, 1.2f);
+                    }
+                }
+
+                // Hover tooltip (full name when clipped)
+                if (hovered && nameSz.x > (textEndX - textX)) {
+                    ImGui::BeginTooltip();
+                    ImGui::TextColored(rc, "%s", skin.name.c_str());
+                    ImGui::EndTooltip();
+                }
+
+                if (clicked) {
+                    g_SkinSelectedId = entry.id;
+                    Skinventory::WikiImage::RequestImage(entry.id, skin.name, skin.weight_class);
+                    Skinventory::Commerce::FetchPriceForSkin(entry.id);
+                }
             }
         }
     }
@@ -8617,26 +8994,83 @@ static void RenderSkinDetailPanel() {
         ImGui::Separator();
     };
 
-    ImGui::PushStyleColor(ImGuiCol_Text, GetSkinRarityColor(skin.rarity));
-    ImGui::TextWrapped("%s", skin.name.c_str());
-    ImGui::PopStyleColor();
+    // ===== Rarity-coloured banner card =====
+    {
+        ImVec4 rc = GetSkinRarityColor(skin.rarity);
+        ImDrawList* dl = ImGui::GetWindowDrawList();
+        float pad = 10.0f;
+        ImVec2 cmin = ImGui::GetCursorScreenPos();
+        float w = ImGui::GetContentRegionAvail().x;
 
-    ImGui::Text("%s%s%s",
-        skin.type.c_str(),
-        skin.subtype.empty() ? "" : (" / " + skin.subtype).c_str(),
-        skin.weight_class.empty() ? "" : (" / " + skin.weight_class).c_str());
-    ImGui::TextColored(GetSkinRarityColor(skin.rarity), "%s", skin.rarity.c_str());
-    ImGui::SameLine();
-    ImGui::TextColored(ImVec4(0.5f, 0.5f, 0.5f, 1.0f), "(ID: %u)", skin.id);
+        // Pre-measure so we can fit the wrapped name
+        ImGui::PushTextWrapPos(cmin.x + w - pad * 2);
+        ImVec2 nameSz = ImGui::CalcTextSize(skin.name.c_str(), nullptr, false, w - pad * 2 - 8.0f);
+        ImGui::PopTextWrapPos();
+        float nameH = nameSz.y;
+        float subH = ImGui::GetTextLineHeight();
+        float h = pad + nameH + 4.0f + subH + pad;
 
-    if (Skinventory::OwnedSkins::HasData()) {
-        bool owned = Skinventory::OwnedSkins::IsOwned(g_SkinSelectedId);
-        if (owned) {
-            ImGui::TextColored(ImVec4(0.35f, 0.82f, 0.35f, 1.0f), "OWNED");
-        } else {
-            ImGui::TextColored(ImVec4(1.0f, 0.3f, 0.3f, 1.0f), "NOT OWNED");
+        ImVec2 cmax(cmin.x + w, cmin.y + h);
+
+        // Background gradient tinted by rarity
+        ImU32 bgL = ImGui::ColorConvertFloat4ToU32(ImVec4(rc.x * 0.22f, rc.y * 0.22f, rc.z * 0.22f, 0.95f));
+        ImU32 bgR = IM_COL32(20, 20, 24, 250);
+        dl->AddRectFilledMultiColor(cmin, cmax, bgL, bgR, bgR, bgL);
+        dl->AddRect(cmin, cmax, IM_COL32(0, 0, 0, 200), 4.0f, 0, 1.0f);
+
+        // Left rarity bar
+        dl->AddRectFilled(ImVec2(cmin.x, cmin.y + 3),
+                          ImVec2(cmin.x + 3, cmax.y - 3),
+                          ImGui::ColorConvertFloat4ToU32(rc));
+
+        // Reserve the card area in ImGui layout and render the name + subtitle on top
+        ImGui::Dummy(ImVec2(w, h));
+        ImVec2 textStart(cmin.x + pad + 4.0f, cmin.y + pad);
+
+        // Name (rarity-coloured, wrapped, larger via no font change but bold-ish via colour)
+        ImGui::SetCursorScreenPos(textStart);
+        ImGui::PushStyleColor(ImGuiCol_Text, rc);
+        ImGui::PushTextWrapPos(textStart.x + w - pad * 2);
+        ImGui::TextUnformatted(skin.name.c_str());
+        ImGui::PopTextWrapPos();
+        ImGui::PopStyleColor();
+
+        // Subtitle: rarity · type · weight   [owned chip]
+        ImGui::SetCursorScreenPos(ImVec2(textStart.x, textStart.y + nameH + 4.0f));
+
+        std::string subtitle = skin.rarity;
+        if (!skin.type.empty())        { subtitle += "  ·  "; subtitle += skin.type; }
+        if (!skin.subtype.empty())     { subtitle += "  "; subtitle += skin.subtype; }
+        if (!skin.weight_class.empty()){ subtitle += "  ·  "; subtitle += skin.weight_class; }
+        ImGui::TextColored(ImVec4(rc.x * 0.85f, rc.y * 0.85f, rc.z * 0.85f, 0.95f),
+            "%s", subtitle.c_str());
+
+        // Owned/not-owned chip, right-aligned inside the banner
+        if (Skinventory::OwnedSkins::HasData()) {
+            bool owned = Skinventory::OwnedSkins::IsOwned(g_SkinSelectedId);
+            const char* chipText = owned ? "OWNED" : "NOT OWNED";
+            ImVec2 chipSz = ImGui::CalcTextSize(chipText);
+            float chipPadX = 8.0f, chipPadY = 3.0f;
+            ImVec2 chipMin(cmax.x - pad - chipSz.x - chipPadX * 2,
+                           cmin.y + pad - 2.0f);
+            ImVec2 chipMax(chipMin.x + chipSz.x + chipPadX * 2,
+                           chipMin.y + chipSz.y + chipPadY * 2);
+            ImU32 chipBg, chipBorder, chipFg;
+            if (owned) {
+                chipBg = IM_COL32(40, 78, 44, 220);
+                chipBorder = IM_COL32(120, 200, 130, 230);
+                chipFg = IM_COL32(180, 240, 190, 255);
+            } else {
+                chipBg = IM_COL32(60, 30, 30, 200);
+                chipBorder = IM_COL32(180, 90, 90, 200);
+                chipFg = IM_COL32(220, 150, 150, 255);
+            }
+            dl->AddRectFilled(chipMin, chipMax, chipBg, 3.0f);
+            dl->AddRect(chipMin, chipMax, chipBorder, 3.0f, 0, 1.2f);
+            dl->AddText(ImVec2(chipMin.x + chipPadX, chipMin.y + chipPadY), chipFg, chipText);
         }
     }
+    ImGui::TextColored(ImVec4(0.45f, 0.45f, 0.45f, 1.0f), "ID: %u", skin.id);
 
     // Pricing (unowned only)
     bool isOwned = Skinventory::OwnedSkins::HasData() &&
@@ -8840,36 +9274,72 @@ static void RenderSkinShoppingList() {
     }
 
     static bool s_needsFetch = true;
+    static int shopTypeFilter = 0;
+    static int shopSourceFilter = 0;
+
+    // ===== Compact toolbar: Refresh + Category chips + Source chips =====
     if (ImGui::Button("Refresh Prices") && !Skinventory::Commerce::IsFetching()) {
         g_SkinShopListDirty = true;
         s_needsFetch = true;
     }
+
+    auto chipButton = [](const char* lbl, bool active) -> bool {
+        if (active) {
+            ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.50f, 0.40f, 0.18f, 0.80f));
+            ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.58f, 0.46f, 0.22f, 0.90f));
+            ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.58f, 0.46f, 0.22f, 0.90f));
+            ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.95f, 0.85f, 0.55f, 1.0f));
+        }
+        bool clicked = ImGui::SmallButton(lbl);
+        if (active) ImGui::PopStyleColor(4);
+        return clicked;
+    };
+
+    ImGui::SameLine(0, 16);
+    ImGui::TextColored(ImVec4(0.55f, 0.53f, 0.45f, 1.0f), "Category:");
     ImGui::SameLine();
-    ImGui::Text("Category:");
-    ImGui::SameLine();
-    static int shopTypeFilter = 0;
-    int prevFilter = shopTypeFilter;
-    ImGui::RadioButton("All##shop", &shopTypeFilter, 0); ImGui::SameLine();
-    ImGui::RadioButton("Armor##shop", &shopTypeFilter, 1); ImGui::SameLine();
-    ImGui::RadioButton("Weapons##shop", &shopTypeFilter, 2);
-    if (shopTypeFilter != prevFilter) {
-        g_SkinShopListDirty = true;
+    const char* catLabels[]    = { "All##cat",   "Armor##cat",  "Weapons##cat" };
+    const char* catDisplay[]   = { "All",        "Armor",       "Weapons" };
+    for (int i = 0; i < 3; i++) {
+        if (chipButton(catLabels[i], shopTypeFilter == i)) {
+            if (shopTypeFilter != i) { shopTypeFilter = i; g_SkinShopListDirty = true; }
+        }
+        if (i < 2) ImGui::SameLine(0, 4);
+        (void)catDisplay;
     }
 
-    ImGui::Text("Source:");
+    ImGui::SameLine(0, 16);
+    ImGui::TextColored(ImVec4(0.55f, 0.53f, 0.45f, 1.0f), "Source:");
     ImGui::SameLine();
-    static int shopSourceFilter = 0;
-    int prevSource = shopSourceFilter;
-    ImGui::RadioButton("All##src", &shopSourceFilter, 0); ImGui::SameLine();
-    ImGui::RadioButton("TP##src", &shopSourceFilter, 1); ImGui::SameLine();
-    ImGui::RadioButton("Vendor##src", &shopSourceFilter, 2);
-    if (shopSourceFilter != prevSource) {
-        g_SkinShopListDirty = true;
+    const char* srcLabels[] = { "All##src", "TP##src", "Vendor##src" };
+    for (int i = 0; i < 3; i++) {
+        if (chipButton(srcLabels[i], shopSourceFilter == i)) {
+            if (shopSourceFilter != i) { shopSourceFilter = i; g_SkinShopListDirty = true; }
+        }
+        if (i < 2) ImGui::SameLine(0, 4);
     }
 
+    // Thin progress bar when fetching (replaces verbose status text)
     if (Skinventory::Commerce::IsFetching()) {
         std::string fetchMsg = Skinventory::Commerce::GetFetchStatus();
-        ImGui::TextColored(ImVec4(1.0f, 0.85f, 0.0f, 1.0f), "%s", fetchMsg.c_str());
+        int curN = 0, totN = 0;
+        // Parse "...N/M" out of the status message
+        for (size_t i = 0; i < fetchMsg.size(); i++) {
+            if (isdigit((unsigned char)fetchMsg[i])) {
+                int a = 0, b = 0; int consumed = 0;
+                if (sscanf(fetchMsg.c_str() + i, "%d/%d%n", &a, &b, &consumed) == 2 && b > 0) {
+                    curN = a; totN = b;
+                    break;
+                }
+                while (i < fetchMsg.size() && isdigit((unsigned char)fetchMsg[i])) i++;
+            }
+        }
+        float frac = (totN > 0) ? std::min(1.0f, (float)curN / (float)totN) : 0.0f;
+        ImGui::PushStyleColor(ImGuiCol_PlotHistogram, ImVec4(0.95f, 0.76f, 0.30f, 1.0f));
+        ImGui::PushStyleColor(ImGuiCol_FrameBg, ImVec4(0.10f, 0.10f, 0.13f, 1.0f));
+        ImGui::ProgressBar(frac, ImVec2(-1, 3.0f), "");
+        ImGui::PopStyleColor(2);
+        ImGui::TextColored(ImVec4(0.85f, 0.74f, 0.40f, 1.0f), "%s", fetchMsg.c_str());
     }
 
     ImGui::Separator();
@@ -8974,7 +9444,7 @@ static void RenderSkinShoppingList() {
 
     float reserveHeight = ImGui::GetFrameHeightWithSpacing() * 2.0f;
     ImVec2 tableSize(0.0f, -reserveHeight);
-    if (ImGui::BeginTable("ShoppingList", 5,
+    if (ImGui::BeginTable("ShoppingList", 4,
         ImGuiTableFlags_ScrollY | ImGuiTableFlags_RowBg |
         ImGuiTableFlags_BordersInnerH | ImGuiTableFlags_Sortable,
         tableSize)) {
@@ -8982,7 +9452,6 @@ static void RenderSkinShoppingList() {
         ImGui::TableSetupColumn("Name", ImGuiTableColumnFlags_WidthStretch, 0.0f, 0);
         ImGui::TableSetupColumn("Type", ImGuiTableColumnFlags_WidthFixed, 80, 1);
         ImGui::TableSetupColumn("Source", ImGuiTableColumnFlags_WidthFixed, 55, 2);
-        ImGui::TableSetupColumn("Rarity", ImGuiTableColumnFlags_WidthFixed, 65, 3);
         ImGui::TableSetupColumn("Price", ImGuiTableColumnFlags_WidthFixed | ImGuiTableColumnFlags_DefaultSort, 120, 4);
         ImGui::TableHeadersRow();
 
@@ -9009,8 +9478,6 @@ static void RenderSkinShoppingList() {
                             cmp = sa->name.compare(sb->name);
                         } else if (col == 1) {
                             cmp = sa->subtype.compare(sb->subtype);
-                        } else if (col == 3) {
-                            cmp = sa->rarity.compare(sb->rarity);
                         }
                         return ascending ? cmp < 0 : cmp > 0;
                     });
@@ -9029,6 +9496,19 @@ static void RenderSkinShoppingList() {
 
                 ImGui::TableNextRow();
                 ImGui::TableNextColumn();
+
+                // Rarity-coloured left accent bar in the Name cell
+                {
+                    ImVec4 rc = GetSkinRarityColor(skin.rarity);
+                    ImDrawList* dl = ImGui::GetWindowDrawList();
+                    ImVec2 p = ImGui::GetCursorScreenPos();
+                    float h = ImGui::GetTextLineHeightWithSpacing();
+                    dl->AddRectFilled(ImVec2(p.x, p.y + 2),
+                                      ImVec2(p.x + 2, p.y + h - 2),
+                                      ImGui::ColorConvertFloat4ToU32(rc));
+                    ImGui::Dummy(ImVec2(4.0f, 0.0f));
+                    ImGui::SameLine(0, 0);
+                }
 
                 std::string selectLabel = skin.name + "##shop" + std::to_string(entry.skinId);
                 ImGui::PushStyleColor(ImGuiCol_Text, GetSkinRarityColor(skin.rarity));
@@ -9056,9 +9536,6 @@ static void RenderSkinShoppingList() {
                 } else {
                     ImGui::TextColored(ImVec4(0.9f, 0.75f, 0.3f, 1.0f), "TP");
                 }
-
-                ImGui::TableNextColumn();
-                ImGui::TextColored(GetSkinRarityColor(skin.rarity), "%s", skin.rarity.c_str());
 
                 ImGui::TableNextColumn();
                 RenderCoins(entry.price);
@@ -9401,89 +9878,208 @@ static void RenderAchEntry(uint32_t achId, bool showPinButton) {
 
     bool hasBits = !def.bits.empty() && !done;
     bool expanded = g_AchExpandedInList.count(achId) > 0;
+    bool pinned = IsAchPinned(achId);
+    bool inProgress = !done && current > 0 && max > 0;
 
-    // Achievement name row — clickable if has bits
-    {
-        // Build the header label
-        std::string headerText;
-        if (done) {
-            headerText = "[x]  " + def.name;
-        } else {
-            headerText = "[ ]  " + def.name;
-        }
-        if (def.total_ap > 0) {
-            headerText += "  (" + std::to_string(def.total_ap) + " AP)";
-        }
-        if (max > 0) {
-            headerText += "  " + std::to_string(done ? max : current) + "/" + std::to_string(max);
-        }
+    // ===== Compact row =====
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    float rowH = 30.0f;
+    float availRowW = ImGui::GetContentRegionAvail().x;
+    ImVec2 cmin = ImGui::GetCursorScreenPos();
+    ImVec2 cmax(cmin.x + availRowW, cmin.y + rowH);
 
-        ImVec4 headerColor = done ? ImVec4(0.35f, 0.82f, 0.35f, 1.0f) : ImVec4(0.9f, 0.9f, 0.9f, 1.0f);
+    // State colour
+    ImU32 stateCol;
+    if (done)            stateCol = IM_COL32(111, 204, 122, 255);
+    else if (pinned)     stateCol = IM_COL32(232, 196, 122, 255);
+    else if (inProgress) stateCol = IM_COL32(244, 196, 122, 230);
+    else                 stateCol = IM_COL32(120, 110, 90, 200);
 
-        if (hasBits) {
-            std::string selectableLabel = headerText + "###ach" + std::to_string(achId);
-            ImGui::PushStyleColor(ImGuiCol_Header, ImVec4(0.2f, 0.2f, 0.2f, 0.5f));
-            ImGui::PushStyleColor(ImGuiCol_HeaderHovered, ImVec4(0.3f, 0.3f, 0.3f, 0.5f));
-            ImGui::PushStyleColor(ImGuiCol_Text, headerColor);
-            if (ImGui::Selectable(selectableLabel.c_str(), expanded, ImGuiSelectableFlags_AllowItemOverlap)) {
-                if (expanded) g_AchExpandedInList.erase(achId);
-                else g_AchExpandedInList.insert(achId);
-            }
-            ImGui::PopStyleColor(3);
-        } else {
-            ImGui::TextColored(headerColor, "%s", headerText.c_str());
-        }
+    // Background
+    ImU32 bg = pinned ? IM_COL32(80, 64, 28, 65)
+             : done   ? IM_COL32(28, 38, 28, 60)
+                      : IM_COL32(255, 255, 255, 14);
+    dl->AddRectFilled(cmin, cmax, bg, 3.0f);
+    dl->AddRect(cmin, cmax, IM_COL32(0, 0, 0, 130), 3.0f, 0, 1.0f);
 
-        // Right-click context menu
-        if (ImGui::BeginPopupContextItem("##ach_ctx")) {
-            if (ImGui::MenuItem("Open in Wiki")) {
-                std::string wikiUrl = "https://wiki.guildwars2.com/wiki/" + def.name;
-                std::replace(wikiUrl.begin(), wikiUrl.end(), ' ', '_');
-                ShellExecuteA(NULL, "open", wikiUrl.c_str(), NULL, NULL, SW_SHOWNORMAL);
-            }
-            ImGui::EndPopup();
-        }
-    }
+    // Left state bar
+    dl->AddRectFilled(ImVec2(cmin.x, cmin.y + 3),
+                      ImVec2(cmin.x + 3, cmax.y - 3), stateCol);
 
-    // Pin button (same line as header)
-    if (showPinButton) {
-        ImGui::SameLine(ImGui::GetContentRegionAvail().x - 30.0f);
-        bool pinned = IsAchPinned(achId);
-        if (pinned) {
-            if (ImGui::SmallButton("Unpin")) ToggleAchPin(achId);
-        } else {
-            if (ImGui::SmallButton("Pin")) ToggleAchPin(achId);
-        }
-    }
-
-    // Progress bar
-    if (max > 0) {
-        float frac = done ? 1.0f : (float)current / (float)max;
-        ImVec4 barColor = done ? ImVec4(0.3f, 0.6f, 0.25f, 0.6f) : ImVec4(0.4f, 0.7f, 0.3f, 1.0f);
-        RenderAchProgressBar(frac, barColor);
-    }
-
-    // Requirement text + achievement-level waypoint button
-    if (!done && !def.requirement.empty()) {
-        std::string cleanReq = StripGW2Markup(def.requirement);
-        ImGui::TextColored(ImVec4(0.5f, 0.5f, 0.5f, 1.0f), "  %s", cleanReq.c_str());
-    }
-    // Achievement-level waypoint (bitIndex -1)
+    // Main row hit area (excluding the pin button + WP button on the right)
+    float pinReserve = showPinButton ? 22.0f : 0.0f;
+    float wpReserve = 0.0f;
+    bool hasAchWp = false;
+    std::string achWaypoint;
     {
         auto wpIt = g_AchWaypoints.find(achId);
         if (wpIt != g_AchWaypoints.end()) {
             auto wpBitIt = wpIt->second.find(-1);
             if (wpBitIt != wpIt->second.end()) {
-                ImGui::SameLine();
-                if (ImGui::SmallButton("WP")) {
-                    ImGui::SetClipboardText(wpBitIt->second.c_str());
-                }
-                if (ImGui::IsItemHovered()) {
-                    ImGui::SetTooltip("Copy waypoint: %s", wpBitIt->second.c_str());
-                }
+                hasAchWp = true;
+                achWaypoint = wpBitIt->second;
+                wpReserve = 26.0f;
             }
         }
     }
+    float rightReserve = pinReserve + wpReserve + 8.0f;
+
+    ImGui::InvisibleButton("##achrow", ImVec2(availRowW - rightReserve, rowH));
+    bool rowHovered = ImGui::IsItemHovered();
+    bool rowClicked = ImGui::IsItemClicked();
+
+    if (rowHovered)
+        dl->AddRect(cmin, cmax, IM_COL32(197, 161, 85, 130), 3.0f, 0, 1.0f);
+
+    // Right-click context (open wiki)
+    if (ImGui::BeginPopupContextItem("##ach_ctx")) {
+        if (ImGui::MenuItem("Open in Wiki")) {
+            std::string wikiUrl = "https://wiki.guildwars2.com/wiki/" + def.name;
+            std::replace(wikiUrl.begin(), wikiUrl.end(), ' ', '_');
+            ShellExecuteA(NULL, "open", wikiUrl.c_str(), NULL, NULL, SW_SHOWNORMAL);
+        }
+        ImGui::EndPopup();
+    }
+
+    if (rowClicked && hasBits) {
+        if (expanded) g_AchExpandedInList.erase(achId);
+        else g_AchExpandedInList.insert(achId);
+    }
+
+    // Title + AP pill + progress badge — drawn on top of the row
+    float padX = 10.0f;
+    float midY = cmin.y + rowH * 0.5f;
+
+    // Right-side elements (progress badge + AP pill, right-to-left)
+    float rightX = cmax.x - rightReserve;
+
+    if (def.total_ap > 0) {
+        char ap[16]; snprintf(ap, sizeof(ap), "%d AP", def.total_ap);
+        ImVec2 sz = ImGui::CalcTextSize(ap);
+        float pillW = sz.x + 10.0f;
+        float pillH = 16.0f;
+        ImVec2 pMin(rightX - pillW, midY - pillH * 0.5f);
+        ImVec2 pMax(rightX, pMin.y + pillH);
+        ImU32 pBg, pBorder, pText;
+        if (done) {
+            pBg = IM_COL32(40, 60, 40, 180); pBorder = IM_COL32(120, 200, 130, 200);
+            pText = IM_COL32(160, 220, 170, 255);
+        } else {
+            pBg = IM_COL32(54, 38, 14, 200); pBorder = IM_COL32(200, 160, 90, 200);
+            pText = IM_COL32(232, 196, 122, 255);
+        }
+        dl->AddRectFilled(pMin, pMax, pBg, 3.0f);
+        dl->AddRect(pMin, pMax, pBorder, 3.0f, 0, 1.0f);
+        dl->AddText(ImVec2(pMin.x + 5.0f, pMin.y + (pillH - sz.y) * 0.5f), pText, ap);
+        rightX = pMin.x - 6.0f;
+    }
+
+    if (max > 1) {
+        char progBuf[24];
+        snprintf(progBuf, sizeof(progBuf), "%d / %d", done ? max : current, max);
+        ImVec2 sz = ImGui::CalcTextSize(progBuf);
+        float bdW = sz.x + 10.0f;
+        float bdH = 16.0f;
+        ImVec2 bMin(rightX - bdW, midY - bdH * 0.5f);
+        ImVec2 bMax(rightX, bMin.y + bdH);
+        ImU32 bBg, bBorder, bText;
+        if (done) {
+            bBg = IM_COL32(40, 60, 40, 180); bBorder = IM_COL32(120, 200, 130, 200);
+            bText = IM_COL32(160, 220, 170, 255);
+        } else {
+            bBg = IM_COL32(0, 0, 0, 110); bBorder = IM_COL32(160, 145, 110, 170);
+            bText = IM_COL32(220, 210, 180, 240);
+        }
+        dl->AddRectFilled(bMin, bMax, bBg, 3.0f);
+        dl->AddRect(bMin, bMax, bBorder, 3.0f, 0, 1.0f);
+        dl->AddText(ImVec2(bMin.x + 5.0f, bMin.y + (bdH - sz.y) * 0.5f), bText, progBuf);
+        rightX = bMin.x - 6.0f;
+    }
+
+    // Title (clipped between left bar and remaining right space)
+    float titleX = cmin.x + padX + 4.0f;
+    float titleEndX = rightX - 8.0f;
+    ImU32 titleCol;
+    if (done)        titleCol = IM_COL32(150, 200, 150, 255);
+    else if (pinned) titleCol = IM_COL32(245, 220, 150, 255);
+    else             titleCol = IM_COL32(230, 224, 208, 255);
+    ImVec2 tSz = ImGui::CalcTextSize(def.name.c_str());
+    dl->PushClipRect(ImVec2(titleX, cmin.y), ImVec2(titleEndX, cmax.y), true);
+    dl->AddText(ImVec2(titleX, midY - tSz.y * 0.5f - 1.0f), titleCol, def.name.c_str());
+    dl->PopClipRect();
+
+    // 2px progress strip at the bottom of the row
+    if (max > 0) {
+        float frac = done ? 1.0f : (float)current / (float)max;
+        float stripY = cmax.y - 4.0f;
+        ImVec2 sMin(cmin.x + 4.0f, stripY);
+        ImVec2 sMax(cmax.x - 4.0f, stripY + 2.0f);
+        dl->AddRectFilled(sMin, sMax, IM_COL32(255, 255, 255, 18), 1.0f);
+        float fillEnd = sMin.x + (sMax.x - sMin.x) * frac;
+        if (fillEnd > sMin.x)
+            dl->AddRectFilled(sMin, ImVec2(fillEnd, sMax.y), stateCol, 1.0f);
+    }
+
+    // Hover tooltip with requirement text (so the row stays one line)
+    if (rowHovered && !def.requirement.empty()) {
+        std::string cleanReq = StripGW2Markup(def.requirement);
+        ImGui::BeginTooltip();
+        ImGui::TextUnformatted(def.name.c_str());
+        ImGui::Separator();
+        ImGui::PushTextWrapPos(360.0f);
+        ImGui::TextWrapped("%s", cleanReq.c_str());
+        ImGui::PopTextWrapPos();
+        ImGui::EndTooltip();
+    }
+
+    // Position the right-side buttons (WP, Pin)
+    float btnX = cmax.x - 4.0f;
+    if (showPinButton) {
+        float pinW = 22.0f, pinH = 20.0f;
+        btnX -= pinW;
+        ImGui::SetCursorScreenPos(ImVec2(btnX, midY - pinH * 0.5f));
+        ImU32 pinBg = pinned ? IM_COL32(80, 64, 28, 200) : IM_COL32(0, 0, 0, 130);
+        ImU32 pinBorder = pinned ? IM_COL32(232, 196, 122, 230) : IM_COL32(140, 130, 110, 170);
+        ImU32 pinFg = pinned ? IM_COL32(245, 220, 150, 255) : IM_COL32(170, 158, 130, 230);
+        ImVec2 bMin = ImGui::GetCursorScreenPos();
+        ImVec2 bMax(bMin.x + pinW, bMin.y + pinH);
+        dl->AddRectFilled(bMin, bMax, pinBg, 3.0f);
+        dl->AddRect(bMin, bMax, pinBorder, 3.0f, 0, 1.0f);
+        const char* star = pinned ? "*" : "*";
+        ImVec2 sz = ImGui::CalcTextSize(star);
+        dl->AddText(ImVec2(bMin.x + (pinW - sz.x) * 0.5f, bMin.y + (pinH - sz.y) * 0.5f),
+            pinFg, star);
+        if (ImGui::InvisibleButton("##pinbtn", ImVec2(pinW, pinH))) {
+            ToggleAchPin(achId);
+        }
+        if (ImGui::IsItemHovered()) {
+            ImGui::SetTooltip(pinned ? "Unpin from tracker" : "Pin to tracker");
+        }
+        btnX -= 4.0f;
+    }
+
+    if (hasAchWp) {
+        float wpW = 22.0f, wpH = 20.0f;
+        btnX -= wpW;
+        ImGui::SetCursorScreenPos(ImVec2(btnX, midY - wpH * 0.5f));
+        ImVec2 bMin = ImGui::GetCursorScreenPos();
+        ImVec2 bMax(bMin.x + wpW, bMin.y + wpH);
+        dl->AddRectFilled(bMin, bMax, IM_COL32(0, 0, 0, 130), 3.0f);
+        dl->AddRect(bMin, bMax, IM_COL32(140, 130, 110, 170), 3.0f, 0, 1.0f);
+        const char* wp = "WP";
+        ImVec2 sz = ImGui::CalcTextSize(wp);
+        dl->AddText(ImVec2(bMin.x + (wpW - sz.x) * 0.5f, bMin.y + (wpH - sz.y) * 0.5f),
+            IM_COL32(180, 168, 130, 230), wp);
+        if (ImGui::InvisibleButton("##wpbtn", ImVec2(wpW, wpH))) {
+            ImGui::SetClipboardText(achWaypoint.c_str());
+        }
+        if (ImGui::IsItemHovered()) {
+            ImGui::SetTooltip("Copy waypoint: %s", achWaypoint.c_str());
+        }
+    }
+
+    // Restore cursor to below the row
+    ImGui::SetCursorScreenPos(ImVec2(cmin.x, cmax.y + 2.0f));
 
     // Expanded bits (sub-objectives) — shown when clicked
     if (hasBits && expanded) {
@@ -9706,6 +10302,28 @@ static void RenderAchievements() {
 
     if (!g_AchGroupsFetched) return;
 
+    // One-shot prefetch: query progress for every achievement in every group so
+    // the rail's owned/total counts populate without the user having to click
+    // each category. SendAchProgressQuery already batches in chunks of 200.
+    {
+        static std::string s_prefetchedAccount;
+        std::string currentAccount = GetEffectiveAccountName();
+        if (!g_AchProgressFetching && s_prefetchedAccount != currentAccount) {
+            std::vector<uint32_t> allIds;
+            {
+                std::lock_guard<std::recursive_mutex> lock(g_AchMutex);
+                for (const auto& [catId, cat] : g_AchCategories) {
+                    if (g_AchHiddenCatIds.count(catId)) continue;
+                    for (uint32_t aid : cat.achievements) allIds.push_back(aid);
+                }
+            }
+            if (!allIds.empty()) {
+                s_prefetchedAccount = currentAccount;
+                SendAchProgressQuery(allIds);
+            }
+        }
+    }
+
     // Search mode — cached results to avoid iterating 8000+ names every frame
     bool searchActive = g_AchSearchBuf[0] != '\0';
     if (searchActive) {
@@ -9792,11 +10410,92 @@ static void RenderAchievements() {
 
     // Left panel: Group/Category tree
     ImGui::BeginChild("AchTree", ImVec2(g_AchTreeWidth, availHeight), true);
+
     if (g_AchRestoreScroll) {
         ImGui::SetScrollY(g_AchTreeScrollY);
     }
     {
         std::lock_guard<std::recursive_mutex> lock(g_AchMutex);
+
+        // Compute (done, total, hasAny) for a category — cached per progress generation
+        struct CatStats { int done; int total; bool hasAny; };
+        static std::unordered_map<uint32_t, CatStats> s_catStats;
+        static uint64_t s_catStatsGen = (uint64_t)-1;
+        if (s_catStatsGen != g_AchProgressGen) {
+            s_catStats.clear();
+            s_catStatsGen = g_AchProgressGen;
+        }
+        auto getCatStats = [&](uint32_t catId) -> CatStats {
+            auto it = s_catStats.find(catId);
+            if (it != s_catStats.end()) return it->second;
+            CatStats st{0, 0, false};
+            auto catIt = g_AchCategories.find(catId);
+            if (catIt != g_AchCategories.end()) {
+                st.total = (int)catIt->second.achievements.size();
+                for (uint32_t aid : catIt->second.achievements) {
+                    auto pit = g_AchProgress.find(aid);
+                    if (pit != g_AchProgress.end()) {
+                        st.hasAny = true;
+                        if (pit->second.done) st.done++;
+                    }
+                }
+            }
+            s_catStats[catId] = st;
+            return st;
+        };
+
+        // Render a category row with gold-bar selection, owned/total badge, dim if no progress
+        auto renderCatRow = [&](const AchCategoryDef* cat, const std::string& groupId,
+                                bool isSelected) -> bool {
+            CatStats st = getCatStats(cat->id);
+            bool complete = (st.done == st.total && st.total > 0 && st.hasAny);
+
+            ImGui::PushID((int)cat->id);
+            ImDrawList* dl = ImGui::GetWindowDrawList();
+            ImVec2 startPos = ImGui::GetCursorScreenPos();
+            float availW = ImGui::GetContentRegionAvail().x;
+            float rowH = ImGui::GetTextLineHeight() + 4.0f;
+
+            // Active background + gold left bar
+            if (isSelected) {
+                ImVec2 bgMin = startPos;
+                ImVec2 bgMax(startPos.x + availW, startPos.y + rowH);
+                dl->AddRectFilled(bgMin, bgMax, IM_COL32(80, 64, 28, 70), 2.0f);
+                dl->AddRectFilled(ImVec2(bgMin.x, bgMin.y + 2),
+                                  ImVec2(bgMin.x + 2, bgMax.y - 2),
+                                  IM_COL32(232, 196, 122, 230));
+            }
+
+            ImVec4 textCol = isSelected ? ImVec4(0.95f, 0.85f, 0.55f, 1.0f)
+                                        : ImVec4(0.85f, 0.83f, 0.75f, 1.0f);
+            ImGui::PushStyleColor(ImGuiCol_Text, textCol);
+            ImGui::PushStyleColor(ImGuiCol_Header, ImVec4(0, 0, 0, 0));
+            ImGui::PushStyleColor(ImGuiCol_HeaderHovered, ImVec4(1, 1, 1, 0.04f));
+            bool clicked = ImGui::Selectable(cat->name.c_str(), isSelected);
+            ImGui::PopStyleColor(3);
+
+            // Count badge — only shown once progress data exists for at least one
+            // achievement in the category (otherwise lazy-load means "0" would lie)
+            if (st.total > 0 && st.hasAny) {
+                char buf[24];
+                snprintf(buf, sizeof(buf), "%d/%d", st.done, st.total);
+                ImVec2 cSz = ImGui::CalcTextSize(buf);
+                float cx = startPos.x + availW - cSz.x - 6.0f;
+                float cy = startPos.y + (rowH - cSz.y) * 0.5f - 1.0f;
+                ImU32 countCol = complete ? IM_COL32(120, 200, 130, 230)
+                                : isSelected ? IM_COL32(232, 196, 122, 230)
+                                             : IM_COL32(140, 132, 110, 220);
+                dl->AddText(ImVec2(cx, cy), countCol, buf);
+            }
+
+            if (clicked && g_AchSelectedCatId != cat->id) {
+                g_AchSelectedCatId = cat->id;
+                g_AchSelectedGroupId = groupId;
+                FetchAchCategoryDefs(cat->id);
+            }
+            ImGui::PopID();
+            return true;
+        };
 
         // Active event — shown at top of tree when a bonus event or festival is active
         if (!g_AchActiveMainCatIds.empty()) {
@@ -9810,14 +10509,7 @@ static void RenderAchievements() {
                 for (uint32_t catId : g_AchActiveMainCatIds) {
                     auto it = g_AchCategories.find(catId);
                     if (it == g_AchCategories.end() || it->second.name.empty()) continue;
-                    bool selected = (g_AchSelectedCatId == catId);
-                    if (ImGui::Selectable(it->second.name.c_str(), selected)) {
-                        if (g_AchSelectedCatId != catId) {
-                            g_AchSelectedCatId = catId;
-                            g_AchSelectedGroupId = kEventGroupId;
-                            FetchAchCategoryDefs(catId);
-                        }
-                    }
+                    renderCatRow(&it->second, kEventGroupId, g_AchSelectedCatId == catId);
                 }
                 ImGui::TreePop();
             }
@@ -9832,49 +10524,54 @@ static void RenderAchievements() {
 
             bool isDaily = (group.name == "Daily");
 
-            // Auto-open the saved group
+            // Sort categories by order, skipping hidden categories — and aggregate group stats
+            std::vector<const AchCategoryDef*> sortedCats;
+            int grpDone = 0, grpTotal = 0;
+            bool grpHasAny = false;
+            for (uint32_t catId : group.categories) {
+                if (g_AchHiddenCatIds.count(catId)) continue;
+                auto it = g_AchCategories.find(catId);
+                if (it != g_AchCategories.end() && !it->second.name.empty()) {
+                    sortedCats.push_back(&it->second);
+                    CatStats st = getCatStats(catId);
+                    grpDone += st.done; grpTotal += st.total;
+                    if (st.hasAny) grpHasAny = true;
+                }
+            }
+            bool grpComplete = (grpDone == grpTotal && grpTotal > 0 && grpHasAny);
+            (void)grpComplete;
+
+            std::sort(sortedCats.begin(), sortedCats.end(),
+                [](const AchCategoryDef* a, const AchCategoryDef* b) { return a->order < b->order; });
+
+            // Compose group header with count badge
+            std::string groupHeader = group.name;
+            if (grpTotal > 0) {
+                char buf[32];
+                if (grpHasAny) snprintf(buf, sizeof(buf), "  (%d/%d)", grpDone, grpTotal);
+                else           snprintf(buf, sizeof(buf), "  (%d)", grpTotal);
+                groupHeader += buf;
+            }
+
+            // Auto-open the saved group. Use the group's stable id as the
+            // TreeNode identity so changing counts in the label don't make
+            // ImGui treat it as a new node and forget the open state.
             bool forceOpen = g_AchRestoreScroll && (group.id == g_AchSelectedGroupId);
             if (forceOpen) ImGui::SetNextItemOpen(true);
-            if (ImGui::TreeNode(group.name.c_str())) {
-                // Sort categories by order, skipping hidden categories
-                std::vector<const AchCategoryDef*> sortedCats;
-                for (uint32_t catId : group.categories) {
-                    if (g_AchHiddenCatIds.count(catId)) continue;
-                    auto it = g_AchCategories.find(catId);
-                    if (it != g_AchCategories.end() && !it->second.name.empty()) {
-                        sortedCats.push_back(&it->second);
-                    }
-                }
-                std::sort(sortedCats.begin(), sortedCats.end(),
-                    [](const AchCategoryDef* a, const AchCategoryDef* b) { return a->order < b->order; });
-
+            if (ImGui::TreeNodeEx(group.id.c_str(),
+                ImGuiTreeNodeFlags_SpanAvailWidth, "%s", groupHeader.c_str())) {
                 // For Daily group: show active event dailies first
                 if (isDaily && !g_AchActiveDailyCatIds.empty()) {
                     for (uint32_t catId : g_AchActiveDailyCatIds) {
                         auto it = g_AchCategories.find(catId);
                         if (it == g_AchCategories.end() || it->second.name.empty()) continue;
-                        bool selected = (g_AchSelectedCatId == catId);
-                        if (ImGui::Selectable(it->second.name.c_str(), selected)) {
-                            if (g_AchSelectedCatId != catId) {
-                                g_AchSelectedCatId = catId;
-                                g_AchSelectedGroupId = group.id;
-                                FetchAchCategoryDefs(catId);
-                            }
-                        }
+                        renderCatRow(&it->second, group.id, g_AchSelectedCatId == catId);
                     }
                 }
 
                 for (const auto* cat : sortedCats) {
-                    // Skip active dailies already shown at the top
                     if (isDaily && activeDailySet.count(cat->id)) continue;
-                    bool selected = (g_AchSelectedCatId == cat->id);
-                    if (ImGui::Selectable(cat->name.c_str(), selected)) {
-                        if (g_AchSelectedCatId != cat->id) {
-                            g_AchSelectedCatId = cat->id;
-                            g_AchSelectedGroupId = group.id;
-                            FetchAchCategoryDefs(cat->id);
-                        }
-                    }
+                    renderCatRow(cat, group.id, g_AchSelectedCatId == cat->id);
                 }
                 ImGui::TreePop();
             }
@@ -9941,6 +10638,24 @@ static void RenderAchievements() {
                 if (catIt != g_AchCategories.end()) {
                     float startY = ImGui::GetCursorPosY();
                     ImGui::TextColored(ImVec4(0.9f, 0.75f, 0.25f, 1.0f), "%s", catIt->second.name.c_str());
+
+                    // Hide Complete chip — focuses the list on remaining work
+                    {
+                        bool active = g_AchHideCompletedCats;
+                        if (active) {
+                            ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.50f, 0.40f, 0.18f, 0.80f));
+                            ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.58f, 0.46f, 0.22f, 0.90f));
+                            ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.58f, 0.46f, 0.22f, 0.90f));
+                            ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.95f, 0.85f, 0.55f, 1.0f));
+                        }
+                        ImGui::SameLine(ImGui::GetContentRegionMax().x - 110.0f);
+                        if (ImGui::SmallButton("Hide Complete##list")) {
+                            g_AchHideCompletedCats = !g_AchHideCompletedCats;
+                            SaveAchTrackerState();
+                        }
+                        if (active) ImGui::PopStyleColor(4);
+                    }
+
                     if (!catIt->second.description.empty()) {
                         std::string cleanDesc = StripGW2Markup(catIt->second.description);
                         ImGui::TextColored(ImVec4(0.6f, 0.6f, 0.6f, 1.0f), "%s", cleanDesc.c_str());
@@ -9967,6 +10682,10 @@ static void RenderAchievements() {
                     }
 
                     for (uint32_t achId : catIt->second.achievements) {
+                        if (g_AchHideCompletedCats) {
+                            auto pit = g_AchProgress.find(achId);
+                            if (pit != g_AchProgress.end() && pit->second.done) continue;
+                        }
                         RenderAchEntry(achId, true);
                     }
                 }
@@ -10216,8 +10935,42 @@ static void RenderAchPopout() {
         }
     }
 
-    if (!g_AchPopoutVisible) return;
+    // Refresh pinned progress whenever the popout becomes visible
+    // (button-pressed, or first time after addon load). Resets when hidden
+    // so it'll fire again next time the user reopens it.
+    static bool s_popoutWasVisible = false;
+    if (!g_AchPopoutVisible) {
+        s_popoutWasVisible = false;
+        return;
+    }
     if (g_CurrentCharName.empty()) return; // not yet logged in (character select screen)
+
+    if (!s_popoutWasVisible) {
+        s_popoutWasVisible = true;
+        std::vector<uint32_t> pinnedCopy;
+        {
+            std::lock_guard<std::recursive_mutex> lock(g_AchMutex);
+            pinnedCopy = g_AchPinned;
+        }
+        if (!pinnedCopy.empty() && !g_AchProgressFetching) {
+            g_LastAchProgressQuery = std::chrono::steady_clock::now();
+            SendAchProgressQuery(pinnedCopy);
+        }
+    }
+
+    // Consume retry flag here too — popout may be open without the main
+    // Achievements tab being visible. Previously this only fired from
+    // RenderAchievements, so a PENDING response would never re-query.
+    if (g_AchRetryPending.exchange(false) && !g_AchProgressFetching) {
+        std::vector<uint32_t> pinnedCopy;
+        {
+            std::lock_guard<std::recursive_mutex> lock(g_AchMutex);
+            pinnedCopy = g_AchPinned;
+        }
+        if (!pinnedCopy.empty()) {
+            SendAchProgressQuery(pinnedCopy);
+        }
+    }
 
     // Rebuild cache if dirty (brief lock, then release)
     {
@@ -10254,33 +11007,121 @@ static void RenderAchPopout() {
             ImGui::TextColored(ImVec4(0.5f, 0.5f, 0.5f, 1.0f), "Pin achievements from the Achievements tab");
         }
 
-        // Render from cache — no lock needed
+        // Render from cache — no lock needed. Tighten vertical gap between rows.
+        ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing,
+            ImVec2(ImGui::GetStyle().ItemSpacing.x, 2.0f));
         for (int idx = 0; idx < (int)s_popoutCache.size(); idx++) {
             const auto& disp = s_popoutCache[idx];
             ImGui::PushID(idx + 80000);
             ImGui::BeginGroup();
 
             if (disp.hasDef) {
-                if (disp.done) {
-                    ImGui::TextColored(ImVec4(0.35f, 0.82f, 0.35f, 1.0f), "[x] %s", disp.name.c_str());
-                } else if (disp.hasBits) {
-                    bool expanded = g_AchExpandedInPopout[disp.achId];
-                    std::string label = (expanded ? "v " : "> ") + disp.name;
-                    if (disp.max > 0) label += "  " + std::to_string(disp.current) + "/" + std::to_string(disp.max);
-                    if (ImGui::Selectable(label.c_str(), false, ImGuiSelectableFlags_AllowItemOverlap)) {
-                        g_AchExpandedInPopout[disp.achId] = !expanded;
-                        SaveAchTrackerState();
-                    }
-                } else {
-                    std::string label = "  " + disp.name;
-                    if (disp.max > 0) label += "  " + std::to_string(disp.current) + "/" + std::to_string(disp.max);
-                    ImGui::TextColored(ImVec4(0.9f, 0.9f, 0.9f, 1.0f), "%s", label.c_str());
+                // ===== Compact row (matches main list) =====
+                ImDrawList* dl = ImGui::GetWindowDrawList();
+                float rowH = 28.0f;
+                float availRowW = ImGui::GetContentRegionAvail().x;
+                ImVec2 cmin = ImGui::GetCursorScreenPos();
+                ImVec2 cmax(cmin.x + availRowW, cmin.y + rowH);
+
+                bool inProgress = !disp.done && disp.current > 0 && disp.max > 0;
+                ImU32 stateCol = disp.done ? IM_COL32(111, 204, 122, 255)
+                              : inProgress ? IM_COL32(244, 196, 122, 230)
+                                           : IM_COL32(232, 196, 122, 230);
+
+                ImU32 bgCol = disp.done ? IM_COL32(28, 38, 28, 60) : IM_COL32(80, 64, 28, 50);
+                dl->AddRectFilled(cmin, cmax, bgCol, 3.0f);
+                dl->AddRect(cmin, cmax, IM_COL32(0, 0, 0, 130), 3.0f, 0, 1.0f);
+                dl->AddRectFilled(ImVec2(cmin.x, cmin.y + 3),
+                                  ImVec2(cmin.x + 3, cmax.y - 3), stateCol);
+
+                bool expanded = g_AchExpandedInPopout[disp.achId];
+
+                // Reserve right side for unpin button
+                const float unpinW = 18.0f;
+                float rowHitW = availRowW - unpinW - 6.0f;
+
+                ImGui::InvisibleButton("##poprow", ImVec2(rowHitW, rowH));
+                bool rowHovered = ImGui::IsItemHovered();
+                bool rowClicked = ImGui::IsItemClicked();
+                if (rowHovered)
+                    dl->AddRect(cmin, cmax, IM_COL32(197, 161, 85, 130), 3.0f, 0, 1.0f);
+                if (rowClicked && disp.hasBits) {
+                    g_AchExpandedInPopout[disp.achId] = !expanded;
+                    SaveAchTrackerState();
                 }
 
-                if (!disp.done && disp.max > 0) {
-                    float frac = (float)disp.current / (float)disp.max;
-                    RenderAchProgressBar(frac, ImVec4(0.4f, 0.7f, 0.3f, 1.0f), 3.0f);
+                float padX = 10.0f;
+                float midY = cmin.y + rowH * 0.5f;
+
+                // Progress badge on the right (before unpin)
+                float rightX = cmax.x - unpinW - 6.0f;
+                if (disp.max > 1) {
+                    char progBuf[24];
+                    snprintf(progBuf, sizeof(progBuf), "%d / %d",
+                        disp.done ? disp.max : disp.current, disp.max);
+                    ImVec2 sz = ImGui::CalcTextSize(progBuf);
+                    float bdW = sz.x + 10.0f;
+                    float bdH = 16.0f;
+                    ImVec2 bMin(rightX - bdW, midY - bdH * 0.5f);
+                    ImVec2 bMax(rightX, bMin.y + bdH);
+                    ImU32 bBg, bBorder, bText;
+                    if (disp.done) {
+                        bBg = IM_COL32(40, 60, 40, 180); bBorder = IM_COL32(120, 200, 130, 200);
+                        bText = IM_COL32(160, 220, 170, 255);
+                    } else {
+                        bBg = IM_COL32(0, 0, 0, 110); bBorder = IM_COL32(160, 145, 110, 170);
+                        bText = IM_COL32(220, 210, 180, 240);
+                    }
+                    dl->AddRectFilled(bMin, bMax, bBg, 3.0f);
+                    dl->AddRect(bMin, bMax, bBorder, 3.0f, 0, 1.0f);
+                    dl->AddText(ImVec2(bMin.x + 5.0f, bMin.y + (bdH - sz.y) * 0.5f), bText, progBuf);
+                    rightX = bMin.x - 6.0f;
                 }
+
+                // Title (clipped)
+                float titleX = cmin.x + padX + 4.0f;
+                float titleEndX = rightX - 6.0f;
+                ImU32 titleCol = disp.done
+                    ? IM_COL32(150, 200, 150, 255)
+                    : IM_COL32(245, 220, 150, 255);
+                ImVec2 tSz = ImGui::CalcTextSize(disp.name.c_str());
+                dl->PushClipRect(ImVec2(titleX, cmin.y), ImVec2(titleEndX, cmax.y), true);
+                dl->AddText(ImVec2(titleX, midY - tSz.y * 0.5f - 1.0f), titleCol, disp.name.c_str());
+                dl->PopClipRect();
+
+                // 2px progress strip at bottom
+                if (disp.max > 0) {
+                    float frac = disp.done ? 1.0f : (float)disp.current / (float)disp.max;
+                    float stripY = cmax.y - 4.0f;
+                    ImVec2 sMin(cmin.x + 4.0f, stripY);
+                    ImVec2 sMax(cmax.x - 4.0f, stripY + 2.0f);
+                    dl->AddRectFilled(sMin, sMax, IM_COL32(255, 255, 255, 18), 1.0f);
+                    float fillEnd = sMin.x + (sMax.x - sMin.x) * frac;
+                    if (fillEnd > sMin.x)
+                        dl->AddRectFilled(sMin, ImVec2(fillEnd, sMax.y), stateCol, 1.0f);
+                }
+
+                // Unpin button (small ×)
+                {
+                    float btnH = 18.0f;
+                    ImGui::SetCursorScreenPos(ImVec2(cmax.x - unpinW - 4.0f, midY - btnH * 0.5f));
+                    ImVec2 bMin = ImGui::GetCursorScreenPos();
+                    ImVec2 bMax(bMin.x + unpinW, bMin.y + btnH);
+                    dl->AddRectFilled(bMin, bMax, IM_COL32(0, 0, 0, 130), 3.0f);
+                    dl->AddRect(bMin, bMax, IM_COL32(140, 130, 110, 170), 3.0f, 0, 1.0f);
+                    const char* x = "x";
+                    ImVec2 sz = ImGui::CalcTextSize(x);
+                    dl->AddText(ImVec2(bMin.x + (unpinW - sz.x) * 0.5f, bMin.y + (btnH - sz.y) * 0.5f),
+                        IM_COL32(180, 168, 130, 230), x);
+                    if (ImGui::InvisibleButton("##popunpin", ImVec2(unpinW, btnH))) {
+                        ToggleAchPin(disp.achId);
+                    }
+                    if (ImGui::IsItemHovered()) {
+                        ImGui::SetTooltip("Unpin from tracker");
+                    }
+                }
+
+                ImGui::SetCursorScreenPos(ImVec2(cmin.x, cmax.y + 2.0f));
 
                 if (disp.hasBits && g_AchExpandedInPopout[disp.achId]) {
                     for (size_t i = 0; i < disp.bits.size(); i++) {
@@ -10357,8 +11198,8 @@ static void RenderAchPopout() {
             ImGui::EndGroup();
 
             ImGui::PopID();
-            ImGui::Spacing();
         }
+        ImGui::PopStyleVar();
     }
     ImGui::End();
 }
@@ -10394,6 +11235,18 @@ static void RenderSkinventory() {
 
         bool isQuerying = Skinventory::OwnedSkins::IsQuerying();
         bool canRefresh = Skinventory::OwnedSkins::IsHoardAndSeekAvailable() && !isQuerying;
+
+        // Auto-refresh once per (account, session) when we land on the tab with no data
+        {
+            static std::string s_autoRefreshAccount;
+            std::string currentAccount = GetEffectiveAccountName();
+            if (canRefresh
+                && !Skinventory::OwnedSkins::HasData()
+                && s_autoRefreshAccount != currentAccount) {
+                s_autoRefreshAccount = currentAccount;
+                g_SkinRefreshOwned = true;
+            }
+        }
 
         if (!canRefresh) ImGui::PushStyleVar(ImGuiStyleVar_Alpha, 0.5f);
         if (ImGui::SmallButton("Refresh Owned") && canRefresh) {

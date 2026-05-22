@@ -203,14 +203,28 @@ Texture_t* IconManager::GetIcon(uint32_t id) {
     return nullptr;
 }
 
-void IconManager::RequestIcon(uint32_t id, const std::string& iconUrl) {
+void IconManager::RequestIcon(uint32_t id, const std::string& iconUrl, bool priority) {
     if (!s_API) return;
     if (iconUrl.empty()) return;
 
     {
         std::lock_guard<std::mutex> lock(s_Mutex);
         if (s_IconCache.find(id) != s_IconCache.end()) return;
-        if (s_LoadingIcons.find(id) != s_LoadingIcons.end()) return;
+        if (s_LoadingIcons.find(id) != s_LoadingIcons.end()) {
+            // Already queued — but if we're now asking for it with priority,
+            // pull it forward in the queue.
+            if (priority) {
+                for (auto it = s_RequestQueue.begin(); it != s_RequestQueue.end(); ++it) {
+                    if (it->id == id) {
+                        QueuedRequest req = *it;
+                        s_RequestQueue.erase(it);
+                        s_RequestQueue.insert(s_RequestQueue.begin(), req);
+                        break;
+                    }
+                }
+            }
+            return;
+        }
 
         auto failIt = s_FailedIcons.find(id);
         if (failIt != s_FailedIcons.end()) {
@@ -230,7 +244,10 @@ void IconManager::RequestIcon(uint32_t id, const std::string& iconUrl) {
         QueuedRequest req;
         req.id = id;
         req.iconUrl = iconUrl;
-        s_RequestQueue.push_back(req);
+        if (priority)
+            s_RequestQueue.insert(s_RequestQueue.begin(), req);
+        else
+            s_RequestQueue.push_back(req);
     }
     s_QueueCV.notify_one();
 }
