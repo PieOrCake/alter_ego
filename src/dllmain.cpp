@@ -4107,7 +4107,7 @@ static void RenderBuildPanel(const AlterEgo::Character& ch) {
     if (!hasPalette)
         AlterEgo::GW2API::FetchProfessionPaletteAsync(bt.profession);
     {
-        if (ImGui::Button(hasPalette ? "Copy Build Chat Link" : "Copy Build Chat Link (loading...)") && hasPalette) {
+        if (RenderGoldButton(hasPalette ? "Copy Build Chat Link" : "Copy Build Chat Link (loading...)") && hasPalette) {
             // Map profession name to code
             auto ProfCode = [](const std::string& p) -> uint8_t {
                 if (p == "Guardian")     return 1;
@@ -4189,7 +4189,7 @@ static void RenderBuildPanel(const AlterEgo::Character& ch) {
 
     // Save to Library button — opens dialog
     ImGui::SameLine();
-    if (ImGui::Button(hasPalette ? "Save to Library" : "Save to Library (loading...)") && hasPalette) {
+    if (RenderGoldButton(hasPalette ? "Save to Library" : "Save to Library (loading...)") && hasPalette) {
         // Build the chat link
         auto ProfCodeLib = [](const std::string& p) -> uint8_t {
             if (p == "Guardian")     return 1;
