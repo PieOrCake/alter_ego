@@ -11836,7 +11836,17 @@ void AddonRender() {
             AlterEgo::GW2API::PingHoard();
         }
     } else if (hoardStatus == AlterEgo::HoardStatus::Unavailable) {
-        ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.4f, 1.0f), "H&S not detected. Install Hoard & Seek.");
+        RenderEmptyCard(
+            APIDefs ? APIDefs->Textures_Get(TEX_ICON) : nullptr,
+            "Hoard & Seek is required",
+            "Alter Ego reads your characters, equipment, and inventory through the Hoard & Seek companion addon. Install it from the Nexus addon library to get started.",
+            "Retry Detection", []() { AlterEgo::GW2API::PingHoard(); },
+            "Copy Library URL", []() {
+                CopyToClipboard(std::string("https://raidcore.gg/Nexus"));
+                if (APIDefs) APIDefs->GUI_SendAlert("Nexus library URL copied!");
+            }
+        );
+        return;
     } else if (hoardStatus == AlterEgo::HoardStatus::PermPending) {
         ImGui::TextColored(ImVec4(1.0f, 0.85f, 0.0f, 1.0f), "Approve Alter Ego in H&S permission popup.");
         static auto lastPermRetry = std::chrono::steady_clock::time_point{};
