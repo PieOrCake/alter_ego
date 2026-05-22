@@ -3963,6 +3963,8 @@ static void RenderBuildPanel(const AlterEgo::Character& ch) {
                             case 4: case 7: case 11: case 20: case 22:
                             case 28: case 35: case 36: case 44: case 51:
                             case 54: case 68: case 70: case 71: case 72:
+                            case 73: case 74: case 75: case 76: case 77:
+                            case 78: case 79: case 80: case 81:
                                 return true;
                             default:
                                 return false;
@@ -7253,6 +7255,8 @@ static void RenderSavedBuildPreview(const AlterEgo::SavedBuild& build, bool show
                             case 4: case 7: case 11: case 20: case 22:
                             case 28: case 35: case 36: case 44: case 51:
                             case 54: case 68: case 70: case 71: case 72:
+                            case 73: case 74: case 75: case 76: case 77:
+                            case 78: case 79: case 80: case 81:
                                 return true;
                             default:
                                 return false;
