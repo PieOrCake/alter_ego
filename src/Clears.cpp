@@ -19,6 +19,7 @@
 #include "HttpClient.h"
 #include "AddonShared.h"
 #include "Clears.h"
+#include "WikiImage.h"
 
 // =========================================================================
 // Clears - Data types and module-private state
@@ -1296,13 +1297,64 @@ static void RenderTierRow(const char* tierLabel,
 }
 
 
+// ============================================================
+// Weekly raid wing rotations (Emboldened / Call of the Mists)
+// ============================================================
+//
+// Both rotations advance every Monday at 08:30 UTC through the 8 wings
+// in release order. Call of the Mists sits one slot ahead of Emboldened.
+// Anchor: Monday 2026-05-18 08:30 UTC → Salvation Pass is emboldened
+//                                       Stronghold has Call of the Mists.
+// Verified against wiki.guildwars2.com/wiki/Emboldened and Call_of_the_Mists.
+
+static constexpr int64_t kRotationAnchorUnix = 1779093000; // 2026-05-18 08:30 UTC
+static constexpr int     kRotationAnchorEmboldenedIndex = 1; // W2 Salvation Pass
+static constexpr int64_t kWeekSeconds = 7 * 24 * 3600;
+
+// Wing IDs in rotation order (W1..W8).
+static uint32_t WingIdByRotationIndex(int idx) {
+    static const uint32_t kWingByIdx[8] = {
+        9128, // W1 Spirit Vale
+        9147, // W2 Salvation Pass
+        9182, // W3 Stronghold of the Faithful
+        9144, // W4 Bastion of the Penitent
+        9111, // W5 Hall of Chains
+        9120, // W6 Mythwright Gambit
+        9156, // W7 The Key of Ahdashim
+        9181, // W8 Mount Balrior
+    };
+    if (idx < 0 || idx >= 8) return 0;
+    return kWingByIdx[idx];
+}
+
+static int CurrentEmboldenedRotationIndex() {
+    int64_t now = std::chrono::duration_cast<std::chrono::seconds>(
+        std::chrono::system_clock::now().time_since_epoch()).count();
+    int64_t diff = now - kRotationAnchorUnix;
+    int64_t weeks = diff / kWeekSeconds;
+    if (diff < 0 && (diff % kWeekSeconds) != 0) weeks -= 1; // floor toward -inf
+    int idx = (int)(((weeks + kRotationAnchorEmboldenedIndex) % 8 + 8) % 8);
+    return idx;
+}
+
+static uint32_t CurrentEmboldenedWingId() {
+    return WingIdByRotationIndex(CurrentEmboldenedRotationIndex());
+}
+
+static uint32_t CurrentCallOfTheMistsWingId() {
+    return WingIdByRotationIndex((CurrentEmboldenedRotationIndex() + 1) % 8);
+}
+
+
 static void RenderWingBanner(const std::string& wingShortName,    // e.g. "W4"
                              const std::string& wingFullName,     // e.g. "Bastion of the Penitent"
                              int doneCount, int totalCount,
                              bool fetched,
                              ThemeGrad theme,
                              const std::vector<WingEncChip>& chips,
-                             const std::string& bannerKey = "") {
+                             const std::string& bannerKey = "",
+                             bool isEmboldened = false,
+                             bool isCallOfTheMists = false) {
     ImDrawList* dl = ImGui::GetWindowDrawList();
     ImVec2 cmin = ImGui::GetCursorScreenPos();
     float w = ImGui::GetContentRegionAvail().x;
@@ -1342,6 +1394,7 @@ static void RenderWingBanner(const std::string& wingShortName,    // e.g. "W4"
     ImVec2 wsSz = ImGui::CalcTextSize(wingShortName.c_str());
     dl->AddText(ImVec2(cmin.x + padX + wsSz.x + 10.0f, topY),
         IM_COL32(240, 235, 220, 255), wingFullName.c_str());
+    ImVec2 nameSz = ImGui::CalcTextSize(wingFullName.c_str());
     // Progress fraction (right-aligned)
     char prog[32];
     snprintf(prog, sizeof(prog), "%d / %d", doneCount, totalCount);
@@ -1350,6 +1403,64 @@ static void RenderWingBanner(const std::string& wingShortName,    // e.g. "W4"
         ? IM_COL32(180, 240, 180, 255)
         : IM_COL32(227, 196, 122, 255);
     dl->AddText(ImVec2(cmax.x - padX - pSz.x, topY), progCol, prog);
+
+    // Rotation badges (Emboldened / Call of the Mists) — drawn between the
+    // wing name and the progress fraction, with a wiki icon + label.
+    if (isEmboldened || isCallOfTheMists) {
+        float badgeStartX = cmin.x + padX + wsSz.x + 10.0f + nameSz.x + 12.0f;
+        float rightLimit = cmax.x - padX - pSz.x - 10.0f;
+        float curX = badgeStartX;
+        float iconSz = 16.0f;
+        float padIn = 5.0f;
+        float badgeH = iconSz + 4.0f;
+        float badgeY = topY - 2.0f;
+
+        auto drawBadge = [&](const char* iconKey, const char* label,
+                             const char* tip, ImU32 borderCol) {
+            ImVec2 lblSz = ImGui::CalcTextSize(label);
+            float badgeW = padIn + iconSz + 5.0f + lblSz.x + padIn;
+            if (curX + badgeW > rightLimit) return;
+            ImVec2 bmin(curX, badgeY);
+            ImVec2 bmax(bmin.x + badgeW, bmin.y + badgeH);
+            dl->AddRectFilled(bmin, bmax, IM_COL32(0, 0, 0, 170), 3.0f);
+            dl->AddRect(bmin, bmax, borderCol, 3.0f, 0, 1.0f);
+            Texture_t* tex = Skinventory::WikiImage::GetCurrencyIcon(iconKey);
+            if (tex && tex->Resource) {
+                dl->AddImage(tex->Resource,
+                    ImVec2(bmin.x + padIn, bmin.y + 2.0f),
+                    ImVec2(bmin.x + padIn + iconSz, bmin.y + 2.0f + iconSz));
+            }
+            float lblX = bmin.x + padIn + iconSz + 5.0f;
+            float lblY = bmin.y + (badgeH - lblSz.y) * 0.5f;
+            dl->AddText(ImVec2(lblX, lblY),
+                IM_COL32(240, 235, 220, 255), label);
+            ImVec2 saveCursor = ImGui::GetCursorScreenPos();
+            ImGui::SetCursorScreenPos(bmin);
+            ImGui::PushID(iconKey);
+            ImGui::InvisibleButton("##rb", ImVec2(badgeW, badgeH));
+            if (ImGui::IsItemHovered()) {
+                ImGui::BeginTooltip();
+                ImGui::TextUnformatted(tip);
+                ImGui::EndTooltip();
+                dl->AddRect(bmin, bmax,
+                    IM_COL32(255, 220, 130, 230), 3.0f, 0, 1.4f);
+            }
+            ImGui::PopID();
+            ImGui::SetCursorScreenPos(saveCursor);
+            curX += badgeW + 6.0f;
+        };
+
+        if (isCallOfTheMists) {
+            drawBadge("Call_of_the_Mists", "Call of the Mists",
+                "Call of the Mists — boss gold and XP are doubled this week.",
+                IM_COL32(227, 196, 122, 220));
+        }
+        if (isEmboldened) {
+            drawBadge("Emboldened", "Emboldened",
+                "Emboldened Mode — stacking buff for easier clears this week.",
+                IM_COL32(120, 180, 240, 220));
+        }
+    }
 
     // Encounter chips along the bottom
     float chipsY = cmin.y + h - 24.0f;
@@ -1898,6 +2009,8 @@ static void RenderClearsTabContent(const std::string& dailyResetStr, const std::
         ImGui::TextColored(ImVec4(0.5f, 0.5f, 0.5f, 1.0f), "  No data");
     } else {
         ImGui::Indent(4.0f);
+        uint32_t embWingId = CurrentEmboldenedWingId();
+        uint32_t cotmWingId = CurrentCallOfTheMistsWingId();
         for (const auto& wing : g_WeeklyWings) {
             std::string cleanName = CleanWingName(wing.name);
             const char* shortW = WingShortName(wing.id);
@@ -1922,7 +2035,9 @@ static void RenderClearsTabContent(const std::string& dailyResetStr, const std::
             RenderWingBanner(shortW ? shortW : "", cleanName,
                 doneCount, totalCount, g_ClearsFetched,
                 WingTheme(wing.id), chips,
-                /*bannerKey*/ "wing:" + std::to_string(wing.id));
+                /*bannerKey*/ "wing:" + std::to_string(wing.id),
+                /*isEmboldened*/ wing.id == embWingId,
+                /*isCallOfTheMists*/ wing.id == cotmWingId);
             ImGui::PopID();
         }
         ImGui::Unindent(4.0f);

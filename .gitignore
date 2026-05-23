@@ -24,4 +24,7 @@ Thumbs.db
 handover.md
 tools/.banner_cache/
 
+# Dev-only UI mockups (not shipped)
+screenshots/*_mockup.html
+
 # Dependencies are vendored from Crafty Legend boilerplate (lib/imgui, lib/nlohmann, include/nexus)

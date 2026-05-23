@@ -274,6 +274,10 @@ namespace AlterEgo {
         uint32_t rune_id = 0;       // Shared rune item ID
         std::string relic_name;     // Relic name
         uint32_t relic_id = 0;      // Relic item ID
+        // Original AE2 code preserved at import time. Lets us re-resolve
+        // names and palette data later if the GW2 API was unavailable or
+        // rate-limited at import. Empty for plain chat-link imports.
+        std::string ae2_code;
     };
 
     // Response event names for H&S queries
@@ -377,6 +381,19 @@ namespace AlterEgo {
         // Persistence
         static bool LoadCharacterData();
         static bool SaveCharacterData();
+
+        // Reference-data caches (items, skins, specs, traits, skills,
+        // itemstats, dye colors). Persisted to disk so a refreshed character's
+        // gear/builds can render instantly on next launch without re-hitting
+        // the GW2 API. Loaded at startup; saved after each batch fetch.
+        static bool LoadReferenceCaches();
+        static bool SaveItemCache();
+        static bool SaveSkinCache();
+        static bool SaveSpecCache();
+        static bool SaveTraitCache();
+        static bool SaveSkillCache();
+        static bool SaveItemStatCache();
+        static bool SaveDyeColorsCache();
 
         // --- Build Library ---
         static const std::vector<SavedBuild>& GetSavedBuilds();

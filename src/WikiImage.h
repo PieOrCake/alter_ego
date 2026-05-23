@@ -43,6 +43,12 @@ namespace Skinventory {
         // Get a currency icon texture (nullptr if not loaded)
         static Texture_t* GetCurrencyIcon(const std::string& key);
 
+        // Trigger async download of one or more wiki icons by file-stem name.
+        // Accepts a comma-separated list (e.g. "Emboldened,Call_of_the_Mists").
+        // Each key maps to wiki "File:<key>.png". Cached on disk; safe to call
+        // repeatedly.
+        static void DownloadCurrencyIcons(const std::string& keys);
+
         // Is an image currently being fetched?
         static bool IsLoading(uint32_t skinId);
 
@@ -57,9 +63,14 @@ namespace Skinventory {
         static WikiSkinData ScrapeAcquisitionFromPage(const std::string& pageTitle);
         static std::string GetCacheFilePath(uint32_t skinId);
         static std::string GetWikiDataCachePath();
+        static std::string GetFailedCachePath();
         static bool LoadFromDisk(uint32_t skinId);
         static void SaveWikiDataCache();
         static void LoadWikiDataCache();
+        static void SaveFailedCache();
+        static void LoadFailedCache();
+        static void RecordFailure(uint32_t skinId);
+        // (DownloadCurrencyIcons moved to public above.)
 
         static AddonAPI_t* s_API;
         static std::string s_cacheDir;
@@ -74,7 +85,10 @@ namespace Skinventory {
         static std::unordered_map<uint32_t, WikiSkinData> s_wikiDataCache;
         static std::unordered_map<uint32_t, bool> s_loading;
         static std::unordered_map<uint32_t, std::chrono::steady_clock::time_point> s_failed;
+        static std::unordered_map<uint32_t, int64_t> s_failedPersistent; // skin_id -> unix_timestamp
+        static std::unordered_map<std::string, int64_t> s_currencyFailedPersistent; // currency key -> unix_timestamp
         static const int RETRY_COOLDOWN_SEC = 600;
+        static const int64_t PERSISTENT_RETRY_DAYS = 7;
 
         static std::vector<QueuedRequest> s_requestQueue;
         static std::vector<uint32_t> s_readyQueue;  // Downloaded, waiting for texture load
@@ -86,7 +100,6 @@ namespace Skinventory {
         // Currency icon cache
         static std::unordered_map<std::string, Texture_t*> s_currencyIcons;
         static std::vector<std::string> s_currencyReadyQueue; // Downloaded, waiting for texture load
-        static void DownloadCurrencyIcons(const std::string& keys);
         static std::string CurrencyIconCachePath(const std::string& key);
         static std::string CurrencyIconTexId(const std::string& key);
     };

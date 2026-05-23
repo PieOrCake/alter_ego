@@ -16,7 +16,7 @@ namespace Skinventory {
         int buy_quantity = 0;
         int sell_quantity = 0;
         bool tradeable = false;
-        std::chrono::steady_clock::time_point fetched_at;
+        int64_t fetched_at_unix = 0; // seconds since epoch; persisted across sessions
     };
 
     // Format copper value as gold/silver/copper string
@@ -52,6 +52,10 @@ namespace Skinventory {
         // Persistence for item map
         static bool LoadItemMap();
         static bool SaveItemMap();
+
+        // Persistence for cached prices
+        static bool LoadPriceCache();
+        static bool SavePriceCache();
 
     private:
         static void FetchPriceWorker(std::vector<uint32_t> item_ids,

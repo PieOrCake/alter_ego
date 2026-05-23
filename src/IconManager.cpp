@@ -205,7 +205,6 @@ Texture_t* IconManager::GetIcon(uint32_t id) {
 
 void IconManager::RequestIcon(uint32_t id, const std::string& iconUrl, bool priority) {
     if (!s_API) return;
-    if (iconUrl.empty()) return;
 
     {
         std::lock_guard<std::mutex> lock(s_Mutex);
@@ -237,7 +236,17 @@ void IconManager::RequestIcon(uint32_t id, const std::string& iconUrl, bool prio
         s_LoadingIcons[id] = true;
     }
 
+    // Try disk cache first — works even when the caller has no URL because
+    // item details haven't been fetched (e.g. GW2 API down or rate-limited).
     if (LoadIconFromDisk(id)) return;
+
+    // No URL and no disk cache → nothing we can do right now. Clear the loading
+    // flag without marking failed so a later call (with URL) can retry.
+    if (iconUrl.empty()) {
+        std::lock_guard<std::mutex> lock(s_Mutex);
+        s_LoadingIcons.erase(id);
+        return;
+    }
 
     {
         std::lock_guard<std::mutex> lock(s_Mutex);

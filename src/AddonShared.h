@@ -45,3 +45,7 @@ void RenderSpinner(const char* label, ImVec4 color = ImVec4(0.7f, 0.85f, 0.95f, 
 // Returns the account name to use for per-account H&S queries.
 // Returns an empty string when "All Accounts" is selected.
 std::string GetEffectiveAccountName();
+
+// Atomically write `content` to `finalPath` via write-temp-then-rename.
+// Returns true on success. Prevents partial-file pollution on crash mid-write.
+bool WriteFileAtomic(const std::string& finalPath, const std::string& content);

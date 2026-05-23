@@ -36,7 +36,7 @@
 // Version constants
 #define V_MAJOR 1
 #define V_MINOR 0
-#define V_BUILD 0
+#define V_BUILD 1
 #define V_REVISION 0
 
 // Quick Access icon identifiers
@@ -570,9 +570,9 @@ static std::unordered_set<uint32_t> g_AchHiddenCatIds;          // categories to
 
 static std::recursive_mutex g_AchMutex;
 static bool g_AchGroupsFetched = false;
-static bool g_AchGroupsFetching = false;
+static std::atomic<bool> g_AchGroupsFetching{false};
 static bool g_AchNameIndexReady = false;
-static bool g_AchNameIndexFetching = false;
+static std::atomic<bool> g_AchNameIndexFetching{false};
 static std::string g_AchStatusMsg;
 
 #define ACH_NAME_INDEX_URL "https://raw.githubusercontent.com/PieOrCake/alter_ego/main/data/achievement_names.json"
@@ -586,18 +586,18 @@ struct HeroChallengeInfo {
 };
 static std::unordered_map<std::string, HeroChallengeInfo> g_HeroChallenges; // id -> info
 static bool g_HeroChallengesReady = false;
-static bool g_HeroChallengesFetching = false;
+static std::atomic<bool> g_HeroChallengesFetching{false};
 
 // Waypoint data: achId -> (bitIndex -> chatCode), bitIndex -1 = achievement-level waypoint
 static std::unordered_map<uint32_t, std::unordered_map<int, std::string>> g_AchWaypoints;
 static bool g_AchWaypointsReady = false;
-static bool g_AchWaypointsFetching = false;
+static std::atomic<bool> g_AchWaypointsFetching{false};
 
 // UI state
 static std::string g_AchSelectedGroupId;   // currently selected group UUID
 static uint32_t g_AchSelectedCatId = 0;    // currently selected category ID
-static bool g_AchCatFetching = false;      // fetching defs for selected category
-static bool g_AchProgressFetching = false; // fetching account progress
+static std::atomic<bool> g_AchCatFetching{false};      // fetching defs for selected category
+static std::atomic<bool> g_AchProgressFetching{false}; // fetching account progress
 static bool g_AchNeedRequery = false;      // deferred requery on account change
 static bool g_AchProgressDirty = false;    // persistent cache needs flushing
 static std::string g_AchCachedAccount;     // account whose data is currently in g_AchProgress
@@ -627,7 +627,7 @@ static std::vector<uint32_t> g_AchActiveMainCatIds;   // main/Historical categor
 static std::vector<uint32_t> g_AchActiveDailyCatIds;   // daily categories for top of Daily group
 static std::string g_AchActiveEventName;                // display name for the active event node
 static bool g_AchActiveEventFetched = false;
-static bool g_AchActiveEventFetching = false;
+static std::atomic<bool> g_AchActiveEventFetching{false};
 
 // Festival daily category IDs (hidden from Daily group when their festival is not active)
 static const std::unordered_set<uint32_t> FESTIVAL_DAILY_CAT_IDS = {
@@ -1047,6 +1047,32 @@ static std::string g_SelectedAccountFilter;    // empty = "All Accounts", else s
 // Returns the account name to use for per-account queries (dropdown selection only)
 std::string GetEffectiveAccountName() {
     return g_SelectedAccountFilter;
+}
+
+bool WriteFileAtomic(const std::string& finalPath, const std::string& content) {
+    std::string tmp = finalPath + ".tmp";
+    try {
+        {
+            std::ofstream f(tmp, std::ios::binary | std::ios::trunc);
+            if (!f.is_open()) return false;
+            f.write(content.data(), (std::streamsize)content.size());
+            f.flush();
+            if (!f.good()) return false;
+        }
+        // MoveFileExA with MOVEFILE_REPLACE_EXISTING is atomic on NTFS for
+        // same-volume renames (the temp file lives next to the final path).
+        if (!MoveFileExA(tmp.c_str(), finalPath.c_str(),
+                         MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
+            std::error_code ec;
+            std::filesystem::remove(tmp, ec);
+            return false;
+        }
+        return true;
+    } catch (...) {
+        std::error_code ec;
+        std::filesystem::remove(tmp, ec);
+        return false;
+    }
 }
 
 // Gear customization dialog state
@@ -1940,7 +1966,37 @@ static void FetchActiveSpecialEvent() {
     if (g_AchActiveEventFetching) return;
     g_AchActiveEventFetching = true;
     std::thread([]() {
-        std::string json = Skinventory::HttpClient::Get("https://api.guildwars2.com/v2/achievements/daily");
+        // Try disk-cached daily response (1-hour TTL) before hitting the API
+        std::string json;
+        std::string dailyCachePath = AlterEgo::GW2API::GetDataDirectory() + "/ach_daily_cache.json";
+        try {
+            std::ifstream cf(dailyCachePath);
+            if (cf.is_open()) {
+                nlohmann::json wrap;
+                cf >> wrap;
+                if (wrap.is_object() && wrap.contains("ts") && wrap.contains("body")) {
+                    int64_t ts = wrap["ts"].get<int64_t>();
+                    int64_t now = std::chrono::duration_cast<std::chrono::seconds>(
+                        std::chrono::system_clock::now().time_since_epoch()).count();
+                    if (now - ts < 3600 && wrap["body"].is_string()) {
+                        json = wrap["body"].get<std::string>();
+                    }
+                }
+            }
+        } catch (...) {}
+
+        if (json.empty()) {
+            json = Skinventory::HttpClient::Get("https://api.guildwars2.com/v2/achievements/daily");
+            if (!json.empty()) {
+                try {
+                    nlohmann::json wrap;
+                    wrap["ts"] = std::chrono::duration_cast<std::chrono::seconds>(
+                        std::chrono::system_clock::now().time_since_epoch()).count();
+                    wrap["body"] = json;
+                    WriteFileAtomic(dailyCachePath, wrap.dump());
+                } catch (...) {}
+            }
+        }
         if (json.empty()) {
             g_AchActiveEventFetching = false;
             return;
@@ -4712,6 +4768,10 @@ static bool ImportBuildFromAE2(const std::string& ae2code, AlterEgo::SavedBuild&
         return false;
     }
 
+    // Preserve the original AE2 code so we can re-resolve missing data later
+    // if the GW2 API was unavailable or rate-limited during this import.
+    out.ae2_code = ae2code;
+
     // Parse gear
     if (hasGear) {
         if (pos + 2 > data.size()) { error = "AE2 gear data truncated."; return false; }
@@ -7117,6 +7177,62 @@ static void RenderBuildGearPanel(AlterEgo::SavedBuild& build) {
     }
 }
 
+// Re-resolve item names (rune, relic, sigils, stats) for a saved build from
+// the GW2 API cache. If IDs are present but names are missing, queues async
+// fetches so the next render attempt can fill them in. Handles the case where
+// the GW2 API was unavailable or rate-limited at import time.
+static void ResolveBuildItemNames(AlterEgo::SavedBuild& build) {
+    bool changed = false;
+    std::vector<uint32_t> missingItems;
+    std::vector<uint32_t> missingStats;
+
+    auto tryItem = [&](uint32_t id, std::string& name) {
+        if (id == 0 || !name.empty()) return;
+        const auto* info = AlterEgo::GW2API::GetItemInfo(id);
+        if (info && !info->name.empty()) {
+            name = info->name;
+            changed = true;
+        } else {
+            missingItems.push_back(id);
+        }
+    };
+
+    tryItem(build.rune_id, build.rune_name);
+    tryItem(build.relic_id, build.relic_name);
+
+    for (auto& [slot, gs] : build.gear) {
+        tryItem(gs.sigil_id, gs.sigil);
+        tryItem(gs.sigil2_id, gs.sigil2);
+        if (gs.rune_id == 0 && build.rune_id != 0) {
+            // Propagate shared rune to armor slot if not yet set
+            static const char* armorSlots[] = {"Helm","Shoulders","Coat","Gloves","Leggings","Boots"};
+            for (const char* s : armorSlots) {
+                if (slot == s) { gs.rune_id = build.rune_id; changed = true; break; }
+            }
+        }
+        if (gs.rune_id != 0 && gs.rune.empty() && !build.rune_name.empty()) {
+            gs.rune = build.rune_name;
+            changed = true;
+        }
+        if (gs.stat_id != 0 && gs.stat_name.empty()) {
+            const auto* si = AlterEgo::GW2API::GetItemStatInfo(gs.stat_id);
+            if (si && !si->name.empty()) {
+                gs.stat_name = si->name;
+                changed = true;
+            } else {
+                missingStats.push_back(gs.stat_id);
+            }
+        }
+    }
+
+    if (!missingItems.empty())
+        AlterEgo::GW2API::FetchItemDetailsAsync(missingItems);
+    if (!missingStats.empty())
+        AlterEgo::GW2API::FetchItemStatDetailsAsync(missingStats);
+
+    if (changed) AlterEgo::GW2API::SaveBuildLibrary();
+}
+
 // Resolve negative trait placeholders in a saved build once spec data is available
 static void ResolveBuildTraitPlaceholders(AlterEgo::SavedBuild& build) {
     bool changed = false;
@@ -7142,6 +7258,9 @@ static void RenderSavedBuildPreview(const AlterEgo::SavedBuild& build, bool show
     // Try to resolve any placeholder traits (negative values from import without spec cache)
     // Safe to cast: we only mutate trait values from negative to positive
     ResolveBuildTraitPlaceholders(const_cast<AlterEgo::SavedBuild&>(build));
+    // Re-resolve any item/stat names that weren't available at import time
+    // (e.g. API rate-limited or offline). Queues async fetches for missing IDs.
+    ResolveBuildItemNames(const_cast<AlterEgo::SavedBuild&>(build));
 
     ImVec4 profColor = GetProfessionColor(build.profession);
     {
@@ -8518,6 +8637,7 @@ void AddonLoad(AddonAPI_t* aApi) {
     AlterEgo::GW2API::LoadCharacterData();
     AlterEgo::GW2API::LoadBuildLibrary();
     AlterEgo::GW2API::LoadItemNameCache();
+    AlterEgo::GW2API::LoadReferenceCaches();
     SeedItemNameCache();
     LoadLoginTimestamps();
     AlterEgo::GW2API::FetchAllItemStatsAsync();
@@ -8615,6 +8735,8 @@ void AddonLoad(AddonAPI_t* aApi) {
         Skinventory::OwnedSkins::SetDataDirectory(skinDataDir);
         Skinventory::OwnedSkins::Initialize(APIDefs);
         Skinventory::WikiImage::Initialize(APIDefs, wikiCacheDir);
+        // Prefetch raid rotation icons used by the Clears tab.
+        Skinventory::WikiImage::DownloadCurrencyIcons("Emboldened,Call_of_the_Mists");
 
         if (Skinventory::SkinCache::LoadFromDisk()) {
             Skinventory::SkinCache::UpdateCacheAsync();
@@ -8625,6 +8747,7 @@ void AddonLoad(AddonAPI_t* aApi) {
         if (!Skinventory::Commerce::LoadItemMap()) {
             Skinventory::Commerce::BuildItemMapAsync();
         }
+        Skinventory::Commerce::LoadPriceCache();
 
         // Ping H&S so Skinventory's OwnedSkins receives the pong
         // (must be after Initialize which subscribes to EV_HOARD_PONG)

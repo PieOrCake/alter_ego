@@ -8,10 +8,20 @@
 #include <sstream>
 #include <algorithm>
 #include <filesystem>
+#include <chrono>
 
 using json = nlohmann::json;
 
+// Defined in dllmain.cpp; atomic write-temp-then-rename.
+extern bool WriteFileAtomic(const std::string& finalPath, const std::string& content);
+
 namespace Skinventory {
+
+    static int64_t NowUnix() {
+        return std::chrono::duration_cast<std::chrono::seconds>(
+            std::chrono::system_clock::now().time_since_epoch()).count();
+    }
+    static const int64_t PRICE_TTL_SEC = 15 * 60; // 15 minutes
 
     std::string Commerce::s_data_dir;
     std::mutex Commerce::s_mutex;
@@ -123,18 +133,18 @@ namespace Skinventory {
             PriceInfo info;
             info.item_id = 0;
             info.tradeable = false;
-            info.fetched_at = std::chrono::steady_clock::now();
+            info.fetched_at_unix = NowUnix();
             s_prices[skin_id] = info;
             return;
         }
 
-        // Check cache freshness (5 min)
+        // Check cache freshness
         {
             std::lock_guard<std::mutex> lock(s_mutex);
             auto it = s_prices.find(skin_id);
             if (it != s_prices.end()) {
-                auto age = std::chrono::steady_clock::now() - it->second.fetched_at;
-                if (age < std::chrono::minutes(5)) return; // Still fresh
+                int64_t age = NowUnix() - it->second.fetched_at_unix;
+                if (age >= 0 && age < PRICE_TTL_SEC) return; // Still fresh
             }
         }
 
@@ -159,7 +169,7 @@ namespace Skinventory {
                     // Mark as non-tradeable
                     PriceInfo info;
                     info.tradeable = false;
-                    info.fetched_at = std::chrono::steady_clock::now();
+                    info.fetched_at_unix = NowUnix();
                     s_prices[skin_id] = info;
                     continue;
                 }
@@ -167,8 +177,8 @@ namespace Skinventory {
                 // Check cache freshness
                 auto pit = s_prices.find(skin_id);
                 if (pit != s_prices.end()) {
-                    auto age = std::chrono::steady_clock::now() - pit->second.fetched_at;
-                    if (age < std::chrono::minutes(5)) continue;
+                    int64_t age = NowUnix() - pit->second.fetched_at_unix;
+                    if (age >= 0 && age < PRICE_TTL_SEC) continue;
                 }
 
                 item_ids.push_back(it->second);
@@ -217,7 +227,7 @@ namespace Skinventory {
                     PriceInfo info;
                     info.item_id = item_id;
                     info.tradeable = true;
-                    info.fetched_at = std::chrono::steady_clock::now();
+                    info.fetched_at_unix = NowUnix();
 
                     if (entry.contains("buys") && entry["buys"].is_object()) {
                         info.buy_price = entry["buys"].value("unit_price", 0);
@@ -242,6 +252,61 @@ namespace Skinventory {
             s_fetch_status = "";
         }
         s_fetching = false;
+
+        SavePriceCache();
+    }
+
+    bool Commerce::SavePriceCache() {
+        if (s_data_dir.empty()) return false;
+        try { std::filesystem::create_directories(s_data_dir); } catch (...) { return false; }
+
+        std::string path = s_data_dir + "/price_cache.json";
+        json j = json::object();
+        {
+            std::lock_guard<std::mutex> lock(s_mutex);
+            for (const auto& [skin_id, info] : s_prices) {
+                json e;
+                e["item_id"] = info.item_id;
+                e["buy"] = info.buy_price;
+                e["sell"] = info.sell_price;
+                e["buy_q"] = info.buy_quantity;
+                e["sell_q"] = info.sell_quantity;
+                e["tradeable"] = info.tradeable;
+                e["ts"] = info.fetched_at_unix;
+                j[std::to_string(skin_id)] = e;
+            }
+        }
+        return WriteFileAtomic(path, j.dump());
+    }
+
+    bool Commerce::LoadPriceCache() {
+        if (s_data_dir.empty()) return false;
+        std::string path = s_data_dir + "/price_cache.json";
+        try {
+            std::ifstream f(path);
+            if (!f.is_open()) return false;
+            json j;
+            f >> j;
+            if (!j.is_object()) return false;
+            int64_t now = NowUnix();
+            std::lock_guard<std::mutex> lock(s_mutex);
+            for (auto& [key, e] : j.items()) {
+                if (!e.is_object()) continue;
+                int64_t ts = e.value("ts", (int64_t)0);
+                if (now - ts >= PRICE_TTL_SEC) continue; // stale, skip
+                uint32_t skin_id = (uint32_t)std::stoul(key);
+                PriceInfo info;
+                info.item_id = e.value("item_id", (uint32_t)0);
+                info.buy_price = e.value("buy", 0);
+                info.sell_price = e.value("sell", 0);
+                info.buy_quantity = e.value("buy_q", 0);
+                info.sell_quantity = e.value("sell_q", 0);
+                info.tradeable = e.value("tradeable", false);
+                info.fetched_at_unix = ts;
+                s_prices[skin_id] = std::move(info);
+            }
+        } catch (...) { return false; }
+        return true;
     }
 
     // --- Item Map: skin_id -> item_id ---

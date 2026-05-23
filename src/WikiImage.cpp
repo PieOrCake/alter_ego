@@ -10,6 +10,8 @@
 
 using json = nlohmann::json;
 
+extern bool WriteFileAtomic(const std::string& finalPath, const std::string& content);
+
 namespace Skinventory {
 
     AddonAPI_t* WikiImage::s_API = nullptr;
@@ -18,6 +20,8 @@ namespace Skinventory {
     std::unordered_map<uint32_t, WikiSkinData> WikiImage::s_wikiDataCache;
     std::unordered_map<uint32_t, bool> WikiImage::s_loading;
     std::unordered_map<uint32_t, std::chrono::steady_clock::time_point> WikiImage::s_failed;
+    std::unordered_map<uint32_t, int64_t> WikiImage::s_failedPersistent;
+    std::unordered_map<std::string, int64_t> WikiImage::s_currencyFailedPersistent;
     std::vector<WikiImage::QueuedRequest> WikiImage::s_requestQueue;
     std::vector<uint32_t> WikiImage::s_readyQueue;
     std::mutex WikiImage::s_mutex;
@@ -36,6 +40,7 @@ namespace Skinventory {
         } catch (...) {}
 
         LoadWikiDataCache();
+        LoadFailedCache();
 
         s_stopWorker = false;
         s_workerThread = std::thread(DownloadWorker);
@@ -88,8 +93,7 @@ namespace Skinventory {
                     if (!entry.empty()) j[std::to_string(id)] = entry;
                 }
             }
-            std::ofstream file(GetWikiDataCachePath());
-            if (file.is_open()) file << j.dump();
+            WriteFileAtomic(GetWikiDataCachePath(), j.dump());
         } catch (...) {}
     }
 
@@ -114,6 +118,77 @@ namespace Skinventory {
                 s_wikiDataCache[id] = std::move(data);
             }
         } catch (...) {}
+    }
+
+    std::string WikiImage::GetFailedCachePath() {
+        return s_cacheDir + "\\wiki_failed.json";
+    }
+
+    void WikiImage::SaveFailedCache() {
+        try {
+            json j = json::object();
+            {
+                std::lock_guard<std::mutex> lock(s_mutex);
+                json skins = json::object();
+                for (const auto& [id, ts] : s_failedPersistent) {
+                    skins[std::to_string(id)] = ts;
+                }
+                json currs = json::object();
+                for (const auto& [k, ts] : s_currencyFailedPersistent) {
+                    currs[k] = ts;
+                }
+                j["skins"] = skins;
+                j["currencies"] = currs;
+            }
+            WriteFileAtomic(GetFailedCachePath(), j.dump());
+        } catch (...) {}
+    }
+
+    void WikiImage::LoadFailedCache() {
+        try {
+            std::ifstream file(GetFailedCachePath());
+            if (!file.is_open()) return;
+            json j;
+            file >> j;
+            if (!j.is_object()) return;
+            std::lock_guard<std::mutex> lock(s_mutex);
+            // New format: { "skins": {...}, "currencies": {...} }
+            if (j.contains("skins") && j["skins"].is_object()) {
+                for (auto& [key, val] : j["skins"].items()) {
+                    if (!val.is_number_integer()) continue;
+                    uint32_t id = (uint32_t)std::stoul(key);
+                    s_failedPersistent[id] = val.get<int64_t>();
+                }
+            } else {
+                // Legacy flat format: {"<id>": ts}
+                for (auto& [key, val] : j.items()) {
+                    if (!val.is_number_integer()) continue;
+                    try {
+                        uint32_t id = (uint32_t)std::stoul(key);
+                        s_failedPersistent[id] = val.get<int64_t>();
+                    } catch (...) {}
+                }
+            }
+            if (j.contains("currencies") && j["currencies"].is_object()) {
+                for (auto& [key, val] : j["currencies"].items()) {
+                    if (!val.is_number_integer()) continue;
+                    s_currencyFailedPersistent[key] = val.get<int64_t>();
+                }
+            }
+        } catch (...) {}
+    }
+
+    void WikiImage::RecordFailure(uint32_t skinId) {
+        auto now = std::chrono::system_clock::now();
+        int64_t nowTs = std::chrono::duration_cast<std::chrono::seconds>(
+            now.time_since_epoch()).count();
+        {
+            std::lock_guard<std::mutex> lock(s_mutex);
+            s_loading.erase(skinId);
+            s_failed[skinId] = std::chrono::steady_clock::now();
+            s_failedPersistent[skinId] = nowTs;
+        }
+        SaveFailedCache();
     }
 
     // Static map of known vendor locations → nearest waypoint chat link
@@ -521,6 +596,7 @@ namespace Skinventory {
                 s_imageCache[skinId] = tex;
                 s_loading.erase(skinId);
                 s_failed.erase(skinId);
+                s_failedPersistent.erase(skinId);
                 return true;
             }
         } catch (...) {}
@@ -538,13 +614,23 @@ namespace Skinventory {
             if (s_imageCache.find(skinId) != s_imageCache.end()) return;
             if (s_loading.find(skinId) != s_loading.end()) return;
 
-            // Check failure cooldown
+            // Check in-session failure cooldown
             auto failIt = s_failed.find(skinId);
             if (failIt != s_failed.end()) {
                 auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(
                     std::chrono::steady_clock::now() - failIt->second).count();
                 if (elapsed < RETRY_COOLDOWN_SEC) return;
                 s_failed.erase(failIt);
+            }
+
+            // Check persistent (cross-session) failure cooldown
+            auto persIt = s_failedPersistent.find(skinId);
+            if (persIt != s_failedPersistent.end()) {
+                int64_t nowTs = std::chrono::duration_cast<std::chrono::seconds>(
+                    std::chrono::system_clock::now().time_since_epoch()).count();
+                int64_t ageSec = nowTs - persIt->second;
+                if (ageSec >= 0 && ageSec < PERSISTENT_RETRY_DAYS * 86400) return;
+                s_failedPersistent.erase(persIt);
             }
 
             s_loading[skinId] = true;
@@ -609,9 +695,7 @@ namespace Skinventory {
             try {
                 LoadFromDisk(skinId);
             } catch (...) {
-                std::lock_guard<std::mutex> lock(s_mutex);
-                s_loading.erase(skinId);
-                s_failed[skinId] = std::chrono::steady_clock::now();
+                RecordFailure(skinId);
             }
         }
 
@@ -899,30 +983,113 @@ namespace Skinventory {
             if (!k.empty()) keyList.push_back(k);
         }
 
+        // Phase 1: filter to keys that need network lookup.
+        std::vector<std::string> toFetch;
+        toFetch.reserve(keyList.size());
+        int64_t nowTs = std::chrono::duration_cast<std::chrono::seconds>(
+            std::chrono::system_clock::now().time_since_epoch()).count();
         for (const auto& key : keyList) {
-            // Skip if already cached on disk
             std::string path = CurrencyIconCachePath(key);
             DWORD attrs = GetFileAttributesA(path.c_str());
             if (attrs != INVALID_FILE_ATTRIBUTES) {
-                // Already on disk, queue for texture load
                 std::lock_guard<std::mutex> lock(s_mutex);
                 if (s_currencyIcons.find(key) == s_currencyIcons.end()) {
                     s_currencyReadyQueue.push_back(key);
                 }
                 continue;
             }
+            {
+                std::lock_guard<std::mutex> lock(s_mutex);
+                auto fit = s_currencyFailedPersistent.find(key);
+                if (fit != s_currencyFailedPersistent.end()) {
+                    int64_t ageSec = nowTs - fit->second;
+                    if (ageSec >= 0 && ageSec < PERSISTENT_RETRY_DAYS * 86400) continue;
+                    s_currencyFailedPersistent.erase(fit);
+                }
+            }
+            toFetch.push_back(key);
+        }
+        if (toFetch.empty()) return;
 
-            // Query wiki API for icon URL: File:KEY.png
-            std::string fileTitle = "File:" + key + ".png";
-            std::string imageUrl = ResolveImageUrl(fileTitle);
-            if (imageUrl.empty()) continue;
+        // Phase 2: batched URL resolution (up to 50 titles per wiki API call).
+        std::unordered_map<std::string, std::string> resolved; // key -> imageUrl ("" if missing)
+        const size_t BATCH = 50;
+        for (size_t i = 0; i < toFetch.size(); i += BATCH) {
+            size_t end = std::min(i + BATCH, toFetch.size());
+            std::string titles;
+            for (size_t j = i; j < end; j++) {
+                if (!titles.empty()) titles += "|";
+                titles += "File:" + toFetch[j] + ".png";
+            }
+            std::string url = "https://wiki.guildwars2.com/api.php?action=query"
+                              "&titles=" + UrlEncode(titles) +
+                              "&prop=imageinfo&iiprop=url&format=json";
+            std::string resp = HttpClient::Get(url);
+            if (resp.empty()) continue;
+            try {
+                json j = json::parse(resp);
+                if (!j.contains("query") || !j["query"].contains("pages")) continue;
+                // Wiki may normalise titles (e.g. spaces vs underscores). Build a
+                // normalised->original map so we can match pages back to keys.
+                std::unordered_map<std::string, std::string> normToOrig;
+                if (j["query"].contains("normalized") && j["query"]["normalized"].is_array()) {
+                    for (const auto& n : j["query"]["normalized"]) {
+                        std::string from = n.value("from", "");
+                        std::string to = n.value("to", "");
+                        if (!from.empty() && !to.empty()) normToOrig[to] = from;
+                    }
+                }
+                for (auto& [pageId, page] : j["query"]["pages"].items()) {
+                    std::string title = page.value("title", "");
+                    std::string original = title;
+                    auto norm = normToOrig.find(title);
+                    if (norm != normToOrig.end()) original = norm->second;
+                    // Strip "File:" prefix and ".png" suffix to recover key.
+                    if (original.rfind("File:", 0) == 0) original = original.substr(5);
+                    if (original.size() > 4 && original.substr(original.size() - 4) == ".png")
+                        original = original.substr(0, original.size() - 4);
+                    std::string imgUrl;
+                    if (page.contains("imageinfo") && page["imageinfo"].is_array() &&
+                        !page["imageinfo"].empty()) {
+                        imgUrl = page["imageinfo"][0].value("url", "");
+                    }
+                    resolved[original] = imgUrl;
+                }
+            } catch (...) {}
+        }
 
-            // Download to cache
+        // Phase 3: per-key download / negative-cache update.
+        bool failedDirty = false;
+        for (const auto& key : toFetch) {
+            auto rit = resolved.find(key);
+            if (rit == resolved.end()) {
+                // Wiki response didn't surface this key (could be title-normalisation
+                // mismatch on special chars). Leave for next session rather than
+                // marking as a confirmed missing page.
+                continue;
+            }
+            const std::string& imageUrl = rit->second;
+            if (imageUrl.empty()) {
+                {
+                    std::lock_guard<std::mutex> lock(s_mutex);
+                    s_currencyFailedPersistent[key] = nowTs;
+                }
+                failedDirty = true;
+                continue;
+            }
+            std::string path = CurrencyIconCachePath(key);
             if (HttpClient::DownloadToFile(imageUrl, path)) {
                 std::lock_guard<std::mutex> lock(s_mutex);
                 s_currencyReadyQueue.push_back(key);
+            } else {
+                {
+                    std::lock_guard<std::mutex> lock(s_mutex);
+                    s_currencyFailedPersistent[key] = nowTs;
+                }
+                failedDirty = true;
             }
         }
+        if (failedDirty) SaveFailedCache();
     }
 
     void WikiImage::DownloadWorker() {
@@ -996,9 +1163,7 @@ namespace Skinventory {
             }
 
             if (imageUrl.empty()) {
-                std::lock_guard<std::mutex> lock(s_mutex);
-                s_loading.erase(req.skinId);
-                s_failed[req.skinId] = std::chrono::steady_clock::now();
+                RecordFailure(req.skinId);
                 continue;
             }
 
@@ -1008,9 +1173,7 @@ namespace Skinventory {
                 std::lock_guard<std::mutex> lock(s_mutex);
                 s_readyQueue.push_back(req.skinId);
             } else {
-                std::lock_guard<std::mutex> lock(s_mutex);
-                s_loading.erase(req.skinId);
-                s_failed[req.skinId] = std::chrono::steady_clock::now();
+                RecordFailure(req.skinId);
             }
 
             // Rate limit

@@ -1616,6 +1616,7 @@ namespace AlterEgo {
                     s_api->Log(LOGL_INFO, "AlterEgo", msg.c_str());
                 }
             } catch (...) {}
+            SaveItemStatCache();
         }).detach();
     }
 
@@ -1751,6 +1752,7 @@ namespace AlterEgo {
 
             std::this_thread::sleep_for(std::chrono::milliseconds(200));
         }
+        SaveItemCache();
     }
 
     void GW2API::FetchSkinDetails(const std::vector<uint32_t>& skin_ids) {
@@ -1818,6 +1820,7 @@ namespace AlterEgo {
 
             std::this_thread::sleep_for(std::chrono::milliseconds(200));
         }
+        SaveSkinCache();
     }
 
     // --- Async wrappers ---
@@ -1887,6 +1890,8 @@ namespace AlterEgo {
                 }
             } catch (...) {}
 
+            SaveSpecCache();
+
             // Chain-fetch all trait details for loaded specs
             std::vector<uint32_t> all_trait_ids;
             {
@@ -1955,6 +1960,7 @@ namespace AlterEgo {
 
             std::this_thread::sleep_for(std::chrono::milliseconds(200));
         }
+        SaveTraitCache();
     }
 
     void GW2API::FetchTraitDetailsAsync(const std::vector<uint32_t>& trait_ids) {
@@ -2013,6 +2019,7 @@ namespace AlterEgo {
 
                 std::this_thread::sleep_for(std::chrono::milliseconds(200));
             }
+            SaveSkillCache();
         }).detach();
     }
 
@@ -2066,6 +2073,7 @@ namespace AlterEgo {
 
                 std::this_thread::sleep_for(std::chrono::milliseconds(200));
             }
+            SaveItemStatCache();
         }).detach();
     }
 
@@ -2108,6 +2116,7 @@ namespace AlterEgo {
                     }
                 }
             } catch (...) {}
+            SaveDyeColorsCache();
         }).detach();
     }
 
@@ -2480,6 +2489,7 @@ namespace AlterEgo {
                 bj["id"] = b.id;
                 bj["name"] = b.name;
                 bj["chat_link"] = b.chat_link;
+                if (!b.ae2_code.empty()) bj["ae2_code"] = b.ae2_code;
                 bj["profession"] = b.profession;
                 bj["game_mode"] = GameModeToStr(b.game_mode);
                 bj["notes"] = b.notes;
@@ -2566,6 +2576,7 @@ namespace AlterEgo {
                     b.id = bj.value("id", "");
                     b.name = bj.value("name", "");
                     b.chat_link = bj.value("chat_link", "");
+                    b.ae2_code = bj.value("ae2_code", "");
                     b.profession = bj.value("profession", "");
                     b.game_mode = StrToGameMode(bj.value("game_mode", "PvE"));
                     b.notes = bj.value("notes", "");
@@ -2653,6 +2664,316 @@ namespace AlterEgo {
         } catch (...) {
             return false;
         }
+    }
+
+    // =========================================================================
+    // Reference data cache persistence
+    //
+    // Items, skins, specs, traits, skills, itemstats and dye colors are public
+    // GW2 API data that changes rarely. We persist these caches to disk so
+    // equipment, builds and skinventory render instantly on startup without
+    // re-hitting the API, even if the API is rate-limited or unavailable.
+    // Saves happen at the end of each fetch batch; loads happen at startup.
+    // =========================================================================
+
+    bool GW2API::SaveItemCache() {
+        EnsureDataDirectory();
+        std::string path = GetDataDirectory() + "/item_cache.json";
+        json arr = json::array();
+        {
+            std::lock_guard<std::mutex> lock(s_mutex);
+            arr = json::array();
+            for (const auto& [id, info] : s_item_cache) {
+                json j;
+                j["id"] = info.id;
+                j["name"] = info.name;
+                j["icon"] = info.icon_url;
+                j["rarity"] = info.rarity;
+                j["type"] = info.type;
+                if (!info.description.empty()) j["description"] = info.description;
+                if (!info.chat_link.empty()) j["chat_link"] = info.chat_link;
+                if (!info.details.is_null()) j["details"] = info.details;
+                arr.push_back(std::move(j));
+            }
+        }
+        std::ofstream f(path);
+        if (!f.is_open()) return false;
+        f << arr.dump();
+        return true;
+    }
+
+    bool GW2API::SaveSkinCache() {
+        EnsureDataDirectory();
+        std::string path = GetDataDirectory() + "/skin_cache.json";
+        json arr;
+        {
+            std::lock_guard<std::mutex> lock(s_mutex);
+            arr = json::array();
+            for (const auto& [id, info] : s_skin_cache) {
+                json j;
+                j["id"] = info.id;
+                j["name"] = info.name;
+                j["icon"] = info.icon_url;
+                j["type"] = info.type;
+                j["rarity"] = info.rarity;
+                if (info.dye_slot_count >= 0) j["dye_slot_count"] = info.dye_slot_count;
+                if (!info.dye_slot_materials.empty()) j["dye_slot_materials"] = info.dye_slot_materials;
+                arr.push_back(std::move(j));
+            }
+        }
+        std::ofstream f(path);
+        if (!f.is_open()) return false;
+        f << arr.dump();
+        return true;
+    }
+
+    bool GW2API::SaveSpecCache() {
+        EnsureDataDirectory();
+        std::string path = GetDataDirectory() + "/spec_cache.json";
+        json arr;
+        {
+            std::lock_guard<std::mutex> lock(s_mutex);
+            arr = json::array();
+            for (const auto& [id, info] : s_spec_cache) {
+                json j;
+                j["id"] = info.id;
+                j["name"] = info.name;
+                j["icon"] = info.icon_url;
+                j["background"] = info.background_url;
+                j["profession"] = info.profession;
+                j["profession_icon"] = info.profession_icon_url;
+                j["profession_icon_big"] = info.profession_icon_big_url;
+                j["elite"] = info.elite;
+                j["minor_traits"] = info.minor_traits;
+                j["major_traits"] = info.major_traits;
+                arr.push_back(std::move(j));
+            }
+        }
+        std::ofstream f(path);
+        if (!f.is_open()) return false;
+        f << arr.dump();
+        return true;
+    }
+
+    bool GW2API::SaveTraitCache() {
+        EnsureDataDirectory();
+        std::string path = GetDataDirectory() + "/trait_cache.json";
+        json arr;
+        {
+            std::lock_guard<std::mutex> lock(s_mutex);
+            arr = json::array();
+            for (const auto& [id, info] : s_trait_cache) {
+                json j;
+                j["id"] = info.id;
+                j["name"] = info.name;
+                j["icon"] = info.icon_url;
+                if (!info.description.empty()) j["description"] = info.description;
+                j["tier"] = info.tier;
+                j["order"] = info.order;
+                j["slot"] = info.slot;
+                if (!info.facts.is_null()) j["facts"] = info.facts;
+                arr.push_back(std::move(j));
+            }
+        }
+        std::ofstream f(path);
+        if (!f.is_open()) return false;
+        f << arr.dump();
+        return true;
+    }
+
+    bool GW2API::SaveSkillCache() {
+        EnsureDataDirectory();
+        std::string path = GetDataDirectory() + "/skill_cache.json";
+        json arr;
+        {
+            std::lock_guard<std::mutex> lock(s_mutex);
+            arr = json::array();
+            for (const auto& [id, info] : s_skill_cache) {
+                json j;
+                j["id"] = info.id;
+                j["name"] = info.name;
+                j["icon"] = info.icon_url;
+                if (!info.description.empty()) j["description"] = info.description;
+                j["type"] = info.type;
+                if (!info.facts.is_null()) j["facts"] = info.facts;
+                arr.push_back(std::move(j));
+            }
+        }
+        std::ofstream f(path);
+        if (!f.is_open()) return false;
+        f << arr.dump();
+        return true;
+    }
+
+    bool GW2API::SaveItemStatCache() {
+        EnsureDataDirectory();
+        std::string path = GetDataDirectory() + "/itemstat_cache.json";
+        json arr;
+        {
+            std::lock_guard<std::mutex> lock(s_mutex);
+            arr = json::array();
+            for (const auto& [id, info] : s_itemstat_cache) {
+                json j;
+                j["id"] = info.id;
+                j["name"] = info.name;
+                j["attributes"] = info.attributes;
+                arr.push_back(std::move(j));
+            }
+        }
+        std::ofstream f(path);
+        if (!f.is_open()) return false;
+        f << arr.dump();
+        return true;
+    }
+
+    bool GW2API::SaveDyeColorsCache() {
+        EnsureDataDirectory();
+        std::string path = GetDataDirectory() + "/dye_cache.json";
+        json arr;
+        {
+            std::lock_guard<std::mutex> lock(s_mutex);
+            arr = json::array();
+            for (const auto& [id, dc] : s_dye_cache) {
+                json j;
+                j["id"] = dc.id;
+                j["name"] = dc.name;
+                j["base"] = { dc.r, dc.g, dc.b };
+                j["cloth"] = { dc.cloth_r, dc.cloth_g, dc.cloth_b };
+                j["leather"] = { dc.leather_r, dc.leather_g, dc.leather_b };
+                j["metal"] = { dc.metal_r, dc.metal_g, dc.metal_b };
+                arr.push_back(std::move(j));
+            }
+        }
+        std::ofstream f(path);
+        if (!f.is_open()) return false;
+        f << arr.dump();
+        return true;
+    }
+
+    bool GW2API::LoadReferenceCaches() {
+        auto readJson = [](const std::string& filename, json& out) -> bool {
+            std::ifstream f(GetDataDirectory() + "/" + filename);
+            if (!f.is_open()) return false;
+            try { f >> out; return true; } catch (...) { return false; }
+        };
+
+        json j;
+        if (readJson("item_cache.json", j) && j.is_array()) {
+            std::lock_guard<std::mutex> lock(s_mutex);
+            for (const auto& it : j) {
+                if (!it.contains("id")) continue;
+                ItemInfo info;
+                info.id = it["id"].get<uint32_t>();
+                info.name = it.value("name", "");
+                info.icon_url = it.value("icon", "");
+                info.rarity = it.value("rarity", "");
+                info.type = it.value("type", "");
+                info.description = it.value("description", "");
+                info.chat_link = it.value("chat_link", "");
+                if (it.contains("details")) info.details = it["details"];
+                s_item_cache[info.id] = std::move(info);
+            }
+        }
+        if (readJson("skin_cache.json", j) && j.is_array()) {
+            std::lock_guard<std::mutex> lock(s_mutex);
+            for (const auto& it : j) {
+                if (!it.contains("id")) continue;
+                SkinInfo info;
+                info.id = it["id"].get<uint32_t>();
+                info.name = it.value("name", "");
+                info.icon_url = it.value("icon", "");
+                info.type = it.value("type", "");
+                info.rarity = it.value("rarity", "");
+                info.dye_slot_count = it.value("dye_slot_count", -1);
+                if (it.contains("dye_slot_materials") && it["dye_slot_materials"].is_array()) {
+                    for (const auto& m : it["dye_slot_materials"])
+                        info.dye_slot_materials.push_back(m.get<std::string>());
+                }
+                s_skin_cache[info.id] = std::move(info);
+            }
+        }
+        if (readJson("spec_cache.json", j) && j.is_array()) {
+            std::lock_guard<std::mutex> lock(s_mutex);
+            for (const auto& it : j) {
+                if (!it.contains("id")) continue;
+                SpecializationInfo info;
+                info.id = it["id"].get<uint32_t>();
+                info.name = it.value("name", "");
+                info.icon_url = it.value("icon", "");
+                info.background_url = it.value("background", "");
+                info.profession = it.value("profession", "");
+                info.profession_icon_url = it.value("profession_icon", "");
+                info.profession_icon_big_url = it.value("profession_icon_big", "");
+                info.elite = it.value("elite", false);
+                if (it.contains("minor_traits"))
+                    for (const auto& t : it["minor_traits"]) info.minor_traits.push_back(t.get<uint32_t>());
+                if (it.contains("major_traits"))
+                    for (const auto& t : it["major_traits"]) info.major_traits.push_back(t.get<uint32_t>());
+                s_spec_cache[info.id] = std::move(info);
+            }
+        }
+        if (readJson("trait_cache.json", j) && j.is_array()) {
+            std::lock_guard<std::mutex> lock(s_mutex);
+            for (const auto& it : j) {
+                if (!it.contains("id")) continue;
+                TraitInfo info;
+                info.id = it["id"].get<uint32_t>();
+                info.name = it.value("name", "");
+                info.icon_url = it.value("icon", "");
+                info.description = it.value("description", "");
+                info.tier = it.value("tier", 0);
+                info.order = it.value("order", 0);
+                info.slot = it.value("slot", "");
+                if (it.contains("facts")) info.facts = it["facts"];
+                s_trait_cache[info.id] = std::move(info);
+            }
+        }
+        if (readJson("skill_cache.json", j) && j.is_array()) {
+            std::lock_guard<std::mutex> lock(s_mutex);
+            for (const auto& it : j) {
+                if (!it.contains("id")) continue;
+                SkillInfo info;
+                info.id = it["id"].get<uint32_t>();
+                info.name = it.value("name", "");
+                info.icon_url = it.value("icon", "");
+                info.description = it.value("description", "");
+                info.type = it.value("type", "");
+                if (it.contains("facts")) info.facts = it["facts"];
+                s_skill_cache[info.id] = std::move(info);
+            }
+        }
+        if (readJson("itemstat_cache.json", j) && j.is_array()) {
+            std::lock_guard<std::mutex> lock(s_mutex);
+            for (const auto& it : j) {
+                if (!it.contains("id")) continue;
+                ItemStatInfo info;
+                info.id = it["id"].get<uint32_t>();
+                info.name = it.value("name", "");
+                if (it.contains("attributes") && it["attributes"].is_array())
+                    for (const auto& a : it["attributes"]) info.attributes.push_back(a.get<std::string>());
+                s_itemstat_cache[info.id] = std::move(info);
+            }
+        }
+        if (readJson("dye_cache.json", j) && j.is_array()) {
+            std::lock_guard<std::mutex> lock(s_mutex);
+            for (const auto& it : j) {
+                if (!it.contains("id")) continue;
+                DyeColor dc;
+                dc.id = it["id"].get<int>();
+                dc.name = it.value("name", "");
+                auto readRGB = [&](const char* key, int& r, int& g, int& b) {
+                    if (it.contains(key) && it[key].is_array() && it[key].size() >= 3) {
+                        r = it[key][0].get<int>(); g = it[key][1].get<int>(); b = it[key][2].get<int>();
+                    }
+                };
+                readRGB("base", dc.r, dc.g, dc.b);
+                readRGB("cloth", dc.cloth_r, dc.cloth_g, dc.cloth_b);
+                readRGB("leather", dc.leather_r, dc.leather_g, dc.leather_b);
+                readRGB("metal", dc.metal_r, dc.metal_g, dc.metal_b);
+                s_dye_cache[dc.id] = std::move(dc);
+            }
+        }
+        return true;
     }
 
     // =========================================================================
