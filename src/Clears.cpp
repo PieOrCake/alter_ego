@@ -819,6 +819,35 @@ void LoadVaultCache() {
 // Clears - UI rendering helpers
 // =========================================================================
 
+// Scale → fractal map (per https://wiki.guildwars2.com/wiki/Fractals_of_the_Mists#Scales)
+static const char* FractalNameForScale(int scale) {
+    static const char* kScaleMap[101] = {
+        nullptr,
+        "Volcanic", "Uncategorized", "Snowblind", "Urban Battleground", "Swampland",
+        "Cliffside", "Aquatic Ruins", "Underground Facility", "Molten Furnace", "Molten Boss",
+        "Deepstone", "Siren's Reef", "Chaos", "Aetherblade", "Thaumanova Reactor",
+        "Twilight Oasis", "Kinfall", "Captain Mai Trin Boss", "Volcanic", "Solid Ocean",
+        "Silent Surf", "Nightmare", "Shattered Observatory", "Sunqua Peak", "Lonely Tower",
+        "Aquatic Ruins", "Snowblind", "Volcanic", "Underground Facility", "Chaos",
+        "Urban Battleground", "Swampland", "Deepstone", "Thaumanova Reactor", "Solid Ocean",
+        "Uncategorized", "Siren's Reef", "Kinfall", "Molten Furnace", "Molten Boss",
+        "Twilight Oasis", "Captain Mai Trin Boss", "Silent Surf", "Solid Ocean", "Aetherblade",
+        "Cliffside", "Nightmare", "Shattered Observatory", "Sunqua Peak", "Lonely Tower",
+        "Snowblind", "Volcanic", "Underground Facility", "Siren's Reef", "Thaumanova Reactor",
+        "Swampland", "Urban Battleground", "Molten Furnace", "Twilight Oasis", "Solid Ocean",
+        "Aquatic Ruins", "Uncategorized", "Chaos", "Thaumanova Reactor", "Aetherblade",
+        "Silent Surf", "Deepstone", "Cliffside", "Molten Boss", "Kinfall",
+        "Captain Mai Trin Boss", "Nightmare", "Shattered Observatory", "Sunqua Peak", "Lonely Tower",
+        "Aquatic Ruins", "Swampland", "Siren's Reef", "Uncategorized", "Solid Ocean",
+        "Underground Facility", "Thaumanova Reactor", "Molten Furnace", "Deepstone", "Urban Battleground",
+        "Snowblind", "Twilight Oasis", "Chaos", "Swampland", "Molten Boss",
+        "Captain Mai Trin Boss", "Volcanic", "Aetherblade", "Cliffside", "Kinfall",
+        "Nightmare", "Shattered Observatory", "Sunqua Peak", "Silent Surf", "Lonely Tower",
+    };
+    if (scale < 1 || scale > 100) return nullptr;
+    return kScaleMap[scale];
+}
+
 // Helper: strip fractal achievement name to short form
 static std::string ShortenFractalName(const std::string& name) {
     // "Daily Recommended Fractal—Swampland" → "Swampland"
@@ -831,7 +860,17 @@ static std::string ShortenFractalName(const std::string& name) {
             else
                 start++;
         }
-        return name.substr(start);
+        std::string tail = name.substr(start);
+        // "Scale 31" → "Swampland (31)"
+        if (tail.rfind("Scale ", 0) == 0) {
+            int scale = atoi(tail.c_str() + 6);
+            if (const char* mapName = FractalNameForScale(scale)) {
+                char buf[96];
+                snprintf(buf, sizeof(buf), "%s (%d)", mapName, scale);
+                return std::string(buf);
+            }
+        }
+        return tail;
     }
     // "Daily Tier 4 Swampland" → "Swampland"
     auto pos2 = name.find("Tier");
