@@ -729,8 +729,32 @@ static bool g_LibShowImport = false;
 static std::string g_LibImportError;
 static bool g_LibDetailsFetched = false;
 static int g_LibDragIdx = -1;          // drag-and-drop source index
-static char g_LibEditName[128] = "";   // inline rename buffer
-static char g_LibEditNotes[512] = ""; // inline notes buffer
+// Inline edit buffers — std::string + ImGui resize callback so long names
+// or notes are never silently truncated by a fixed buffer size.
+static std::string g_LibEditName;
+static std::string g_LibEditNotes;
+
+static int ImGuiInputStringResizeCallback(ImGuiInputTextCallbackData* data) {
+    if (data->EventFlag == ImGuiInputTextFlags_CallbackResize) {
+        auto* str = static_cast<std::string*>(data->UserData);
+        str->resize(data->BufTextLen);
+        data->Buf = str->data();
+    }
+    return 0;
+}
+
+static bool InputTextString(const char* label, std::string& str, ImGuiInputTextFlags flags = 0) {
+    flags |= ImGuiInputTextFlags_CallbackResize;
+    return ImGui::InputText(label, str.data(), str.capacity() + 1,
+        flags, ImGuiInputStringResizeCallback, &str);
+}
+
+static bool InputTextMultilineString(const char* label, std::string& str, const ImVec2& size,
+                                     ImGuiInputTextFlags flags = 0) {
+    flags |= ImGuiInputTextFlags_CallbackResize;
+    return ImGui::InputTextMultiline(label, str.data(), str.capacity() + 1,
+        size, flags, ImGuiInputStringResizeCallback, &str);
+}
 static std::string g_LibEditBuildId;   // which build is being edited
 static int g_LibCtxDeleteIdx = -1;     // deferred delete from context menu
 static bool g_RelaySending = false;    // relay POST in progress
@@ -1290,21 +1314,30 @@ static void LoadSettings() {
     std::string path = AlterEgo::GW2API::GetDataDirectory() + "/settings.json";
     std::ifstream file(path);
     if (!file.is_open()) return;
-    try {
-        auto j = nlohmann::json::parse(file);
-        if (j.contains("show_qa_icon")) g_ShowQAIcon = j["show_qa_icon"].get<bool>();
-        if (j.contains("compact_char_list")) g_CompactCharList = j["compact_char_list"].get<bool>();
-        if (j.contains("show_crafting_icons")) g_ShowCraftingIcons = j["show_crafting_icons"].get<bool>();
-        if (j.contains("show_age")) g_ShowAge = j["show_age"].get<bool>();
-        if (j.contains("show_playtime")) g_ShowPlaytime = j["show_playtime"].get<bool>();
-        if (j.contains("show_last_login")) g_ShowLastLogin = j["show_last_login"].get<bool>();
-        if (j.contains("birthday_mode")) g_BirthdayMode = j["birthday_mode"].get<int>();
-        if (j.contains("char_list_width")) g_CharListWidth = j["char_list_width"].get<float>();
-        if (j.contains("lib_list_width")) g_LibListWidth = j["lib_list_width"].get<float>();
-        if (j.contains("chat_build_detection")) g_ChatBuildDetection = j["chat_build_detection"].get<bool>();
-        if (j.contains("toast_pos_x")) g_ToastPosX = j["toast_pos_x"].get<float>();
-        if (j.contains("toast_pos_y")) g_ToastPosY = j["toast_pos_y"].get<float>();
-    } catch (...) {}
+    nlohmann::json j;
+    try { j = nlohmann::json::parse(file); }
+    catch (...) { return; }
+    auto getBool = [&](const char* k, bool& dst) {
+        if (j.contains(k) && j[k].is_boolean()) dst = j[k].get<bool>();
+    };
+    auto getInt = [&](const char* k, int& dst) {
+        if (j.contains(k) && j[k].is_number_integer()) dst = j[k].get<int>();
+    };
+    auto getFloat = [&](const char* k, float& dst) {
+        if (j.contains(k) && j[k].is_number()) dst = j[k].get<float>();
+    };
+    getBool("show_qa_icon", g_ShowQAIcon);
+    getBool("compact_char_list", g_CompactCharList);
+    getBool("show_crafting_icons", g_ShowCraftingIcons);
+    getBool("show_age", g_ShowAge);
+    getBool("show_playtime", g_ShowPlaytime);
+    getBool("show_last_login", g_ShowLastLogin);
+    getInt("birthday_mode", g_BirthdayMode);
+    getFloat("char_list_width", g_CharListWidth);
+    getFloat("lib_list_width", g_LibListWidth);
+    getBool("chat_build_detection", g_ChatBuildDetection);
+    getFloat("toast_pos_x", g_ToastPosX);
+    getFloat("toast_pos_y", g_ToastPosY);
 }
 
 // Character sort persistence
@@ -8336,10 +8369,8 @@ static void RenderBuildLibrary() {
         // Inline rename + notes editing
         if (g_LibEditBuildId != build.id) {
             g_LibEditBuildId = build.id;
-            strncpy(g_LibEditName, build.name.c_str(), sizeof(g_LibEditName) - 1);
-            g_LibEditName[sizeof(g_LibEditName) - 1] = '\0';
-            strncpy(g_LibEditNotes, build.notes.c_str(), sizeof(g_LibEditNotes) - 1);
-            g_LibEditNotes[sizeof(g_LibEditNotes) - 1] = '\0';
+            g_LibEditName = build.name;
+            g_LibEditNotes = build.notes;
             // Exit edit mode when switching to a different build
             g_LibEditMode = false;
         }
@@ -8359,12 +8390,12 @@ static void RenderBuildLibrary() {
         ImGui::Text("Name:");
         ImGui::SameLine();
         ImGui::SetNextItemWidth(250.0f);
-        if (ImGui::InputText("##edit_name", g_LibEditName, sizeof(g_LibEditName),
+        if (InputTextString("##edit_name", g_LibEditName,
                 ImGuiInputTextFlags_EnterReturnsTrue)) {
-            AlterEgo::GW2API::UpdateSavedBuild(build.id, g_LibEditName, g_LibEditNotes);
+            AlterEgo::GW2API::UpdateSavedBuild(build.id, g_LibEditName.c_str(), g_LibEditNotes.c_str());
         }
         if (ImGui::IsItemDeactivatedAfterEdit()) {
-            AlterEgo::GW2API::UpdateSavedBuild(build.id, g_LibEditName, g_LibEditNotes);
+            AlterEgo::GW2API::UpdateSavedBuild(build.id, g_LibEditName.c_str(), g_LibEditNotes.c_str());
         }
 
         // Game-mode chip strip — fix mis-imported modes after the fact
@@ -8400,17 +8431,16 @@ static void RenderBuildLibrary() {
 
         ImGui::Text("Notes:");
         ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x);
-        if (ImGui::InputTextMultiline("##edit_notes", g_LibEditNotes, sizeof(g_LibEditNotes),
-                ImVec2(0, 60))) {
+        if (InputTextMultilineString("##edit_notes", g_LibEditNotes, ImVec2(0, 60))) {
             // live typing — save handled on deactivate
         }
         if (ImGui::IsItemDeactivatedAfterEdit()) {
-            AlterEgo::GW2API::UpdateSavedBuild(build.id, g_LibEditName, g_LibEditNotes);
+            AlterEgo::GW2API::UpdateSavedBuild(build.id, g_LibEditName.c_str(), g_LibEditNotes.c_str());
         }
 
         // Done button to leave edit mode (also persists pending edits)
         if (RenderChipButton("Done##edit", false)) {
-            AlterEgo::GW2API::UpdateSavedBuild(build.id, g_LibEditName, g_LibEditNotes);
+            AlterEgo::GW2API::UpdateSavedBuild(build.id, g_LibEditName.c_str(), g_LibEditNotes.c_str());
             g_LibEditMode = false;
         }
         } // end of edit-mode else
@@ -8852,32 +8882,38 @@ static void SaveAchProgress(const std::string& account) {
     std::filesystem::create_directories(dir);
     std::string path = dir + "/ach_progress_" + SanitizeForFilename(account) + ".json";
 
+    // Snapshot under the lock, then build/serialize JSON outside the lock
+    // so the render thread isn't blocked while we touch a large map.
+    std::vector<std::pair<uint32_t, AchProgress>> snapshot;
+    {
+        std::lock_guard<std::recursive_mutex> lock(g_AchMutex);
+        snapshot.reserve(g_AchProgress.size());
+        for (const auto& [id, p] : g_AchProgress) snapshot.emplace_back(id, p);
+        g_AchProgressDirty = false;
+        g_AchLastSave = std::chrono::steady_clock::now();
+    }
+
     nlohmann::json j = nlohmann::json::object();
     j["saved_at"] = (int64_t)std::time(nullptr);
     nlohmann::json entries = nlohmann::json::object();
-    {
-        std::lock_guard<std::recursive_mutex> lock(g_AchMutex);
-        for (const auto& [id, p] : g_AchProgress) {
-            nlohmann::json e;
-            e["c"] = p.current;
-            e["m"] = p.max;
-            e["d"] = p.done;
-            e["r"] = p.repeated;
-            e["u"] = p.unlocked;
-            if (!p.completed_bits.empty()) {
-                nlohmann::json bits = nlohmann::json::array();
-                for (uint32_t b : p.completed_bits) bits.push_back(b);
-                e["b"] = bits;
-            }
-            entries[std::to_string(id)] = e;
+    for (const auto& [id, p] : snapshot) {
+        nlohmann::json e;
+        e["c"] = p.current;
+        e["m"] = p.max;
+        e["d"] = p.done;
+        e["r"] = p.repeated;
+        e["u"] = p.unlocked;
+        if (!p.completed_bits.empty()) {
+            nlohmann::json bits = nlohmann::json::array();
+            for (uint32_t b : p.completed_bits) bits.push_back(b);
+            e["b"] = bits;
         }
+        entries[std::to_string(id)] = e;
     }
     j["entries"] = entries;
 
     std::ofstream file(path);
     if (file.is_open()) file << j.dump();
-    g_AchProgressDirty = false;
-    g_AchLastSave = std::chrono::steady_clock::now();
 }
 
 // Load achievement progress for an account from disk. Bumps the progress gen

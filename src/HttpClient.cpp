@@ -115,7 +115,8 @@ namespace Skinventory {
             return result;
         }
 
-        DWORD flags = INTERNET_FLAG_RELOAD | INTERNET_FLAG_NO_CACHE_WRITE;
+        DWORD flags = INTERNET_FLAG_RELOAD | INTERNET_FLAG_NO_CACHE_WRITE |
+                      INTERNET_FLAG_NO_AUTO_REDIRECT;
         if (uc.nScheme == INTERNET_SCHEME_HTTPS)
             flags |= INTERNET_FLAG_SECURE;
 
