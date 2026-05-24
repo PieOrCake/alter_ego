@@ -2476,6 +2476,71 @@ namespace AlterEgo {
         return SaveBuildLibrary();
     }
 
+    // Serialize a single SavedBuild to JSON. Used by SaveBuildLibrary and
+    // ExportBuildLibraryToFile so the on-disk format stays in lockstep.
+    static json SerializeSavedBuild(const SavedBuild& b) {
+        json bj;
+        bj["id"] = b.id;
+        bj["name"] = b.name;
+        bj["chat_link"] = b.chat_link;
+        if (!b.ae2_code.empty()) bj["ae2_code"] = b.ae2_code;
+        bj["profession"] = b.profession;
+        bj["game_mode"] = GameModeToStr(b.game_mode);
+        bj["notes"] = b.notes;
+        bj["created"] = (int64_t)b.created;
+
+        json specs = json::array();
+        for (int i = 0; i < 3; i++) {
+            json sj;
+            sj["id"] = b.specializations[i].spec_id;
+            sj["traits"] = {b.specializations[i].traits[0],
+                            b.specializations[i].traits[1],
+                            b.specializations[i].traits[2]};
+            specs.push_back(sj);
+        }
+        bj["specializations"] = specs;
+
+        auto skillBarToJson = [](const SkillBar& sb) -> json {
+            json sj;
+            sj["heal"] = sb.heal;
+            sj["utilities"] = {sb.utilities[0], sb.utilities[1], sb.utilities[2]};
+            sj["elite"] = sb.elite;
+            return sj;
+        };
+        bj["skills"] = skillBarToJson(b.terrestrial_skills);
+        bj["aquatic_skills"] = skillBarToJson(b.aquatic_skills);
+
+        bj["pets"] = {b.pets.terrestrial[0], b.pets.terrestrial[1],
+                      b.pets.aquatic[0], b.pets.aquatic[1]};
+        bj["legend_codes"] = {b.legend_codes[0], b.legend_codes[1],
+                              b.legend_codes[2], b.legend_codes[3]};
+        if (!b.weapons.empty()) bj["weapons"] = b.weapons;
+
+        if (!b.gear.empty()) {
+            json gearJ = json::object();
+            for (const auto& [slot, gs] : b.gear) {
+                json gsj;
+                gsj["stat_id"] = gs.stat_id;
+                gsj["stat_name"] = gs.stat_name;
+                if (!gs.rune.empty()) gsj["rune"] = gs.rune;
+                if (gs.rune_id != 0) gsj["rune_id"] = gs.rune_id;
+                if (!gs.sigil.empty()) gsj["sigil"] = gs.sigil;
+                if (gs.sigil_id != 0) gsj["sigil_id"] = gs.sigil_id;
+                if (!gs.sigil2.empty()) gsj["sigil2"] = gs.sigil2;
+                if (gs.sigil2_id != 0) gsj["sigil2_id"] = gs.sigil2_id;
+                if (!gs.infusion.empty()) gsj["infusion"] = gs.infusion;
+                if (!gs.weapon_type.empty()) gsj["weapon_type"] = gs.weapon_type;
+                gearJ[slot] = gsj;
+            }
+            bj["gear"] = gearJ;
+        }
+        if (!b.rune_name.empty()) bj["rune_name"] = b.rune_name;
+        if (b.rune_id != 0) bj["rune_id"] = b.rune_id;
+        if (!b.relic_name.empty()) bj["relic_name"] = b.relic_name;
+        if (b.relic_id != 0) bj["relic_id"] = b.relic_id;
+        return bj;
+    }
+
     bool GW2API::SaveBuildLibrary() {
         EnsureDataDirectory();
         std::string path = GetDataDirectory() + "/build_library.json";
@@ -2484,70 +2549,7 @@ namespace AlterEgo {
         {
             std::lock_guard<std::mutex> lock(s_mutex);
             json arr = json::array();
-            for (const auto& b : s_saved_builds) {
-                json bj;
-                bj["id"] = b.id;
-                bj["name"] = b.name;
-                bj["chat_link"] = b.chat_link;
-                if (!b.ae2_code.empty()) bj["ae2_code"] = b.ae2_code;
-                bj["profession"] = b.profession;
-                bj["game_mode"] = GameModeToStr(b.game_mode);
-                bj["notes"] = b.notes;
-                bj["created"] = (int64_t)b.created;
-
-                json specs = json::array();
-                for (int i = 0; i < 3; i++) {
-                    json sj;
-                    sj["id"] = b.specializations[i].spec_id;
-                    sj["traits"] = {b.specializations[i].traits[0],
-                                    b.specializations[i].traits[1],
-                                    b.specializations[i].traits[2]};
-                    specs.push_back(sj);
-                }
-                bj["specializations"] = specs;
-
-                auto skillBarToJson = [](const SkillBar& sb) -> json {
-                    json sj;
-                    sj["heal"] = sb.heal;
-                    sj["utilities"] = {sb.utilities[0], sb.utilities[1], sb.utilities[2]};
-                    sj["elite"] = sb.elite;
-                    return sj;
-                };
-                bj["skills"] = skillBarToJson(b.terrestrial_skills);
-                bj["aquatic_skills"] = skillBarToJson(b.aquatic_skills);
-
-                bj["pets"] = {b.pets.terrestrial[0], b.pets.terrestrial[1],
-                              b.pets.aquatic[0], b.pets.aquatic[1]};
-                bj["legend_codes"] = {b.legend_codes[0], b.legend_codes[1],
-                                      b.legend_codes[2], b.legend_codes[3]};
-                if (!b.weapons.empty()) bj["weapons"] = b.weapons;
-
-                // Gear data
-                if (!b.gear.empty()) {
-                    json gearJ = json::object();
-                    for (const auto& [slot, gs] : b.gear) {
-                        json gsj;
-                        gsj["stat_id"] = gs.stat_id;
-                        gsj["stat_name"] = gs.stat_name;
-                        if (!gs.rune.empty()) gsj["rune"] = gs.rune;
-                        if (gs.rune_id != 0) gsj["rune_id"] = gs.rune_id;
-                        if (!gs.sigil.empty()) gsj["sigil"] = gs.sigil;
-                        if (gs.sigil_id != 0) gsj["sigil_id"] = gs.sigil_id;
-                        if (!gs.sigil2.empty()) gsj["sigil2"] = gs.sigil2;
-                        if (gs.sigil2_id != 0) gsj["sigil2_id"] = gs.sigil2_id;
-                        if (!gs.infusion.empty()) gsj["infusion"] = gs.infusion;
-                        if (!gs.weapon_type.empty()) gsj["weapon_type"] = gs.weapon_type;
-                        gearJ[slot] = gsj;
-                    }
-                    bj["gear"] = gearJ;
-                }
-                if (!b.rune_name.empty()) bj["rune_name"] = b.rune_name;
-                if (b.rune_id != 0) bj["rune_id"] = b.rune_id;
-                if (!b.relic_name.empty()) bj["relic_name"] = b.relic_name;
-                if (b.relic_id != 0) bj["relic_id"] = b.relic_id;
-
-                arr.push_back(bj);
-            }
+            for (const auto& b : s_saved_builds) arr.push_back(SerializeSavedBuild(b));
             j["builds"] = arr;
         }
 
@@ -2558,112 +2560,179 @@ namespace AlterEgo {
         return true;
     }
 
+    // Parse one build entry. Returns false if the entry is missing required fields.
+    static bool DeserializeSavedBuild(const json& bj, SavedBuild& b) {
+        if (!bj.is_object()) return false;
+        b.id = bj.value("id", "");
+        b.name = bj.value("name", "");
+        b.chat_link = bj.value("chat_link", "");
+        b.ae2_code = bj.value("ae2_code", "");
+        b.profession = bj.value("profession", "");
+        b.game_mode = StrToGameMode(bj.value("game_mode", "PvE"));
+        b.notes = bj.value("notes", "");
+        b.created = bj.value("created", (int64_t)0);
+
+        if (bj.contains("specializations") && bj["specializations"].is_array()) {
+            int idx = 0;
+            for (const auto& sj : bj["specializations"]) {
+                if (idx >= 3) break;
+                b.specializations[idx].spec_id = sj.value("id", (uint32_t)0);
+                if (sj.contains("traits") && sj["traits"].is_array()) {
+                    int ti = 0;
+                    for (const auto& t : sj["traits"]) {
+                        if (ti >= 3) break;
+                        b.specializations[idx].traits[ti] = t.get<int>();
+                        ti++;
+                    }
+                }
+                idx++;
+            }
+        }
+
+        auto parseSkillBarJson = [](const json& sj) -> SkillBar {
+            SkillBar sb;
+            sb.heal = sj.value("heal", (uint32_t)0);
+            if (sj.contains("utilities") && sj["utilities"].is_array()) {
+                int i = 0;
+                for (const auto& u : sj["utilities"]) {
+                    if (i >= 3) break;
+                    sb.utilities[i] = u.get<uint32_t>();
+                    i++;
+                }
+            }
+            sb.elite = sj.value("elite", (uint32_t)0);
+            return sb;
+        };
+
+        if (bj.contains("skills"))
+            b.terrestrial_skills = parseSkillBarJson(bj["skills"]);
+        if (bj.contains("aquatic_skills"))
+            b.aquatic_skills = parseSkillBarJson(bj["aquatic_skills"]);
+
+        if (bj.contains("pets") && bj["pets"].is_array() && bj["pets"].size() >= 4) {
+            b.pets.terrestrial[0] = bj["pets"][0].get<uint32_t>();
+            b.pets.terrestrial[1] = bj["pets"][1].get<uint32_t>();
+            b.pets.aquatic[0] = bj["pets"][2].get<uint32_t>();
+            b.pets.aquatic[1] = bj["pets"][3].get<uint32_t>();
+        }
+        if (bj.contains("legend_codes") && bj["legend_codes"].is_array() && bj["legend_codes"].size() >= 4) {
+            for (int i = 0; i < 4; i++)
+                b.legend_codes[i] = bj["legend_codes"][i].get<uint8_t>();
+        }
+        if (bj.contains("weapons") && bj["weapons"].is_array()) {
+            for (const auto& w : bj["weapons"])
+                b.weapons.push_back(w.get<uint32_t>());
+        }
+
+        if (bj.contains("gear") && bj["gear"].is_object()) {
+            for (auto it = bj["gear"].begin(); it != bj["gear"].end(); ++it) {
+                BuildGearSlot gs;
+                gs.slot = it.key();
+                gs.stat_id = it.value().value("stat_id", (uint32_t)0);
+                gs.stat_name = it.value().value("stat_name", "");
+                gs.rune = it.value().value("rune", "");
+                gs.rune_id = it.value().value("rune_id", (uint32_t)0);
+                gs.sigil = it.value().value("sigil", "");
+                gs.sigil_id = it.value().value("sigil_id", (uint32_t)0);
+                gs.sigil2 = it.value().value("sigil2", "");
+                gs.sigil2_id = it.value().value("sigil2_id", (uint32_t)0);
+                gs.infusion = it.value().value("infusion", "");
+                gs.weapon_type = it.value().value("weapon_type", "");
+                b.gear[gs.slot] = gs;
+            }
+        }
+        b.rune_name = bj.value("rune_name", "");
+        b.rune_id = bj.value("rune_id", (uint32_t)0);
+        b.relic_name = bj.value("relic_name", "");
+        b.relic_id = bj.value("relic_id", (uint32_t)0);
+        return true;
+    }
+
     bool GW2API::LoadBuildLibrary() {
         std::string path = GetDataDirectory() + "/build_library.json";
         std::ifstream file(path);
         if (!file.is_open()) return false;
-
         try {
-            json j;
-            file >> j;
-
+            json j; file >> j;
             std::lock_guard<std::mutex> lock(s_mutex);
             s_saved_builds.clear();
-
             if (j.contains("builds") && j["builds"].is_array()) {
                 for (const auto& bj : j["builds"]) {
                     SavedBuild b;
-                    b.id = bj.value("id", "");
-                    b.name = bj.value("name", "");
-                    b.chat_link = bj.value("chat_link", "");
-                    b.ae2_code = bj.value("ae2_code", "");
-                    b.profession = bj.value("profession", "");
-                    b.game_mode = StrToGameMode(bj.value("game_mode", "PvE"));
-                    b.notes = bj.value("notes", "");
-                    b.created = bj.value("created", (int64_t)0);
-
-                    if (bj.contains("specializations") && bj["specializations"].is_array()) {
-                        int idx = 0;
-                        for (const auto& sj : bj["specializations"]) {
-                            if (idx >= 3) break;
-                            b.specializations[idx].spec_id = sj.value("id", (uint32_t)0);
-                            if (sj.contains("traits") && sj["traits"].is_array()) {
-                                int ti = 0;
-                                for (const auto& t : sj["traits"]) {
-                                    if (ti >= 3) break;
-                                    b.specializations[idx].traits[ti] = t.get<int>();
-                                    ti++;
-                                }
-                            }
-                            idx++;
-                        }
-                    }
-
-                    auto parseSkillBarJson = [](const json& sj) -> SkillBar {
-                        SkillBar sb;
-                        sb.heal = sj.value("heal", (uint32_t)0);
-                        if (sj.contains("utilities") && sj["utilities"].is_array()) {
-                            int i = 0;
-                            for (const auto& u : sj["utilities"]) {
-                                if (i >= 3) break;
-                                sb.utilities[i] = u.get<uint32_t>();
-                                i++;
-                            }
-                        }
-                        sb.elite = sj.value("elite", (uint32_t)0);
-                        return sb;
-                    };
-
-                    if (bj.contains("skills"))
-                        b.terrestrial_skills = parseSkillBarJson(bj["skills"]);
-                    if (bj.contains("aquatic_skills"))
-                        b.aquatic_skills = parseSkillBarJson(bj["aquatic_skills"]);
-
-                    if (bj.contains("pets") && bj["pets"].is_array() && bj["pets"].size() >= 4) {
-                        b.pets.terrestrial[0] = bj["pets"][0].get<uint32_t>();
-                        b.pets.terrestrial[1] = bj["pets"][1].get<uint32_t>();
-                        b.pets.aquatic[0] = bj["pets"][2].get<uint32_t>();
-                        b.pets.aquatic[1] = bj["pets"][3].get<uint32_t>();
-                    }
-                    if (bj.contains("legend_codes") && bj["legend_codes"].is_array() && bj["legend_codes"].size() >= 4) {
-                        for (int i = 0; i < 4; i++)
-                            b.legend_codes[i] = bj["legend_codes"][i].get<uint8_t>();
-                    }
-                    if (bj.contains("weapons") && bj["weapons"].is_array()) {
-                        for (const auto& w : bj["weapons"])
-                            b.weapons.push_back(w.get<uint32_t>());
-                    }
-
-                    // Gear data
-                    if (bj.contains("gear") && bj["gear"].is_object()) {
-                        for (auto it = bj["gear"].begin(); it != bj["gear"].end(); ++it) {
-                            BuildGearSlot gs;
-                            gs.slot = it.key();
-                            gs.stat_id = it.value().value("stat_id", (uint32_t)0);
-                            gs.stat_name = it.value().value("stat_name", "");
-                            gs.rune = it.value().value("rune", "");
-                            gs.rune_id = it.value().value("rune_id", (uint32_t)0);
-                            gs.sigil = it.value().value("sigil", "");
-                            gs.sigil_id = it.value().value("sigil_id", (uint32_t)0);
-                            gs.sigil2 = it.value().value("sigil2", "");
-                            gs.sigil2_id = it.value().value("sigil2_id", (uint32_t)0);
-                            gs.infusion = it.value().value("infusion", "");
-                            gs.weapon_type = it.value().value("weapon_type", "");
-                            b.gear[gs.slot] = gs;
-                        }
-                    }
-                    b.rune_name = bj.value("rune_name", "");
-                    b.rune_id = bj.value("rune_id", (uint32_t)0);
-                    b.relic_name = bj.value("relic_name", "");
-                    b.relic_id = bj.value("relic_id", (uint32_t)0);
-
-                    s_saved_builds.push_back(std::move(b));
+                    if (DeserializeSavedBuild(bj, b))
+                        s_saved_builds.push_back(std::move(b));
                 }
             }
             return true;
         } catch (...) {
             return false;
         }
+    }
+
+    bool GW2API::ExportBuildLibraryToFile(const std::string& path) {
+        json j;
+        {
+            std::lock_guard<std::mutex> lock(s_mutex);
+            json arr = json::array();
+            for (const auto& b : s_saved_builds) arr.push_back(SerializeSavedBuild(b));
+            j["builds"] = arr;
+            j["format"] = "alter_ego_build_library";
+            j["version"] = 1;
+            j["exported_at"] = (int64_t)std::time(nullptr);
+            j["count"] = (int)s_saved_builds.size();
+        }
+        std::ofstream file(path);
+        if (!file.is_open()) return false;
+        file << j.dump(2);
+        file.flush();
+        return true;
+    }
+
+    bool GW2API::ImportBuildLibraryFromFile(const std::string& path, bool replaceAll,
+                                            int& addedOut, int& skippedOut, std::string& errOut) {
+        addedOut = 0; skippedOut = 0; errOut.clear();
+        std::ifstream file(path);
+        if (!file.is_open()) { errOut = "Could not open file."; return false; }
+
+        std::vector<SavedBuild> parsed;
+        try {
+            json j; file >> j;
+            if (!j.contains("builds") || !j["builds"].is_array()) {
+                errOut = "File does not contain a builds array.";
+                return false;
+            }
+            for (const auto& bj : j["builds"]) {
+                SavedBuild b;
+                if (DeserializeSavedBuild(bj, b)) parsed.push_back(std::move(b));
+            }
+        } catch (const std::exception& e) {
+            errOut = std::string("JSON parse error: ") + e.what();
+            return false;
+        }
+
+        if (parsed.empty()) {
+            errOut = "No valid builds found in file.";
+            return false;
+        }
+
+        {
+            std::lock_guard<std::mutex> lock(s_mutex);
+            if (replaceAll) {
+                s_saved_builds.clear();
+                for (auto& b : parsed) s_saved_builds.push_back(std::move(b));
+                addedOut = (int)s_saved_builds.size();
+            } else {
+                std::unordered_set<std::string> existingIds;
+                for (const auto& b : s_saved_builds) existingIds.insert(b.id);
+                for (auto& b : parsed) {
+                    if (existingIds.count(b.id)) { skippedOut++; continue; }
+                    s_saved_builds.push_back(std::move(b));
+                    addedOut++;
+                }
+            }
+        }
+        SaveBuildLibrary();
+        return true;
     }
 
     // =========================================================================

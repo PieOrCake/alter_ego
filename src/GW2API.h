@@ -408,6 +408,15 @@ namespace AlterEgo {
         static bool ReorderSavedBuild(int fromIdx, int toIdx);
         static bool LoadBuildLibrary();
         static bool SaveBuildLibrary();
+        // Write the whole library to an arbitrary path as JSON.
+        static bool ExportBuildLibraryToFile(const std::string& path);
+        // Load a previously exported library file. If replaceAll is true the
+        // current library is wiped first; otherwise builds are appended,
+        // skipping any whose id already exists. Returns false (and sets
+        // errOut) only if the file can't be opened or contains nothing valid.
+        static bool ImportBuildLibraryFromFile(const std::string& path, bool replaceAll,
+                                               int& addedOut, int& skippedOut,
+                                               std::string& errOut);
 
         // --- Palette ID mapping ---
         static uint32_t GetSkillIdFromPalette(const std::string& profession, uint16_t palette_id);

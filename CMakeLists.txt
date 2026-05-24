@@ -66,6 +66,7 @@ target_link_libraries(AlterEgo
     gdi32
     wininet
     shell32
+    comdlg32
 )
 
 # Module definition file for clean DLL export
