@@ -38,7 +38,7 @@
 #define V_MAJOR 1
 #define V_MINOR 0
 #define V_BUILD 1
-#define V_REVISION 0
+#define V_REVISION 1
 
 // Quick Access icon identifiers
 #define QA_ID "QA_ALTER_EGO"
