@@ -1046,6 +1046,7 @@ static std::string BountyToStrikeName(const std::string& name) {
         {"Guardian's Glade",                          "Guardian's Glade"},
         // Common boss-name aliases that resolve to the same banner
         {"Voice and Claw",                            "Voice of the Fallen and Claw of the Fallen"},
+        {"Voice and Claw of the Fallen",              "Voice of the Fallen and Claw of the Fallen"},
         {"Fraenir",                                   "Fraenir of Jormag"},
         {"Whisper",                                   "Whisper of Jormag"},
         {"Mai Trin",                                  "Aetherblade Hideout"},
@@ -1955,19 +1956,28 @@ static void RenderClearsTabContent(const std::string& dailyResetStr, const std::
 
             uint32_t wingId = BountyBossToWing(display);
             std::string strikeName = wingId ? std::string() : BountyToStrikeName(display);
-            std::string subtitle = "Raid Bounty";
+            std::string subtitle;
             std::string bannerKey;
             ThemeGrad theme;
             if (wingId) {
-                const char* wingFull = BountyWingFullName(wingId);
-                if (wingFull && *wingFull) { subtitle += " \xC2\xB7 "; subtitle += wingFull; }
+                const char* wingShort = BountyWingShortName(wingId);
+                const char* wingFull  = BountyWingFullName(wingId);
+                if (wingShort && *wingShort) { subtitle = wingShort; }
+                if (wingFull && *wingFull) {
+                    if (!subtitle.empty()) subtitle += " \xC2\xB7 ";
+                    subtitle += wingFull;
+                }
+                if (subtitle.empty()) subtitle = "Raid Bounty";
                 bannerKey = "wing:" + std::to_string(wingId);
                 theme = WingTheme(wingId);
             } else if (!strikeName.empty()) {
-                subtitle += " \xC2\xB7 Strike Mission";
+                subtitle = "Strike Mission";
+                const char* zone = StrikeZone(strikeName);
+                if (zone && *zone) { subtitle += " \xC2\xB7 "; subtitle += zone; }
                 bannerKey = "strike:" + strikeName;
                 theme = StrikeTheme(strikeName);
             } else {
+                subtitle = "Raid Bounty";
                 theme = ThemeGrad{ IM_COL32(60, 44, 20, 255), IM_COL32(200, 154, 74, 255) };
             }
 
