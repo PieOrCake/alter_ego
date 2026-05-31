@@ -38,7 +38,7 @@
 #define V_MAJOR 1
 #define V_MINOR 0
 #define V_BUILD 1
-#define V_REVISION 1
+#define V_REVISION 2
 
 // Quick Access icon identifiers
 #define QA_ID "QA_ALTER_EGO"
@@ -7380,13 +7380,61 @@ static void RenderSavedBuildPreview(const AlterEgo::SavedBuild& build, bool show
         sub += GameModeLabel(build.game_mode);
         ImGui::TextColored(ImVec4(0.55f, 0.50f, 0.40f, 1.0f), "%s", sub.c_str());
 
-        // Edit button overlaid in the top-right of the header card
+        // Edit / Share / Delete buttons overlaid in the top-right of the header card
         if (showEditButton) {
-            const float btnW = 50.0f;
-            const float btnGap = 8.0f;
             ImVec2 prevCursor = ImGui::GetCursorScreenPos();
-            ImGui::SetCursorScreenPos(ImVec2(pos.x + w - btnW - btnGap, pos.y + 6.0f));
+            ImGuiStyle& style = ImGui::GetStyle();
+            auto btnWidth = [&](const char* t){ return ImGui::CalcTextSize(t).x + style.FramePadding.x * 2.0f; };
+            const float gap = 4.0f;
+            float wDel   = btnWidth("Delete");
+            float wShare = btnWidth("Share");
+            float wEdit  = btnWidth("Edit");
+            float totalW = wDel + gap + wShare + gap + wEdit;
+            float startX = pos.x + w - totalW - 8.0f;
+            float btnY   = pos.y + 6.0f;
+
+            ImGui::SetCursorScreenPos(ImVec2(startX, btnY));
+            if (ImGui::SmallButton("Share##headerBuild")) ImGui::OpenPopup("##share_menu");
+
+            ImGui::SetCursorScreenPos(ImVec2(startX + wShare + gap, btnY));
             if (ImGui::SmallButton("Edit##headerBuild")) g_LibEditMode = true;
+
+            ImGui::SetCursorScreenPos(ImVec2(startX + wShare + gap + wEdit + gap, btnY));
+            ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.5f, 0.5f, 1.0f));
+            if (ImGui::SmallButton("Delete##headerBuild")) g_LibCtxDeleteIdx = g_LibSelectedIdx;
+            ImGui::PopStyleColor();
+
+            // Share menu: the three share actions that used to live in the
+            // (now-removed) right-click context menu.
+            if (ImGui::BeginPopup("##share_menu")) {
+                if (ImGui::Selectable("Copy build-only chat link")) {
+                    CopyToClipboard(build.chat_link);
+                    if (APIDefs) APIDefs->GUI_SendAlert("Build link copied to clipboard!");
+                }
+                if (ImGui::Selectable("Copy entire build + equipment code")) {
+                    std::string ae2 = ExportBuildToAE2(build);
+                    if (!ae2.empty()) {
+                        CopyToClipboard(ae2);
+                        char info[196];
+                        snprintf(info, sizeof(info), "Build code copied to clipboard (%d chars). Paste in GW2 chat to share!", (int)ae2.size());
+                        if (APIDefs) APIDefs->GUI_SendAlert(info);
+                    } else {
+                        if (APIDefs) APIDefs->GUI_SendAlert("Failed to generate build code. Build may be missing a chat link.");
+                    }
+                }
+                if (!g_RelaySending && ImGui::Selectable("Share complete build via one-time code")) {
+                    if (build.chat_link.empty()) {
+                        if (APIDefs) APIDefs->GUI_SendAlert("Cannot send: build has no chat link.");
+                    } else {
+                        SendBuildToRelay(build);
+                    }
+                }
+                if (g_RelaySending) {
+                    ImGui::TextColored(ImVec4(0.6f, 0.6f, 0.6f, 1.0f), "Sending...");
+                }
+                ImGui::EndPopup();
+            }
+
             ImGui::SetCursorScreenPos(prevCursor);
         }
 
@@ -8113,12 +8161,6 @@ static void RenderBuildLibrary() {
             ImGui::InvisibleButton("##buildrow", ImVec2(availW, rowH));
             bool hovered = ImGui::IsItemHovered();
             bool clicked = ImGui::IsItemClicked();
-            // Open the right-click menu here, while the row item is freshly
-            // submitted and hover is reliable. BeginPopupContextItem()'s
-            // implicit "last item" binding stopped working once the drag-drop
-            // source was added between the row and the menu call below.
-            if (hovered && ImGui::IsMouseReleased(ImGuiMouseButton_Right))
-                ImGui::OpenPopup("##build_ctx");
             // Record rect for drag-and-drop (needs to wrap the InvisibleButton)
             ImVec2 rMin = cmin, rMax = cmax;
             libItemRects.push_back({ rMin.y, rMax.y, i });
@@ -8286,42 +8328,6 @@ static void RenderBuildLibrary() {
                 ImGui::SetDragDropPayload("BUILD_REORDER", &i, sizeof(int));
                 ImGui::Text("%s", b.name.c_str());
                 ImGui::EndDragDropSource();
-            }
-
-            // Right-click context menu (opened explicitly above)
-            if (ImGui::BeginPopup("##build_ctx")) {
-                if (ImGui::Selectable("Copy build-only chat link")) {
-                    CopyToClipboard(b.chat_link);
-                    if (APIDefs) APIDefs->GUI_SendAlert("Build link copied to clipboard!");
-                }
-                if (ImGui::Selectable("Copy entire build + equipment code")) {
-                    std::string ae2 = ExportBuildToAE2(b);
-                    if (!ae2.empty()) {
-                        CopyToClipboard(ae2);
-                        char info[196];
-                        snprintf(info, sizeof(info), "Build code copied to clipboard (%d chars). Paste in GW2 chat to share!", (int)ae2.size());
-                        if (APIDefs) APIDefs->GUI_SendAlert(info);
-                    } else {
-                        if (APIDefs) APIDefs->GUI_SendAlert("Failed to generate build code. Build may be missing a chat link.");
-                    }
-                }
-                if (!g_RelaySending && ImGui::Selectable("Share complete build via one-time code")) {
-                    if (b.chat_link.empty()) {
-                        if (APIDefs) APIDefs->GUI_SendAlert("Cannot send: build has no chat link.");
-                    } else {
-                        SendBuildToRelay(b);
-                    }
-                }
-                if (g_RelaySending) {
-                    ImGui::TextColored(ImVec4(0.6f, 0.6f, 0.6f, 1.0f), "Sending...");
-                }
-                ImGui::Separator();
-                ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.3f, 0.3f, 1.0f));
-                if (ImGui::Selectable("Delete this build")) {
-                    g_LibCtxDeleteIdx = i;
-                }
-                ImGui::PopStyleColor();
-                ImGui::EndPopup();
             }
 
             ImGui::PopID();
