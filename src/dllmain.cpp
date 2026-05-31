@@ -8113,6 +8113,12 @@ static void RenderBuildLibrary() {
             ImGui::InvisibleButton("##buildrow", ImVec2(availW, rowH));
             bool hovered = ImGui::IsItemHovered();
             bool clicked = ImGui::IsItemClicked();
+            // Open the right-click menu here, while the row item is freshly
+            // submitted and hover is reliable. BeginPopupContextItem()'s
+            // implicit "last item" binding stopped working once the drag-drop
+            // source was added between the row and the menu call below.
+            if (hovered && ImGui::IsMouseReleased(ImGuiMouseButton_Right))
+                ImGui::OpenPopup("##build_ctx");
             // Record rect for drag-and-drop (needs to wrap the InvisibleButton)
             ImVec2 rMin = cmin, rMax = cmax;
             libItemRects.push_back({ rMin.y, rMax.y, i });
@@ -8282,8 +8288,8 @@ static void RenderBuildLibrary() {
                 ImGui::EndDragDropSource();
             }
 
-            // Right-click context menu
-            if (ImGui::BeginPopupContextItem()) {
+            // Right-click context menu (opened explicitly above)
+            if (ImGui::BeginPopup("##build_ctx")) {
                 if (ImGui::Selectable("Copy build-only chat link")) {
                     CopyToClipboard(b.chat_link);
                     if (APIDefs) APIDefs->GUI_SendAlert("Build link copied to clipboard!");
