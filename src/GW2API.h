@@ -341,6 +341,10 @@ namespace AlterEgo {
         static const std::vector<Character>& GetCharacters();
         static const Character* GetCharacter(const std::string& name);
         static const std::vector<std::string>& GetPendingCharNames();
+        // Remove cached characters that are no longer in the current roster
+        // (s_pending_char_names). Call after a full character-list fetch succeeds
+        // so characters deleted in-game stop appearing in the list.
+        static void ReconcileCharactersWithRoster();
 
         // Skin unlock status (from H&S cache)
         static bool IsSkinUnlocked(uint32_t skin_id);  // true if unlocked, false if unknown/locked

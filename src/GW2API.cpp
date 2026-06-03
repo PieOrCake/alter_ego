@@ -478,6 +478,14 @@ namespace AlterEgo {
     void GW2API::RequestCharacterList() {
         if (!s_api) return;
 
+        // Re-sync the account registry from H&S first, so the roster reflects
+        // characters added or deleted in-game since this session started. H&S
+        // dispatches synchronously, so s_accounts is fully refreshed (via
+        // OnAccountsResponse) before we build the pending roster below. Called
+        // here, before any lock is taken, to avoid deadlocking on synchronous
+        // event dispatch.
+        QueryAccounts();
+
         std::string acctName;
         bool needsFetch = false;
         {
@@ -1461,6 +1469,32 @@ namespace AlterEgo {
 
     const std::vector<std::string>& GW2API::GetPendingCharNames() {
         return s_pending_char_names;
+    }
+
+    void GW2API::ReconcileCharactersWithRoster() {
+        bool changed = false;
+        {
+            std::lock_guard<std::mutex> lock(s_mutex);
+            // Only reconcile against a non-empty roster — an empty list usually
+            // means the fetch failed, and we must not wipe the cache in that case.
+            if (s_pending_char_names.empty()) return;
+            std::set<std::string> roster(s_pending_char_names.begin(),
+                                         s_pending_char_names.end());
+            size_t before = s_characters.size();
+            s_characters.erase(
+                std::remove_if(s_characters.begin(), s_characters.end(),
+                    [&](const Character& c) {
+                        return roster.find(c.name) == roster.end();
+                    }),
+                s_characters.end());
+            changed = (s_characters.size() != before);
+            if (changed) s_has_character_data = !s_characters.empty();
+        }
+        if (changed) {
+            if (s_api) s_api->Log(LOGL_INFO, "AlterEgo",
+                "Reconciled character cache with roster (removed deleted characters).");
+            SaveCharacterData();
+        }
     }
 
     // =========================================================================

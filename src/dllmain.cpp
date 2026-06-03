@@ -38,7 +38,7 @@
 #define V_MAJOR 1
 #define V_MINOR 0
 #define V_BUILD 1
-#define V_REVISION 2
+#define V_REVISION 3
 
 // Quick Access icon identifiers
 #define QA_ID "QA_ALTER_EGO"
@@ -13363,6 +13363,11 @@ void AddonRender() {
             if (g_RefreshListFetching &&
                 AlterEgo::GW2API::GetFetchStatus() != AlterEgo::FetchStatus::InProgress) {
                 g_RefreshListFetching = false;
+                // Prune any cached characters deleted in-game now that we have a
+                // fresh, authoritative roster. Only on success — an errored fetch
+                // must not wipe the cache.
+                if (AlterEgo::GW2API::GetFetchStatus() == AlterEgo::FetchStatus::Success)
+                    AlterEgo::GW2API::ReconcileCharactersWithRoster();
                 const auto& names = AlterEgo::GW2API::GetPendingCharNames();
                 if (!names.empty()) {
                     // Filter by selected account if applicable
