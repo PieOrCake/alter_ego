@@ -937,6 +937,24 @@ static bool g_ToastPosInitialized = false;
 static bool g_ToastNeedsFocus = false;
 static bool g_ChatAddonConnected = false; // true once we receive any EV_CHAT:Message
 
+// =========================================================================
+// Pie UI inter-addon bridge — presence handshake + explicit build import
+// Mirror side of ../pie_ui/src/chat/AlterEgoBridge. When Pie UI is present it
+// renders chat build codes as clickable links, so AE suppresses its own
+// auto-toast on detection; an explicit click in Pie raises IMPORT_BUILD, which
+// AE surfaces as the same toast for confirmation.
+// =========================================================================
+#define EV_PIE_UI_READY            "EV_PIE_UI_READY"
+#define EV_PIE_UI_PING             "EV_PIE_UI_PING"
+#define EV_ALTER_EGO_READY         "EV_ALTER_EGO_READY"
+#define EV_ALTER_EGO_PING          "EV_ALTER_EGO_PING"
+#define EV_ALTER_EGO_IMPORT_BUILD  "EV_ALTER_EGO_IMPORT_BUILD"
+
+static std::atomic<bool> g_PieUIPresent{false};
+static void OnPieUIReady(void* eventArgs);
+static void OnAlterEgoPing(void* eventArgs);
+static void OnPieImportBuild(void* eventArgs);
+
 static void OnEvChatMessage(void* eventArgs);
 static void PushGW2Theme();
 static void PopGW2Theme();
@@ -5419,7 +5437,9 @@ static void OnEvChatMessage(void* eventArgs) {
                                 }
                             }
 
-                            {
+                            // Suppress the auto-toast when Pie UI is present — it renders
+                            // chat build codes as clickable links and imports explicitly.
+                            if (!g_PieUIPresent.load()) {
                                 std::lock_guard<std::mutex> lock(g_BuildToastMutex);
                                 g_BuildToast.active = true;
                                 g_BuildToast.sender = sender;
@@ -5483,7 +5503,8 @@ static void OnEvChatMessage(void* eventArgs) {
                 }
             }
 
-            {
+            // Suppress the auto-toast when Pie UI is present (see AE2 branch above).
+            if (!g_PieUIPresent.load()) {
                 std::lock_guard<std::mutex> lock(g_BuildToastMutex);
                 g_BuildToast.active = true;
                 g_BuildToast.sender = sender;
@@ -5579,10 +5600,12 @@ static void RenderBuildToast() {
         ImGui::Separator();
         ImGui::Spacing();
 
-        // Sender + profession info
-        ImGui::Text("From:");
-        ImGui::SameLine();
-        ImGui::TextColored(ImVec4(0.4f, 0.8f, 1.0f, 1.0f), "%s", g_BuildToast.sender.c_str());
+        // Sender + profession info (no sender on an explicit Pie UI hand-off)
+        if (!g_BuildToast.sender.empty()) {
+            ImGui::Text("From:");
+            ImGui::SameLine();
+            ImGui::TextColored(ImVec4(0.4f, 0.8f, 1.0f, 1.0f), "%s", g_BuildToast.sender.c_str());
+        }
 
         ImGui::Text("Build:");
         ImGui::SameLine();
@@ -5612,7 +5635,8 @@ static void RenderBuildToast() {
             std::string buildName = g_BuildToast.spec_name.empty()
                 ? g_BuildToast.profession
                 : g_BuildToast.spec_name;
-            buildName += " (" + g_BuildToast.sender + ")";
+            if (!g_BuildToast.sender.empty())
+                buildName += " (" + g_BuildToast.sender + ")";
 
             AlterEgo::SavedBuild sb;
             bool imported = false;
@@ -5674,6 +5698,85 @@ static void RenderBuildToast() {
 
     ImGui::PopStyleVar(2);
     ImGui::PopStyleColor(1);
+}
+
+// =========================================================================
+// Pie UI bridge handlers
+// =========================================================================
+
+// Pie UI announced itself (on its load, or replying to our ping).
+static void OnPieUIReady(void* /*eventArgs*/) {
+    g_PieUIPresent.store(true);
+}
+
+// Pie UI (or any addon) is probing for Alter Ego — reply with our presence.
+static void OnAlterEgoPing(void* /*eventArgs*/) {
+    if (APIDefs && APIDefs->Events_Raise)
+        APIDefs->Events_Raise(EV_ALTER_EGO_READY, nullptr);
+}
+
+// User clicked a build link in Pie UI's chat. Payload is the full "AE2:..." code
+// (or a bare "[&...]" build link). Surface it via the build toast for confirmation —
+// the toast's Import button does the actual import. Runs on Pie UI's thread (Nexus
+// dispatches synchronously), so copy the payload immediately.
+static void OnPieImportBuild(void* eventArgs) {
+    if (!eventArgs) return;
+    std::string payload((const char*)eventArgs);
+    if (payload.empty()) return;
+
+    std::string ae2code, chatLink;
+    bool hasGear = false;
+
+    if (payload.rfind("AE2:", 0) == 0) {
+        ae2code = payload;
+        auto ae2data = AlterEgo::ChatLink::Base64Decode(payload.substr(4));
+        if (ae2data.size() >= 4 && (ae2data[0] == 2 || ae2data[0] == 3)) {
+            uint8_t flags = ae2data[1];
+            hasGear = (flags >> 3) & 1;
+            uint8_t linkLen = ae2data[2];
+            if (3 + (size_t)linkLen <= ae2data.size()) {
+                std::vector<uint8_t> linkBytes(ae2data.begin() + 3, ae2data.begin() + 3 + linkLen);
+                chatLink = "[&" + AlterEgo::ChatLink::Base64Encode(linkBytes.data(), linkBytes.size()) + "]";
+            }
+        }
+    } else if (payload.rfind("[&", 0) == 0) {
+        chatLink = payload;
+    } else {
+        return; // unrecognized payload
+    }
+    if (chatLink.empty()) return;
+
+    AlterEgo::DecodedBuildLink decoded;
+    if (!AlterEgo::ChatLink::DecodeBuild(chatLink, decoded)) return;
+
+    std::string profession = ProfessionFromCode(decoded.profession);
+    if (profession == "Unknown") return;
+
+    std::string specName;
+    for (int i = 2; i >= 0; i--) {
+        if (decoded.specs[i].spec_id != 0) {
+            const auto* si = AlterEgo::GW2API::GetSpecInfo(decoded.specs[i].spec_id);
+            if (si && si->elite) specName = si->name;
+            break;
+        }
+    }
+
+    {
+        std::lock_guard<std::mutex> lock(g_BuildToastMutex);
+        g_BuildToast.active = true;
+        g_BuildToast.sender.clear();        // no chat sender on an explicit Pie hand-off
+        g_BuildToast.chat_link = chatLink;
+        g_BuildToast.ae2_code = ae2code;    // empty if a bare [&...] link
+        g_BuildToast.profession = profession;
+        g_BuildToast.spec_name = specName;
+        g_BuildToast.channel = "Pie UI";
+        g_BuildToast.has_gear = hasGear;
+        g_ToastNeedsFocus = true;
+    }
+
+    // Pre-fetch palette data so the import is instant when the user confirms.
+    if (!AlterEgo::GW2API::HasPaletteData(profession))
+        AlterEgo::GW2API::FetchProfessionPaletteAsync(profession);
 }
 
 // Render a skill icon with tooltip
@@ -8783,6 +8886,12 @@ void AddonLoad(AddonAPI_t* aApi) {
     APIDefs->Events_Subscribe(EV_ALERT_UNLOCKED_SKIN, OnEvAlertSkinUnlocked);
     APIDefs->Events_Subscribe(EV_ALERT_ACHIEVEMENT_COMPLETED, OnEvAlertAchievementCompleted);
 
+    // Pie UI inter-addon bridge — subscribe before announcing so we catch Pie's
+    // synchronous reply to our ping.
+    APIDefs->Events_Subscribe(EV_ALTER_EGO_PING, OnAlterEgoPing);
+    APIDefs->Events_Subscribe(EV_ALTER_EGO_IMPORT_BUILD, OnPieImportBuild);
+    APIDefs->Events_Subscribe(EV_PIE_UI_READY, OnPieUIReady);
+
     // Subscribe to H&S events
     APIDefs->Events_Subscribe(EV_HOARD_PONG, AlterEgo::GW2API::OnHoardPong);
     APIDefs->Events_Subscribe(EV_HOARD_PONG, OnHoardPongForAch);
@@ -8797,6 +8906,11 @@ void AddonLoad(AddonAPI_t* aApi) {
     APIDefs->Events_Subscribe(EV_AE_ACH_PROGRESS_RESPONSE, OnAchProgressResponse);
     APIDefs->Events_Subscribe(EV_AE_ACCOUNTS_RESP, AlterEgo::GW2API::OnAccountsResponse);
     APIDefs->Events_Subscribe(EV_HOARD_ACCOUNTS_CHANGED, AlterEgo::GW2API::OnAccountsChanged);
+
+    // Pie UI bridge: announce AE (so an already-loaded Pie sees us) and probe for
+    // an already-loaded Pie (which replies EV_PIE_UI_READY).
+    APIDefs->Events_Raise(EV_ALTER_EGO_READY, nullptr);
+    APIDefs->Events_Raise(EV_PIE_UI_PING, nullptr);
 
     // Register render functions
     APIDefs->GUI_Register(RT_Render, AddonRender);
@@ -8898,6 +9012,11 @@ void AddonUnload() {
     // Unsubscribe Events: Alerts
     APIDefs->Events_Unsubscribe(EV_ALERT_UNLOCKED_SKIN, OnEvAlertSkinUnlocked);
     APIDefs->Events_Unsubscribe(EV_ALERT_ACHIEVEMENT_COMPLETED, OnEvAlertAchievementCompleted);
+
+    // Pie UI inter-addon bridge
+    APIDefs->Events_Unsubscribe(EV_ALTER_EGO_PING, OnAlterEgoPing);
+    APIDefs->Events_Unsubscribe(EV_ALTER_EGO_IMPORT_BUILD, OnPieImportBuild);
+    APIDefs->Events_Unsubscribe(EV_PIE_UI_READY, OnPieUIReady);
 
     // Unsubscribe H&S events
     APIDefs->Events_Unsubscribe(EV_HOARD_PONG, AlterEgo::GW2API::OnHoardPong);
