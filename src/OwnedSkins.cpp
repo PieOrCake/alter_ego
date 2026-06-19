@@ -5,6 +5,8 @@
 #include <cstring>
 #include <fstream>
 #include <filesystem>
+#include <memory>
+#include <chrono>
 
 using json = nlohmann::json;
 
@@ -31,7 +33,36 @@ namespace Skinventory {
     #define EV_SKINVENTORY_SKINS_RESPONSE "EV_SKINVENTORY_SKINS_RESPONSE"
     #define EV_SKINVENTORY_API_RESPONSE "EV_SKINVENTORY_API_RESPONSE"
 
+    // --- Single-shot backoff retry when H&S returns HOARD_STATUS_BUSY ---
+    // (proxy queue full / per-addon rate limit). We schedule ONE retry at a
+    // future time rather than spinning every frame. Driven from Tick().
+    namespace {
+        std::atomic<int>       g_retryKind{0};   // 0 = none, 1 = API query, 2 = batch query
+        std::atomic<long long> g_retryAtMs{0};   // steady_clock ms at which to retry
+
+        long long NowMs() {
+            return std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::steady_clock::now().time_since_epoch()).count();
+        }
+        void ScheduleRetry(int kind, uint32_t retry_after_ms) {
+            g_retryKind = kind;
+            g_retryAtMs = NowMs() + (retry_after_ms ? (long long)retry_after_ms : 1000LL);
+        }
+    }
+
     void OwnedSkins::Tick() {
+        // Fire a scheduled BUSY backoff retry once its delay has elapsed.
+        int kind = g_retryKind.load();
+        if (kind != 0 && g_retryAtMs.load() != 0 && NowMs() >= g_retryAtMs.load()) {
+            g_retryKind = 0;
+            g_retryAtMs = 0;
+            if (kind == 1) {
+                s_querying = false;        // allow RequestOwnedSkinsViaApi to re-enter
+                RequestOwnedSkinsViaApi();
+            } else if (kind == 2) {
+                SendNextBatch();           // resend current batch (s_batch_index unchanged)
+            }
+        }
         if (s_batch_pending.exchange(false)) {
             SendNextBatch();
         }
@@ -145,6 +176,7 @@ namespace Skinventory {
     void OwnedSkins::OnApiResponse(void* eventArgs) {
         if (!eventArgs) return;
         auto* resp = (HoardQueryApiResponse*)eventArgs;
+        std::unique_ptr<HoardQueryApiResponse> respGuard(resp); // caller owns the response
 
         if (resp->status == HOARD_STATUS_DENIED) {
             std::lock_guard<std::mutex> lock(s_mutex);
@@ -153,9 +185,10 @@ namespace Skinventory {
             return;
         }
 
-        if (resp->status == HOARD_STATUS_PENDING) {
+        if (resp->status == HOARD_STATUS_BUSY) {
+            ScheduleRetry(1, resp->retry_after_ms);
             std::lock_guard<std::mutex> lock(s_mutex);
-            s_status_message = "Waiting for Hoard & Seek permission approval...";
+            s_status_message = "Hoard & Seek busy, retrying shortly...";
             s_querying = false;
             return;
         }
@@ -262,6 +295,7 @@ namespace Skinventory {
     void OwnedSkins::OnSkinsResponse(void* eventArgs) {
         if (!eventArgs) return;
         auto* resp = (HoardQuerySkinsResponse*)eventArgs;
+        std::unique_ptr<HoardQuerySkinsResponse> respGuard(resp); // caller owns the response
 
         if (resp->status == HOARD_STATUS_DENIED) {
             std::lock_guard<std::mutex> lock(s_mutex);
@@ -270,10 +304,12 @@ namespace Skinventory {
             return;
         }
 
-        if (resp->status == HOARD_STATUS_PENDING) {
+        if (resp->status == HOARD_STATUS_BUSY) {
+            // Keep s_querying / s_batch_index unchanged — resend this same batch
+            // after the backoff delay (handled in Tick).
+            ScheduleRetry(2, resp->retry_after_ms);
             std::lock_guard<std::mutex> lock(s_mutex);
-            s_status_message = "Waiting for H&S permission approval...";
-            s_querying = false;
+            s_status_message = "Hoard & Seek busy, retrying shortly...";
             return;
         }
 

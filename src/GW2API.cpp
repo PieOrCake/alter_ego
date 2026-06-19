@@ -11,10 +11,32 @@
 #include <cctype>
 #include <unordered_set>
 #include <set>
+#include <atomic>
+#include <chrono>
+#include <memory>
 
 using json = nlohmann::json;
 
 namespace AlterEgo {
+
+    // --- Single-shot backoff retry when H&S returns HOARD_STATUS_BUSY ---
+    // (proxy queue full / per-addon rate limit). We record a future time and an
+    // action; PollRetries() (driven once per frame from AddonRender) fires it
+    // exactly once rather than spinning. Action 1 = re-request character list,
+    // 2 = re-issue the current per-character fetch phase.
+    namespace {
+        std::atomic<int>       g_busyRetryAction{0};
+        std::atomic<long long> g_busyRetryAtMs{0};
+
+        long long NowMs() {
+            return std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::steady_clock::now().time_since_epoch()).count();
+        }
+        void ScheduleBusyRetry(int action, uint32_t retry_after_ms) {
+            g_busyRetryAction = action;
+            g_busyRetryAtMs = NowMs() + (retry_after_ms ? (long long)retry_after_ms : 1000LL);
+        }
+    }
 
     // Strip HTML-like tags from GW2 API descriptions
     static std::string StripHtmlTags(const std::string& input) {
@@ -240,7 +262,11 @@ namespace AlterEgo {
     void GW2API::OnSkinUnlocksResponse(void* eventArgs) {
         if (!eventArgs) return;
         auto* resp = (HoardQuerySkinsResponse*)eventArgs;
+        std::unique_ptr<HoardQuerySkinsResponse> respGuard(resp); // caller owns the response
         if (resp->api_version < 2) return;
+        // On DENIED or BUSY, drop this batch. This is an opportunistic cache
+        // (QuerySkinUnlocks skips already-known skins), so a BUSY batch is simply
+        // re-requested the next time the UI asks about those skins — no timer needed.
         if (resp->status != HOARD_STATUS_OK) {
             return;
         }
@@ -266,6 +292,9 @@ namespace AlterEgo {
     void GW2API::OnItemLocationResponse(void* eventArgs) {
         if (!eventArgs) return;
         auto* resp = (HoardQueryItemResponse*)eventArgs;
+        std::unique_ptr<HoardQueryItemResponse> respGuard(resp); // caller owns the response
+        // EV_HOARD_QUERY_ITEM is cache-served (never returns BUSY); a non-OK
+        // status here means DENIED — drop the result.
         if (resp->api_version < 2) return;
         if (resp->status != HOARD_STATUS_OK) {
             return;
@@ -329,6 +358,7 @@ namespace AlterEgo {
     void GW2API::OnAccountsResponse(void* eventArgs) {
         if (!eventArgs) { if (s_api) s_api->Log(LOGL_WARNING, "AlterEgo", "OnAccountsResponse: null eventArgs"); return; }
         auto* resp = (HoardQueryAccountsResponse*)eventArgs;
+        std::unique_ptr<HoardQueryAccountsResponse> respGuard(resp); // caller owns the response
         if (s_api) s_api->Log(LOGL_INFO, "AlterEgo",
             ("OnAccountsResponse: status=" + std::to_string(resp->status) +
              " account_count=" + std::to_string(resp->account_count)).c_str());
@@ -432,17 +462,32 @@ namespace AlterEgo {
 
     // --- Character data fetch via H&S API proxy ---
 
+    void GW2API::PollRetries() {
+        int action = g_busyRetryAction.load();
+        if (action == 0) return;
+        long long at = g_busyRetryAtMs.load();
+        if (at == 0 || NowMs() < at) return;
+        g_busyRetryAction = 0;
+        g_busyRetryAtMs = 0;
+        if (action == 1) {
+            // Re-request the character list. Clear InProgress so the re-entry
+            // guard in RequestCharacterList doesn't block the retry.
+            { std::lock_guard<std::mutex> lock(s_mutex); s_fetch_status = FetchStatus::Idle; }
+            RequestCharacterList();
+        } else if (action == 2) {
+            // Re-issue the current per-character fetch phase (state unchanged).
+            FetchCharacterPhase();
+        }
+    }
+
     void GW2API::RequestCharacterRefresh(const std::string& priorityChar) {
         if (!s_api) return;
 
         {
             std::lock_guard<std::mutex> lock(s_mutex);
-            // Allow re-entry during PermPending (retry after permission popup)
-            if (s_fetch_status == FetchStatus::InProgress &&
-                s_hoard_status != HoardStatus::PermPending) return;
+            if (s_fetch_status == FetchStatus::InProgress) return;
             if (s_hoard_status != HoardStatus::Available &&
-                s_hoard_status != HoardStatus::Ready &&
-                s_hoard_status != HoardStatus::PermPending) {
+                s_hoard_status != HoardStatus::Ready) {
                 s_fetch_message = "Hoard & Seek not available";
                 s_fetch_status = FetchStatus::Error;
                 return;
@@ -495,14 +540,12 @@ namespace AlterEgo {
                  " hoard_status=" + std::to_string((int)s_hoard_status) +
                  " accounts_queried=" + std::to_string(s_accounts_queried) +
                  " accounts_size=" + std::to_string(s_accounts.size())).c_str());
-            if (s_fetch_status == FetchStatus::InProgress &&
-                s_hoard_status != HoardStatus::PermPending) {
+            if (s_fetch_status == FetchStatus::InProgress) {
                 s_api->Log(LOGL_INFO, "AlterEgo", "RequestCharacterList: blocked (InProgress)");
                 return;
             }
             if (s_hoard_status != HoardStatus::Available &&
-                s_hoard_status != HoardStatus::Ready &&
-                s_hoard_status != HoardStatus::PermPending) {
+                s_hoard_status != HoardStatus::Ready) {
                 s_api->Log(LOGL_WARNING, "AlterEgo", "RequestCharacterList: H&S not available");
                 s_fetch_message = "Hoard & Seek not available";
                 s_fetch_status = FetchStatus::Error;
@@ -608,6 +651,7 @@ namespace AlterEgo {
             return;
         }
         auto* resp = (HoardQueryApiResponse*)eventArgs;
+        std::unique_ptr<HoardQueryApiResponse> respGuard(resp); // caller owns the response
         if (resp->api_version < 2) {
             return;
         }
@@ -618,12 +662,13 @@ namespace AlterEgo {
             s_api->Log(LOGL_INFO, "AlterEgo", msg.c_str());
         }
 
-        // Check permission status
-        if (resp->status == HOARD_STATUS_PENDING) {
+        // H&S rate-limited this request — schedule a single backoff retry of the
+        // character-list request (fired from PollRetries on the render thread).
+        if (resp->status == HOARD_STATUS_BUSY) {
             std::lock_guard<std::mutex> lock(s_mutex);
-            s_hoard_status = HoardStatus::PermPending;
-            s_fetch_message = "Waiting for H&S permission approval...";
+            s_fetch_message = "Hoard & Seek busy, retrying shortly...";
             s_fetch_status = FetchStatus::InProgress;
+            ScheduleBusyRetry(1, resp->retry_after_ms);
             return;
         }
         if (resp->status == HOARD_STATUS_DENIED) {
@@ -879,6 +924,7 @@ namespace AlterEgo {
             return;
         }
         auto* resp = (HoardQueryApiResponse*)eventArgs;
+        std::unique_ptr<HoardQueryApiResponse> respGuard(resp); // caller owns the response
         if (resp->api_version < 2) {
             return;
         }
@@ -895,6 +941,16 @@ namespace AlterEgo {
                 " truncated=" + std::to_string(resp->truncated) +
                 " json_length=" + std::to_string(resp->json_length);
             s_api->Log(LOGL_INFO, "AlterEgo", msg.c_str());
+        }
+
+        // H&S rate-limited this request — schedule a single backoff retry of the
+        // current fetch phase (fired from PollRetries on the render thread).
+        // Phase 6 (heropoints) is non-critical, so let it fall through and skip.
+        if (resp->status == HOARD_STATUS_BUSY && phase != 6) {
+            std::lock_guard<std::mutex> lock(s_mutex);
+            s_fetch_message = "Hoard & Seek busy, retrying shortly...";
+            ScheduleBusyRetry(2, resp->retry_after_ms);
+            return;
         }
 
         if (resp->status != HOARD_STATUS_OK) {

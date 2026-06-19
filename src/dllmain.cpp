@@ -16,6 +16,7 @@
 #include <chrono>
 #include <atomic>
 #include <functional>
+#include <memory>
 
 #include "nexus/Nexus.h"
 #include "imgui.h"
@@ -37,8 +38,8 @@
 // Version constants
 #define V_MAJOR 1
 #define V_MINOR 0
-#define V_BUILD 1
-#define V_REVISION 3
+#define V_BUILD 2
+#define V_REVISION 0
 
 // Quick Access icon identifiers
 #define QA_ID "QA_ALTER_EGO"
@@ -606,7 +607,15 @@ static std::chrono::steady_clock::time_point g_AchLastSave;
 static void SaveAchProgress(const std::string& account);
 static void LoadAchProgress(const std::string& account);
 static std::atomic<uint32_t> g_AchCatProgressPending{0}; // catId needing progress query (set by bg thread)
-static std::atomic<bool> g_AchRetryPending{false};       // PENDING retry for ach progress
+// Monotonic ms helper for scheduling deferred/backoff queries on the render thread.
+static long long NowMs() {
+    return std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now().time_since_epoch()).count();
+}
+// steady_clock ms at which the render thread should (re)send the ach progress
+// query: set to NowMs() for an immediate boot query, or NowMs()+retry_after_ms
+// for a single HOARD_STATUS_BUSY backoff retry. 0 = nothing pending.
+static std::atomic<long long> g_AchRetryAtMs{0};
 static uint64_t g_AchProgressGen = 0;      // incremented when progress updates, triggers popout cache rebuild
 static char g_AchSearchBuf[128] = "";
 static bool g_AchPopoutVisible = false;    // popout tracker window visibility
@@ -860,7 +869,7 @@ static void OnHoardPongForAch(void* eventArgs) {
     // Signal render thread to query pinned achievement progress (once per session)
     if (!g_AchPinnedBootQueried) {
         g_AchPinnedBootQueried = true;
-        g_AchRetryPending = true;  // render thread will pick up pinned + selected cat
+        g_AchRetryAtMs = NowMs();  // fire ASAP: render thread picks up pinned + selected cat
     }
 
     // Signal render thread to query clears completion (once per session)
@@ -2295,11 +2304,13 @@ static void SendAchProgressQuery(const std::vector<uint32_t>& ids) {
 static void OnAchProgressResponse(void* eventArgs) {
     if (!eventArgs) return;
     auto* resp = (HoardQueryAchievementResponse*)eventArgs;
+    std::unique_ptr<HoardQueryAchievementResponse> respGuard(resp); // caller owns the response
     if (resp->api_version < 2) { return; }
 
     if (resp->status != HOARD_STATUS_OK) {
-        if (resp->status == HOARD_STATUS_PENDING) {
-            g_AchRetryPending = true;
+        if (resp->status == HOARD_STATUS_BUSY) {
+            // Schedule a single backoff retry (fired from the render thread).
+            g_AchRetryAtMs = NowMs() + (resp->retry_after_ms ? (long long)resp->retry_after_ms : 1000LL);
         }
         g_AchProgressFetching = false;
         return;
@@ -11368,8 +11379,9 @@ static void RenderAchievements() {
         }
     }
 
-    // Consume deferred PENDING retry for achievement progress
-    if (g_AchRetryPending.exchange(false) && !g_AchProgressFetching) {
+    // Fire a scheduled ach-progress query (boot query or BUSY backoff retry).
+    if (g_AchRetryAtMs.load() != 0 && NowMs() >= g_AchRetryAtMs.load() && !g_AchProgressFetching) {
+        g_AchRetryAtMs = 0;
         std::vector<uint32_t> retryIds;
         {
             std::lock_guard<std::recursive_mutex> lock(g_AchMutex);
@@ -12087,10 +12099,11 @@ static void RenderAchPopout() {
         }
     }
 
-    // Consume retry flag here too — popout may be open without the main
-    // Achievements tab being visible. Previously this only fired from
-    // RenderAchievements, so a PENDING response would never re-query.
-    if (g_AchRetryPending.exchange(false) && !g_AchProgressFetching) {
+    // Fire a scheduled ach-progress query here too — the popout may be open
+    // without the main Achievements tab being visible. Previously this only
+    // fired from RenderAchievements, so a deferred query would never re-send.
+    if (g_AchRetryAtMs.load() != 0 && NowMs() >= g_AchRetryAtMs.load() && !g_AchProgressFetching) {
+        g_AchRetryAtMs = 0;
         std::vector<uint32_t> pinnedCopy;
         {
             std::lock_guard<std::recursive_mutex> lock(g_AchMutex);
@@ -12463,6 +12476,7 @@ void AddonRender() {
     AlterEgo::IconManager::Tick();
     Skinventory::WikiImage::Tick();
     Skinventory::OwnedSkins::Tick();
+    AlterEgo::GW2API::PollRetries();   // fire any scheduled H&S BUSY backoff retry
 
     // Persist login timestamps when dirty (crash-safe)
     if (g_LoginTimestampsDirty) SaveLoginTimestamps();
@@ -12543,14 +12557,6 @@ void AddonRender() {
             }
         );
         return;
-    } else if (hoardStatus == AlterEgo::HoardStatus::PermPending) {
-        ImGui::TextColored(ImVec4(1.0f, 0.85f, 0.0f, 1.0f), "Approve Alter Ego in H&S permission popup.");
-        static auto lastPermRetry = std::chrono::steady_clock::time_point{};
-        auto permNow = std::chrono::steady_clock::now();
-        if (permNow - lastPermRetry > std::chrono::seconds(3)) {
-            lastPermRetry = permNow;
-            AlterEgo::GW2API::RequestCharacterList();
-        }
     } else if (hoardStatus == AlterEgo::HoardStatus::PermDenied) {
         ImGui::TextColored(ImVec4(1.0f, 0.3f, 0.3f, 1.0f), "H&S permission denied. Enable in H&S settings.");
     }
@@ -13747,11 +13753,6 @@ void AddonOptions() {
             break;
         case AlterEgo::HoardStatus::Available:
             ImGui::TextColored(ImVec4(0.35f, 0.82f, 0.35f, 1.0f), "Status: Connected");
-            break;
-        case AlterEgo::HoardStatus::PermPending:
-            ImGui::TextColored(ImVec4(1.0f, 0.85f, 0.0f, 1.0f), "Status: Permission pending");
-            ImGui::TextColored(ImVec4(0.7f, 0.7f, 0.7f, 1.0f),
-                "Accept the Alter Ego permission popup in Hoard & Seek.");
             break;
         case AlterEgo::HoardStatus::PermDenied:
             ImGui::TextColored(ImVec4(1.0f, 0.3f, 0.3f, 1.0f), "Status: Permission denied");

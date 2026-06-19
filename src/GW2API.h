@@ -24,9 +24,8 @@ namespace AlterEgo {
         Unknown,        // Haven't pinged yet
         Unavailable,    // Ping sent, no pong received
         Available,      // Pong received, H&S is running
-        PermPending,    // Permission popup shown to user
-        PermDenied,     // User denied permission
-        Ready           // Permission granted, data flowing
+        PermDenied,     // User denied this addon in H&S settings
+        Ready           // Data flowing
     };
 
     // Equipment slot on a character
@@ -302,6 +301,7 @@ namespace AlterEgo {
         static void RequestCharacterRefresh(const std::string& priorityChar = ""); // Fetch all characters via H&S
         static void RequestCharacterList();              // Fetch just the character name list
         static void RequestCharacterRefreshSelected(const std::vector<std::string>& names); // Fetch specific characters
+        static void PollRetries();                       // Per-frame: fire a scheduled HOARD_STATUS_BUSY backoff retry
 
         // H&S cached queries (synchronous, from H&S in-memory cache)
         static void QuerySkinUnlocks(const std::vector<uint32_t>& skin_ids);

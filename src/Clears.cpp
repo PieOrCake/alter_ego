@@ -11,6 +11,7 @@
 #include <unordered_map>
 #include <algorithm>
 #include <set>
+#include <memory>
 
 #include "imgui.h"
 #include <nlohmann/json.hpp>
@@ -52,7 +53,8 @@ static std::string g_ClearsStatusMsg;
 static std::chrono::system_clock::time_point g_LastDailyReset{};
 static std::chrono::system_clock::time_point g_LastWeeklyReset{};
 static std::chrono::steady_clock::time_point g_LastClearsCompletionQuery{};
-static std::atomic<bool> g_ClearsRetryPending{false};
+// steady_clock ms at which to fire a single BUSY backoff retry (0 = none)
+static std::atomic<long long> g_ClearsRetryAtMs{0};
 
 // Public globals — declared extern in Clears.h, accessed from dllmain.cpp
 bool g_ClearsFetched = false;
@@ -85,7 +87,8 @@ static VaultPeriod g_VaultWeekly;
 static VaultPeriod g_VaultSpecial;
 static bool g_VaultFetched = false;
 static bool g_VaultFetching = false;
-static std::atomic<bool> g_VaultRetryPending{false};
+// steady_clock ms at which to fire a single BUSY backoff retry (0 = none)
+static std::atomic<long long> g_VaultRetryAtMs{0};
 bool g_VaultNeedRequery = false;
 static std::chrono::system_clock::time_point g_VaultLastDailyReset{};
 static std::chrono::system_clock::time_point g_VaultLastWeeklyReset{};
@@ -199,6 +202,12 @@ static std::string ParseFractalTier(const std::string& name) {
     return "";
 }
 
+// Monotonic milliseconds, used to schedule single-shot BUSY backoff retries.
+static long long NowMs() {
+    return std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now().time_since_epoch()).count();
+}
+
 // Send H&S achievement query for all currently tracked clears IDs
 static void SendClearsAchQuery() {
     std::vector<uint32_t> allIds;
@@ -229,14 +238,15 @@ static void SendClearsAchQuery() {
 void OnClearsAchResponse(void* eventArgs) {
     if (!eventArgs) return;
     auto* resp = (HoardQueryAchievementResponse*)eventArgs;
+    std::unique_ptr<HoardQueryAchievementResponse> respGuard(resp); // caller owns the response
     if (resp->api_version < 2) { return; }
 
     if (resp->status != HOARD_STATUS_OK) {
         std::lock_guard<std::mutex> lock(g_ClearsMutex);
-        if (resp->status == HOARD_STATUS_PENDING) {
-            g_ClearsStatusMsg = "Waiting for H&S permission...";
-            // Signal render thread to retry (Events_Raise must be on render thread)
-            g_ClearsRetryPending = true;
+        if (resp->status == HOARD_STATUS_BUSY) {
+            g_ClearsStatusMsg = "Hoard & Seek busy, retrying shortly...";
+            // Schedule a single backoff retry (Events_Raise must be on render thread)
+            g_ClearsRetryAtMs = NowMs() + (resp->retry_after_ms ? (long long)resp->retry_after_ms : 1000LL);
         } else {
             if (resp->status == HOARD_STATUS_DENIED)
                 g_ClearsStatusMsg = "H&S permission denied";
@@ -349,6 +359,12 @@ static void FetchVaultData() {
 void OnVaultSeasonResponse(void* eventArgs) {
     if (!eventArgs) return;
     auto* resp = static_cast<HoardQueryApiResponse*>(eventArgs);
+    std::unique_ptr<HoardQueryApiResponse> respGuard(resp); // caller owns the response
+    if (resp->status == HOARD_STATUS_BUSY) {
+        // Best-effort enrichment query — let the main vault retry re-fetch it.
+        g_VaultRetryAtMs = NowMs() + (resp->retry_after_ms ? (long long)resp->retry_after_ms : 1000LL);
+        return;
+    }
     if (resp->status != HOARD_STATUS_OK || resp->json_length == 0) return;
     try {
         auto j = nlohmann::json::parse(resp->json);
@@ -366,11 +382,12 @@ void OnVaultSeasonResponse(void* eventArgs) {
 void OnVaultResponse(void* eventArgs) {
     if (!eventArgs) return;
     auto* resp = (HoardQueryWizardsVaultResponse*)eventArgs;
+    std::unique_ptr<HoardQueryWizardsVaultResponse> respGuard(resp); // caller owns the response
     if (resp->api_version < 2) return;
 
     if (resp->status != HOARD_STATUS_OK) {
-        if (resp->status == HOARD_STATUS_PENDING)
-            g_VaultRetryPending = true;
+        if (resp->status == HOARD_STATUS_BUSY)
+            g_VaultRetryAtMs = NowMs() + (resp->retry_after_ms ? (long long)resp->retry_after_ms : 1000LL);
         return;
     }
 
@@ -1773,9 +1790,14 @@ static void RenderVaultPeriodSection(const char* title, const char* resetLabel,
 
 static void RenderVaultTab(const std::string& dailyResetStr, const std::string& weeklyResetStr)
 {
-    // Consume retry (H&S was PENDING last call)
-    if (g_VaultRetryPending.exchange(false) && !g_VaultFetching)
-        FetchVaultData();
+    // Fire a scheduled BUSY backoff retry once its delay has elapsed.
+    {
+        long long retryAt = g_VaultRetryAtMs.load();
+        if (retryAt != 0 && NowMs() >= retryAt && !g_VaultFetching) {
+            g_VaultRetryAtMs = 0;
+            FetchVaultData();
+        }
+    }
 
     // Account change: clear stale data and re-fetch
     if (g_VaultNeedRequery && !g_VaultFetching) {
@@ -2157,8 +2179,14 @@ void RenderClears() {
     }
     if (g_ClearsQueryPending.exchange(false) && !g_ClearsFetching)
         SendClearsAchQuery();
-    if (g_ClearsRetryPending.exchange(false) && !g_ClearsFetching)
-        SendClearsAchQuery();
+    // Fire a scheduled BUSY backoff retry once its delay has elapsed.
+    {
+        long long retryAt = g_ClearsRetryAtMs.load();
+        if (retryAt != 0 && NowMs() >= retryAt && !g_ClearsFetching) {
+            g_ClearsRetryAtMs = 0;
+            SendClearsAchQuery();
+        }
+    }
 
     auto steadyNow = std::chrono::steady_clock::now();
     if (g_ClearsFetched && !g_ClearsFetching &&
