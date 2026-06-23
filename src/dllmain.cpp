@@ -724,6 +724,9 @@ static void LoadLoginTimestamps();
 // Build Library UI state
 static float g_LibListWidth = 220.0f; // Resizable build list column width
 static int g_LibSelectedIdx = -1;
+// Build editor: "+ New Build" dialog state
+static bool g_NewBuildDialogOpen = false;
+static int  g_NewBuildGameMode = 0; // index into GameMode (0=PvE,1=WvW,2=PvP,3=Raid,4=Fractal)
 static int g_LibFilterMode = 0;        // 0=All, 1=PvE, 2=WvW, 3=PvP, 4=Raid, 5=Fractal
 static char g_LibSearchBuf[128] = "";
 static char g_LibImportBuf[4096] = "";
@@ -6391,6 +6394,66 @@ static bool RenderCardSelector(const char* searchBuf, const char* childId,
 }
 
 // Render the Customize popup dialog
+// Profession names in GW2 build-link order (1..9). Shared by the build editor.
+static const char* kBuildProfessions[9] = {
+    "Guardian", "Warrior", "Engineer", "Ranger", "Thief",
+    "Elementalist", "Mesmer", "Necromancer", "Revenant"
+};
+
+// "+ New Build" dialog: pick a profession + game mode, create a blank build,
+// and drop straight into edit mode.
+static void RenderNewBuildDialog() {
+    if (g_NewBuildDialogOpen && !ImGui::IsPopupOpen("New Build##newbuild"))
+        ImGui::OpenPopup("New Build##newbuild");
+
+    ImVec2 dispSize = ImGui::GetIO().DisplaySize;
+    ImGui::SetNextWindowPos(ImVec2(dispSize.x * 0.5f, dispSize.y * 0.5f),
+                            ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
+    if (ImGui::BeginPopupModal("New Build##newbuild", &g_NewBuildDialogOpen,
+                               ImGuiWindowFlags_AlwaysAutoResize)) {
+        const char* modeLabels[] = { "PvE", "WvW", "PvP", "Raid", "Fractal" };
+        ImGui::Text("Game mode:");
+        ImGui::SameLine();
+        if (g_NewBuildGameMode < 0 || g_NewBuildGameMode > 4) g_NewBuildGameMode = 0;
+        if (RenderThemedCombo("##nbmode", modeLabels[g_NewBuildGameMode], 120.0f)) {
+            for (int m = 0; m < 5; m++)
+                if (ImGui::Selectable(modeLabels[m], g_NewBuildGameMode == m))
+                    g_NewBuildGameMode = m;
+            ImGui::EndCombo();
+        }
+
+        ImGui::Separator();
+        ImGui::Text("Choose a profession:");
+        for (int i = 0; i < 9; i++) {
+            if (i % 3 != 0) ImGui::SameLine();
+            if (ImGui::Button(kBuildProfessions[i], ImVec2(110, 0))) {
+                AlterEgo::SavedBuild blank = AlterEgo::GW2API::CreateBlankBuild(
+                    kBuildProfessions[i], (AlterEgo::GameMode)g_NewBuildGameMode);
+                int idx = AlterEgo::GW2API::AddSavedBuild(std::move(blank));
+                if (idx >= 0) {
+                    const auto& builds = AlterEgo::GW2API::GetSavedBuilds();
+                    g_LibSelectedIdx = idx;
+                    g_LibEditBuildId = builds[idx].id;
+                    g_LibEditName = builds[idx].name;
+                    g_LibEditNotes = builds[idx].notes;
+                    g_LibEditMode = true;
+                    AlterEgo::GW2API::FetchProfessionInfoAsync(kBuildProfessions[i]);
+                    AlterEgo::GW2API::FetchProfessionPaletteAsync(kBuildProfessions[i]);
+                }
+                g_NewBuildDialogOpen = false;
+                ImGui::CloseCurrentPopup();
+            }
+        }
+
+        ImGui::Separator();
+        if (ImGui::Button("Cancel")) {
+            g_NewBuildDialogOpen = false;
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::EndPopup();
+    }
+}
+
 static void RenderGearCustomizeDialog() {
     if (!g_GearDialogOpen) return;
 
@@ -7974,6 +8037,13 @@ static void RenderBuildLibrary() {
         g_LibImportName[0] = '\0';
         g_LibImportMode = 0;
         g_LibImportError.clear();
+    }
+
+    // Create a build from scratch
+    ImGui::SameLine();
+    if (RenderChipButton("+ New Build", false)) {
+        g_NewBuildDialogOpen = true;
+        g_NewBuildGameMode = 0;
     }
 
     // Library backup / restore
@@ -12513,6 +12583,7 @@ void AddonRender() {
 
     // Render gear customize dialog (separate window, always checked)
     RenderGearCustomizeDialog();
+    RenderNewBuildDialog();
     RenderSaveToLibraryDialog();
 
     // Render chat build detection toast (always visible, even when main window is hidden)
