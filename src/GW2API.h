@@ -181,6 +181,7 @@ namespace AlterEgo {
         std::string name;
         std::string icon_url;
         std::string icon_big_url;
+        std::vector<uint32_t> specialization_ids; // /v2/professions[].specializations (core + elite)
     };
 
     // Dye color info from /v2/colors (public, no auth)
@@ -412,6 +413,16 @@ namespace AlterEgo {
         static bool ReorderSavedBuild(int fromIdx, int toIdx);
         static bool LoadBuildLibrary();
         static bool SaveBuildLibrary();
+        // --- Build editor support ---
+        // Encode a SavedBuild's definition (traits/skills/pets/legends/weapons) to a GW2 chat link.
+        static std::string EncodeSavedBuildToChatLink(const SavedBuild& b);
+        // List of specialization IDs (core + elite) for a profession, from /v2/professions.
+        static std::vector<uint32_t> GetProfessionSpecIds(const std::string& profession);
+        // Make an in-memory blank build (id assigned on AddSavedBuild).
+        static SavedBuild CreateBlankBuild(const std::string& profession, GameMode mode);
+        // Overwrite a saved build's definition fields (specs/skills/pets/legends/weapons/
+        // profession) and regenerate its chat_link, leaving name/notes/gear intact, then save.
+        static bool ReplaceSavedBuildDefinition(const std::string& id, const SavedBuild& def);
         // Write the whole library to an arbitrary path as JSON.
         static bool ExportBuildLibraryToFile(const std::string& path);
         // Load a previously exported library file. If replaceAll is true the

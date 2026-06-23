@@ -1,5 +1,6 @@
 #include "GW2API.h"
 #include "HoardAndSeekAPI.h"
+#include "ChatLink.h"
 
 #include <windows.h>
 #include <wininet.h>
@@ -1740,9 +1741,18 @@ namespace AlterEgo {
                 info.name = j.value("name", prof);
                 info.icon_url = j.value("icon", "");
                 info.icon_big_url = j.value("icon_big", "");
+                if (j.contains("specializations") && j["specializations"].is_array())
+                    for (const auto& s : j["specializations"])
+                        if (s.is_number_unsigned()) info.specialization_ids.push_back(s.get<uint32_t>());
 
-                std::lock_guard<std::mutex> lock(s_mutex);
-                s_profession_cache[prof] = std::move(info);
+                std::vector<uint32_t> specIds = info.specialization_ids;
+                {
+                    std::lock_guard<std::mutex> lock(s_mutex);
+                    s_profession_cache[prof] = std::move(info);
+                }
+
+                // Populate s_spec_cache so the build editor can show trait grids.
+                if (!specIds.empty()) FetchSpecDetailsAsync(specIds);
 
                 if (s_api) {
                     std::string msg = "Loaded profession info for " + prof;
@@ -2538,6 +2548,110 @@ namespace AlterEgo {
                     break;
                 }
             }
+        }
+        return SaveBuildLibrary();
+    }
+
+    std::string GW2API::EncodeSavedBuildToChatLink(const SavedBuild& b) {
+        auto profCode = [](const std::string& p) -> uint8_t {
+            if (p == "Guardian")     return 1;
+            if (p == "Warrior")      return 2;
+            if (p == "Engineer")     return 3;
+            if (p == "Ranger")       return 4;
+            if (p == "Thief")        return 5;
+            if (p == "Elementalist") return 6;
+            if (p == "Mesmer")       return 7;
+            if (p == "Necromancer")  return 8;
+            if (p == "Revenant")     return 9;
+            return 0;
+        };
+        DecodedBuildLink link{};
+        link.profession = profCode(b.profession);
+        for (int i = 0; i < 3; i++) {
+            link.specs[i].spec_id = (uint8_t)b.specializations[i].spec_id;
+            const auto* si = GetSpecInfo(b.specializations[i].spec_id);
+            for (int t = 0; t < 3; t++) {
+                int traitId = b.specializations[i].traits[t];
+                uint8_t choice = 0;
+                if (traitId > 0 && si && si->major_traits.size() >= 9) {
+                    for (int r = 0; r < 3; r++)
+                        if ((int)si->major_traits[t * 3 + r] == traitId) { choice = (uint8_t)(r + 1); break; }
+                } else if (traitId < 0) {
+                    choice = (uint8_t)(-traitId); // unresolved placeholder already holds the choice
+                }
+                link.specs[i].traits[t] = choice;
+            }
+        }
+        auto toPal = [&](uint32_t skill_id) -> uint16_t {
+            return skill_id ? GetPaletteIdFromSkill(b.profession, skill_id) : 0;
+        };
+        link.terrestrial_skills[0] = toPal(b.terrestrial_skills.heal);
+        link.terrestrial_skills[1] = toPal(b.terrestrial_skills.utilities[0]);
+        link.terrestrial_skills[2] = toPal(b.terrestrial_skills.utilities[1]);
+        link.terrestrial_skills[3] = toPal(b.terrestrial_skills.utilities[2]);
+        link.terrestrial_skills[4] = toPal(b.terrestrial_skills.elite);
+        link.aquatic_skills[0] = toPal(b.aquatic_skills.heal);
+        link.aquatic_skills[1] = toPal(b.aquatic_skills.utilities[0]);
+        link.aquatic_skills[2] = toPal(b.aquatic_skills.utilities[1]);
+        link.aquatic_skills[3] = toPal(b.aquatic_skills.utilities[2]);
+        link.aquatic_skills[4] = toPal(b.aquatic_skills.elite);
+        if (b.profession == "Ranger") {
+            link.pets[0] = (uint8_t)b.pets.terrestrial[0];
+            link.pets[1] = (uint8_t)b.pets.terrestrial[1];
+            link.pets[2] = (uint8_t)b.pets.aquatic[0];
+            link.pets[3] = (uint8_t)b.pets.aquatic[1];
+        }
+        if (b.profession == "Revenant") {
+            for (int i = 0; i < 4; i++) link.legends[i] = b.legend_codes[i];
+        }
+        for (auto w : b.weapons) link.weapons.push_back((uint16_t)w);
+        return ChatLink::EncodeBuild(link);
+    }
+
+    std::vector<uint32_t> GW2API::GetProfessionSpecIds(const std::string& profession) {
+        std::lock_guard<std::mutex> lock(s_mutex);
+        auto it = s_profession_cache.find(profession);
+        return it != s_profession_cache.end() ? it->second.specialization_ids
+                                              : std::vector<uint32_t>{};
+    }
+
+    SavedBuild GW2API::CreateBlankBuild(const std::string& profession, GameMode mode) {
+        SavedBuild b;
+        b.profession = profession;
+        b.game_mode = mode;
+        b.name = profession + " Build";
+        b.created = time(nullptr);
+        return b;
+    }
+
+    bool GW2API::ReplaceSavedBuildDefinition(const std::string& id, const SavedBuild& def) {
+        // Copy the definition fields into the stored build under the lock, then
+        // snapshot it so the chat-link encode (which itself locks s_mutex via
+        // GetSpecInfo/GetPaletteIdFromSkill) runs OUTSIDE the lock — avoids deadlock.
+        SavedBuild snapshot;
+        bool found = false;
+        {
+            std::lock_guard<std::mutex> lock(s_mutex);
+            for (auto& b : s_saved_builds) {
+                if (b.id != id) continue;
+                b.profession = def.profession;
+                for (int i = 0; i < 3; i++) b.specializations[i] = def.specializations[i];
+                b.terrestrial_skills = def.terrestrial_skills;
+                b.aquatic_skills = def.aquatic_skills;
+                b.pets = def.pets;
+                for (int i = 0; i < 4; i++) b.legend_codes[i] = def.legend_codes[i];
+                b.weapons = def.weapons;
+                snapshot = b;
+                found = true;
+                break;
+            }
+        }
+        if (!found) return false;
+        std::string link = EncodeSavedBuildToChatLink(snapshot);
+        {
+            std::lock_guard<std::mutex> lock(s_mutex);
+            for (auto& b : s_saved_builds)
+                if (b.id == id) { b.chat_link = link; break; }
         }
         return SaveBuildLibrary();
     }
