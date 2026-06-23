@@ -117,6 +117,8 @@ namespace AlterEgo {
     std::unordered_map<std::string, std::unordered_map<uint16_t, uint32_t>> GW2API::s_palette_to_skill;
     std::unordered_map<std::string, std::unordered_map<uint32_t, uint16_t>> GW2API::s_skill_to_palette;
     std::unordered_set<std::string> GW2API::s_palette_fetching;
+    std::vector<PetInfo> GW2API::s_pets;
+    std::atomic<bool> GW2API::s_petsFetching{false};
     std::mutex GW2API::s_mutex;
 
     // --- Nexus integration ---
@@ -2626,6 +2628,44 @@ namespace AlterEgo {
         std::sort(out.begin(), out.end());
         out.erase(std::unique(out.begin(), out.end()), out.end());
         return out;
+    }
+
+    std::vector<PetInfo> GW2API::GetPets() {
+        std::lock_guard<std::mutex> lock(s_mutex);
+        return s_pets;
+    }
+
+    void GW2API::FetchPetsAsync() {
+        {
+            std::lock_guard<std::mutex> lock(s_mutex);
+            if (!s_pets.empty()) return;
+        }
+        if (s_petsFetching.exchange(true)) return;
+        std::thread([]() {
+            std::string response = HttpGet("https://api.guildwars2.com/v2/pets?ids=all");
+            std::vector<PetInfo> pets;
+            if (!response.empty()) {
+                try {
+                    json j = json::parse(response);
+                    if (j.is_array())
+                        for (const auto& p : j) {
+                            if (!p.contains("id")) continue;
+                            PetInfo info;
+                            info.id = p["id"].get<uint32_t>();
+                            info.name = p.value("name", "");
+                            info.icon_url = p.value("icon", "");
+                            pets.push_back(std::move(info));
+                        }
+                } catch (...) {}
+            }
+            std::sort(pets.begin(), pets.end(),
+                      [](const PetInfo& a, const PetInfo& b) { return a.name < b.name; });
+            {
+                std::lock_guard<std::mutex> lock(s_mutex);
+                s_pets = std::move(pets);
+            }
+            s_petsFetching = false;
+        }).detach();
     }
 
     SavedBuild GW2API::CreateBlankBuild(const std::string& profession, GameMode mode) {

@@ -185,6 +185,14 @@ namespace AlterEgo {
         std::vector<uint32_t> specialization_ids; // /v2/professions[].specializations (core + elite)
     };
 
+    // Ranger pet info from /v2/pets (public, no auth). The build-template pet
+    // byte is the /v2/pets id directly.
+    struct PetInfo {
+        uint32_t id = 0;
+        std::string name;
+        std::string icon_url;
+    };
+
     // Dye color info from /v2/colors (public, no auth)
     struct DyeColor {
         int id = 0;
@@ -422,6 +430,9 @@ namespace AlterEgo {
         // All slottable skill IDs for a profession (from the palette map). Empty until
         // FetchProfessionPaletteAsync has run for that profession.
         static std::vector<uint32_t> GetProfessionSkillIds(const std::string& profession);
+        // Ranger pets (for the build editor's pet picker). Empty until fetched.
+        static std::vector<PetInfo> GetPets();
+        static void FetchPetsAsync();
         // Make an in-memory blank build (id assigned on AddSavedBuild).
         static SavedBuild CreateBlankBuild(const std::string& profession, GameMode mode);
         // Overwrite a saved build's definition fields (specs/skills/pets/legends/weapons/
@@ -495,6 +506,10 @@ namespace AlterEgo {
         // Profession info cache
         static std::unordered_map<std::string, ProfessionInfo> s_profession_cache;
         static std::unordered_map<std::string, std::map<std::string, ProfessionWeaponData>> s_profession_weapons;
+
+        // Ranger pets cache (build editor)
+        static std::vector<PetInfo> s_pets;
+        static std::atomic<bool> s_petsFetching;
 
         // Build library
         static std::vector<SavedBuild> s_saved_builds;

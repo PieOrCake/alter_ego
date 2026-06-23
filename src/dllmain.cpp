@@ -732,6 +732,8 @@ static AlterEgo::SavedBuild g_EditDraft;   // working copy while editing a build
 static std::string g_EditDraftId;          // id the draft currently mirrors
 static int g_SpecPickerSlot = -1;          // 0..2 while spec picker open, else -1
 static int g_SkillPickerSlot = -1;         // 0=heal,1-3=util,4=elite while open, else -1
+static int g_LegendPickerSlot = -1;        // 0..1 (Revenant) while open, else -1
+static int g_PetPickerSlot = -1;           // 0..1 (Ranger) while open, else -1
 static int g_LibFilterMode = 0;        // 0=All, 1=PvE, 2=WvW, 3=PvP, 4=Raid, 5=Fractal
 static char g_LibSearchBuf[128] = "";
 static char g_LibImportBuf[4096] = "";
@@ -6476,6 +6478,19 @@ static const char* kBuildProfessions[9] = {
     "Elementalist", "Mesmer", "Necromancer", "Revenant"
 };
 
+// Revenant legend byte codes (13..19) → display name. Codes confirmed against
+// /v2/legends swap-skill names (Legend1..Legend7 = byte 13..19).
+struct LegendOption { uint8_t code; const char* name; };
+static const LegendOption kRevLegends[7] = {
+    {13, "Dragon (Herald)"},  {14, "Assassin (Shiro)"}, {15, "Dwarf (Jalis)"},
+    {16, "Demon (Mallyx)"},   {17, "Renegade (Kalla)"}, {18, "Centaur (Ventari)"},
+    {19, "Alliance (Vindicator)"}
+};
+static const char* LegendNameForCode(uint8_t code) {
+    for (const auto& l : kRevLegends) if (l.code == code) return l.name;
+    return "Choose legend";
+}
+
 // "+ New Build" dialog: pick a profession + game mode, create a blank build,
 // and drop straight into edit mode.
 static void RenderNewBuildDialog() {
@@ -6655,6 +6670,85 @@ static void RenderSkillPickerDialog() {
         ImGui::EndPopup();
     }
     if (!open) g_SkillPickerSlot = -1; // closed via window X
+}
+
+// Revenant legend picker (active legend slot 0/1). Prevents the same legend
+// in both slots; mirrors the choice to the aquatic legend slot.
+static void RenderLegendPickerDialog() {
+    if (g_LegendPickerSlot < 0) return;
+    const char* POPUP = "Choose Legend##legendpick";
+    if (!ImGui::IsPopupOpen(POPUP)) ImGui::OpenPopup(POPUP);
+    ImVec2 dispSize = ImGui::GetIO().DisplaySize;
+    ImGui::SetNextWindowPos(ImVec2(dispSize.x * 0.5f, dispSize.y * 0.5f),
+                            ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
+    bool open = true;
+    if (ImGui::BeginPopupModal(POPUP, &open, ImGuiWindowFlags_AlwaysAutoResize)) {
+        const int slot = g_LegendPickerSlot; // 0 or 1
+        const int other = slot == 0 ? 1 : 0;
+        for (const auto& l : kRevLegends) {
+            bool usedOther = (g_EditDraft.legend_codes[other] == l.code);
+            if (usedOther) {
+                ImGui::TextDisabled("%s", l.name);
+            } else if (ImGui::Selectable(l.name)) {
+                g_EditDraft.legend_codes[slot] = l.code;
+                g_EditDraft.legend_codes[slot + 2] = l.code; // mirror to aquatic
+                g_LegendPickerSlot = -1;
+                ImGui::CloseCurrentPopup();
+            }
+        }
+        ImGui::Separator();
+        if (ImGui::Selectable("(None)")) {
+            g_EditDraft.legend_codes[slot] = 0;
+            g_EditDraft.legend_codes[slot + 2] = 0;
+            g_LegendPickerSlot = -1;
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::EndPopup();
+    }
+    if (!open) g_LegendPickerSlot = -1;
+}
+
+// Ranger pet picker (terrestrial slot 0/1). The pet byte is the /v2/pets id.
+// Prevents the same pet in both slots; mirrors to the aquatic slot.
+static void RenderPetPickerDialog() {
+    if (g_PetPickerSlot < 0) return;
+    const char* POPUP = "Choose Pet##petpick";
+    if (!ImGui::IsPopupOpen(POPUP)) ImGui::OpenPopup(POPUP);
+    ImVec2 dispSize = ImGui::GetIO().DisplaySize;
+    ImGui::SetNextWindowPos(ImVec2(dispSize.x * 0.5f, dispSize.y * 0.5f),
+                            ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
+    bool open = true;
+    if (ImGui::BeginPopupModal(POPUP, &open, ImGuiWindowFlags_AlwaysAutoResize)) {
+        const int slot = g_PetPickerSlot; // 0 or 1
+        const int other = slot == 0 ? 1 : 0;
+        auto pets = AlterEgo::GW2API::GetPets();
+        if (pets.empty()) {
+            RenderSpinner("Loading pets...");
+            AlterEgo::GW2API::FetchPetsAsync();
+        } else {
+            ImGui::BeginChild("##petlist", ImVec2(280, 360), true);
+            for (const auto& p : pets) {
+                bool usedOther = (g_EditDraft.pets.terrestrial[other] == p.id);
+                if (usedOther) {
+                    ImGui::TextDisabled("%s", p.name.c_str());
+                } else if (ImGui::Selectable(p.name.c_str())) {
+                    g_EditDraft.pets.terrestrial[slot] = p.id;
+                    g_EditDraft.pets.aquatic[slot] = p.id; // mirror to aquatic
+                    g_PetPickerSlot = -1;
+                    ImGui::CloseCurrentPopup();
+                }
+            }
+            ImGui::EndChild();
+            if (ImGui::Button("(None)")) {
+                g_EditDraft.pets.terrestrial[slot] = 0;
+                g_EditDraft.pets.aquatic[slot] = 0;
+                g_PetPickerSlot = -1;
+                ImGui::CloseCurrentPopup();
+            }
+        }
+        ImGui::EndPopup();
+    }
+    if (!open) g_PetPickerSlot = -1;
 }
 
 static void RenderGearCustomizeDialog() {
@@ -8980,6 +9074,41 @@ static void RenderBuildLibrary() {
                              : (slot == 4) ? g_EditDraft.terrestrial_skills.elite
                              : g_EditDraft.terrestrial_skills.utilities[slot - 1];
                 if (RenderEditableSkillIcon(sid, skSz)) g_SkillPickerSlot = slot;
+                ImGui::PopID();
+            }
+        }
+
+        // ===== Revenant legends =====
+        if (g_EditDraft.profession == "Revenant") {
+            ImGui::Dummy(ImVec2(0, 6));
+            RenderSectionHeader("Legends", ImVec4(0.70f, 0.58f, 0.20f, 1.0f));
+            for (int slot = 0; slot < 2; slot++) {
+                if (slot) ImGui::SameLine();
+                ImGui::PushID(3000 + slot);
+                const char* lbl = LegendNameForCode(g_EditDraft.legend_codes[slot]);
+                if (RenderChipButton(lbl, g_EditDraft.legend_codes[slot] != 0))
+                    g_LegendPickerSlot = slot;
+                ImGui::PopID();
+            }
+        }
+
+        // ===== Ranger pets =====
+        if (g_EditDraft.profession == "Ranger") {
+            ImGui::Dummy(ImVec2(0, 6));
+            RenderSectionHeader("Pets", ImVec4(0.70f, 0.58f, 0.20f, 1.0f));
+            if (AlterEgo::GW2API::GetPets().empty()) AlterEgo::GW2API::FetchPetsAsync();
+            auto pets = AlterEgo::GW2API::GetPets();
+            auto petName = [&](uint32_t id) -> const char* {
+                if (!id) return "Choose pet";
+                for (const auto& p : pets) if (p.id == id) return p.name.c_str();
+                return "Pet";
+            };
+            for (int slot = 0; slot < 2; slot++) {
+                if (slot) ImGui::SameLine();
+                ImGui::PushID(3100 + slot);
+                if (RenderChipButton(petName(g_EditDraft.pets.terrestrial[slot]),
+                                     g_EditDraft.pets.terrestrial[slot] != 0))
+                    g_PetPickerSlot = slot;
                 ImGui::PopID();
             }
         }
@@ -12858,6 +12987,8 @@ void AddonRender() {
     RenderNewBuildDialog();
     RenderSpecPickerDialog();
     RenderSkillPickerDialog();
+    RenderLegendPickerDialog();
+    RenderPetPickerDialog();
     RenderSaveToLibraryDialog();
 
     // Render chat build detection toast (always visible, even when main window is hidden)
