@@ -173,6 +173,7 @@ namespace AlterEgo {
         std::string icon_url;
         std::string description;
         std::string type;           // "Heal", "Utility", "Elite", "Weapon", etc.
+        uint32_t specialization = 0; // gating elite-spec id (0 = core, usable by all)
         nlohmann::json facts;       // Tooltip facts array
     };
 
@@ -418,6 +419,9 @@ namespace AlterEgo {
         static std::string EncodeSavedBuildToChatLink(const SavedBuild& b);
         // List of specialization IDs (core + elite) for a profession, from /v2/professions.
         static std::vector<uint32_t> GetProfessionSpecIds(const std::string& profession);
+        // All slottable skill IDs for a profession (from the palette map). Empty until
+        // FetchProfessionPaletteAsync has run for that profession.
+        static std::vector<uint32_t> GetProfessionSkillIds(const std::string& profession);
         // Make an in-memory blank build (id assigned on AddSavedBuild).
         static SavedBuild CreateBlankBuild(const std::string& profession, GameMode mode);
         // Overwrite a saved build's definition fields (specs/skills/pets/legends/weapons/

@@ -731,6 +731,7 @@ static int  g_NewBuildGameMode = 0; // index into GameMode (0=PvE,1=WvW,2=PvP,3=
 static AlterEgo::SavedBuild g_EditDraft;   // working copy while editing a build's definition
 static std::string g_EditDraftId;          // id the draft currently mirrors
 static int g_SpecPickerSlot = -1;          // 0..2 while spec picker open, else -1
+static int g_SkillPickerSlot = -1;         // 0=heal,1-3=util,4=elite while open, else -1
 static int g_LibFilterMode = 0;        // 0=All, 1=PvE, 2=WvW, 3=PvP, 4=Raid, 5=Fractal
 static char g_LibSearchBuf[128] = "";
 static char g_LibImportBuf[4096] = "";
@@ -3901,6 +3902,40 @@ static bool RenderEditableTraitIcon(uint32_t trait_id, bool selected, float size
     return clicked;
 }
 
+// Clickable skill icon for the build editor (icon cache = skill_id + 5000000).
+// Returns true when clicked. skill_id 0 draws an empty slot.
+static bool RenderEditableSkillIcon(uint32_t skill_id, float size) {
+    // Callers PushID per slot/entry to disambiguate (empty slots share skill_id 0).
+    const auto* sinfo = skill_id ? AlterEgo::GW2API::GetSkillInfo(skill_id) : nullptr;
+    ImVec2 pos = ImGui::GetCursorScreenPos();
+    bool clicked = ImGui::InvisibleButton("##es", ImVec2(size, size));
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    Texture_t* tex = skill_id ? AlterEgo::IconManager::GetIcon(skill_id + 5000000) : nullptr;
+    if (tex && tex->Resource) {
+        dl->AddImage(tex->Resource, pos, ImVec2(pos.x + size, pos.y + size));
+    } else {
+        dl->AddRectFilled(pos, ImVec2(pos.x + size, pos.y + size), IM_COL32(35, 35, 35, 180));
+        dl->AddRect(pos, ImVec2(pos.x + size, pos.y + size), IM_COL32(90, 80, 50, 200));
+        if (sinfo && !sinfo->icon_url.empty())
+            AlterEgo::IconManager::RequestIcon(skill_id + 5000000, sinfo->icon_url);
+    }
+    if (ImGui::IsItemHovered()) {
+        ImGui::BeginTooltip();
+        if (sinfo) {
+            ImGui::TextColored(ImVec4(1.0f, 0.9f, 0.5f, 1.0f), "%s", sinfo->name.c_str());
+            if (!sinfo->description.empty()) {
+                ImGui::PushTextWrapPos(300.0f);
+                ImGui::TextColored(ImVec4(0.8f, 0.8f, 0.8f, 1.0f), "%s", sinfo->description.c_str());
+                ImGui::PopTextWrapPos();
+            }
+        } else {
+            ImGui::TextColored(ImVec4(0.7f, 0.7f, 0.7f, 1.0f), "Click to choose a skill");
+        }
+        ImGui::EndTooltip();
+    }
+    return clicked;
+}
+
 // =========================================================================
 // Hero Challenges Panel
 // =========================================================================
@@ -6551,6 +6586,77 @@ static void RenderSpecPickerDialog() {
     if (!open) g_SpecPickerSlot = -1; // closed via window X
 }
 
+// Skill picker for the build editor. Lists the profession's slottable skills
+// of the slot's type (Heal / Utility / Elite), gated by slotted elite specs,
+// and prevents duplicate utilities.
+static void RenderSkillPickerDialog() {
+    if (g_SkillPickerSlot < 0) return;
+    const char* POPUP = "Choose Skill##skillpick";
+    if (!ImGui::IsPopupOpen(POPUP)) ImGui::OpenPopup(POPUP);
+
+    ImVec2 dispSize = ImGui::GetIO().DisplaySize;
+    ImGui::SetNextWindowPos(ImVec2(dispSize.x * 0.5f, dispSize.y * 0.5f),
+                            ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
+    bool open = true;
+    if (ImGui::BeginPopupModal(POPUP, &open, ImGuiWindowFlags_AlwaysAutoResize)) {
+        const int slot = g_SkillPickerSlot;
+        const char* wantType = (slot == 0) ? "Heal" : (slot == 4) ? "Elite" : "Utility";
+
+        auto applySkill = [&](uint32_t id) {
+            if (slot == 0) { g_EditDraft.terrestrial_skills.heal = id; g_EditDraft.aquatic_skills.heal = id; }
+            else if (slot == 4) { g_EditDraft.terrestrial_skills.elite = id; g_EditDraft.aquatic_skills.elite = id; }
+            else { g_EditDraft.terrestrial_skills.utilities[slot - 1] = id;
+                   g_EditDraft.aquatic_skills.utilities[slot - 1] = id; }
+            g_SkillPickerSlot = -1;
+            ImGui::CloseCurrentPopup();
+        };
+        auto eliteGateOk = [&](uint32_t specGate) -> bool {
+            if (specGate == 0) return true;
+            for (int i = 0; i < 3; i++)
+                if (g_EditDraft.specializations[i].spec_id == specGate) return true;
+            return false;
+        };
+        auto isDupUtil = [&](uint32_t id) -> bool {
+            if (slot < 1 || slot > 3) return false;
+            for (int u = 0; u < 3; u++)
+                if (u != slot - 1 && g_EditDraft.terrestrial_skills.utilities[u] == id) return true;
+            return false;
+        };
+
+        auto skillIds = AlterEgo::GW2API::GetProfessionSkillIds(g_EditDraft.profession);
+        if (skillIds.empty()) {
+            RenderSpinner("Loading skills...");
+            AlterEgo::GW2API::FetchProfessionPaletteAsync(g_EditDraft.profession);
+        } else {
+            std::vector<uint32_t> need;
+            for (uint32_t id : skillIds)
+                if (!AlterEgo::GW2API::GetSkillInfo(id)) need.push_back(id);
+            if (!need.empty()) AlterEgo::GW2API::FetchSkillDetailsAsync(need);
+
+            ImGui::BeginChild("##skilllist", ImVec2(330, 360), true);
+            int shown = 0;
+            for (uint32_t id : skillIds) {
+                const auto* sk = AlterEgo::GW2API::GetSkillInfo(id);
+                if (!sk) continue;
+                if (sk->type != wantType) continue;
+                if (!eliteGateOk(sk->specialization)) continue;
+                if (isDupUtil(id)) continue;
+                shown++;
+                ImGui::PushID((int)id);
+                if (RenderEditableSkillIcon(id, 32.0f)) applySkill(id);
+                ImGui::SameLine();
+                if (ImGui::Selectable(sk->name.c_str(), false, 0, ImVec2(0, 32))) applySkill(id);
+                ImGui::PopID();
+            }
+            if (shown == 0) RenderSpinner("Loading skills...");
+            ImGui::EndChild();
+            if (ImGui::Button("(None)")) applySkill(0);
+        }
+        ImGui::EndPopup();
+    }
+    if (!open) g_SkillPickerSlot = -1; // closed via window X
+}
+
 static void RenderGearCustomizeDialog() {
     if (!g_GearDialogOpen) return;
 
@@ -8846,6 +8952,36 @@ static void RenderBuildLibrary() {
             }
             ImGui::PopID();
             ImGui::Dummy(ImVec2(0, 4));
+        }
+
+        // ===== Skills =====
+        ImGui::Dummy(ImVec2(0, 6));
+        RenderSectionHeader("Skills", ImVec4(0.70f, 0.58f, 0.20f, 1.0f));
+        {
+            // Make sure the current skills' details are fetched (for icons/names).
+            std::vector<uint32_t> cur = {
+                g_EditDraft.terrestrial_skills.heal,
+                g_EditDraft.terrestrial_skills.utilities[0],
+                g_EditDraft.terrestrial_skills.utilities[1],
+                g_EditDraft.terrestrial_skills.utilities[2],
+                g_EditDraft.terrestrial_skills.elite,
+            };
+            std::vector<uint32_t> need;
+            for (uint32_t id : cur)
+                if (id && !AlterEgo::GW2API::GetSkillInfo(id)) need.push_back(id);
+            if (!need.empty()) AlterEgo::GW2API::FetchSkillDetailsAsync(need);
+
+            const float skSz = 42.0f;
+            for (int slot = 0; slot < 5; slot++) {
+                if (slot) ImGui::SameLine();
+                if (slot == 4) ImGui::SameLine(0, 16); // gap before elite
+                ImGui::PushID(2000 + slot);
+                uint32_t sid = (slot == 0) ? g_EditDraft.terrestrial_skills.heal
+                             : (slot == 4) ? g_EditDraft.terrestrial_skills.elite
+                             : g_EditDraft.terrestrial_skills.utilities[slot - 1];
+                if (RenderEditableSkillIcon(sid, skSz)) g_SkillPickerSlot = slot;
+                ImGui::PopID();
+            }
         }
 
         // Save the full definition (regenerates the chat link)
@@ -12721,6 +12857,7 @@ void AddonRender() {
     RenderGearCustomizeDialog();
     RenderNewBuildDialog();
     RenderSpecPickerDialog();
+    RenderSkillPickerDialog();
     RenderSaveToLibraryDialog();
 
     // Render chat build detection toast (always visible, even when main window is hidden)

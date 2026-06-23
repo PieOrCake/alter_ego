@@ -2110,6 +2110,7 @@ namespace AlterEgo {
                             if (skill.contains("description"))
                                 info.description = StripHtmlTags(skill["description"].get<std::string>());
                             info.type = skill.value("type", "");
+                            info.specialization = skill.value("specialization", 0u);
                             if (skill.contains("facts"))
                                 info.facts = skill["facts"];
                             s_skill_cache[info.id] = info;
@@ -2613,6 +2614,18 @@ namespace AlterEgo {
         auto it = s_profession_cache.find(profession);
         return it != s_profession_cache.end() ? it->second.specialization_ids
                                               : std::vector<uint32_t>{};
+    }
+
+    std::vector<uint32_t> GW2API::GetProfessionSkillIds(const std::string& profession) {
+        std::lock_guard<std::mutex> lock(s_mutex);
+        std::vector<uint32_t> out;
+        auto it = s_palette_to_skill.find(profession);
+        if (it == s_palette_to_skill.end()) return out;
+        out.reserve(it->second.size());
+        for (const auto& kv : it->second) out.push_back(kv.second);
+        std::sort(out.begin(), out.end());
+        out.erase(std::unique(out.begin(), out.end()), out.end());
+        return out;
     }
 
     SavedBuild GW2API::CreateBlankBuild(const std::string& profession, GameMode mode) {
