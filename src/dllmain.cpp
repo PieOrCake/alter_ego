@@ -22,6 +22,7 @@
 #include "imgui.h"
 #include "imgui_internal.h"
 #include "GW2API.h"
+#include "FontResolve.h"
 #include "IconManager.h"
 #include "ChatLink.h"
 #include "HoardAndSeekAPI.h"
@@ -456,6 +457,7 @@ static float g_EquipTabScroll = 0.0f;  // Horizontal scroll offset for equipment
 static float g_BuildTabScroll = 0.0f;  // Horizontal scroll offset for build tab chip strip
 static int g_SelectedBuildTab = 0;     // Build tab filter
 static bool g_ShowQAIcon = true;
+static AlterEgo::Font::Config g_FontConfig; // default = {NexusDefault, "", 16}
 static bool g_CompactCharList = false;
 static bool g_ShowCraftingIcons = false;
 static bool g_ShowAge = false;
@@ -1335,6 +1337,11 @@ static void SaveSettings() {
     j["chat_build_detection"] = g_ChatBuildDetection;
     j["toast_pos_x"] = g_ToastPosX;
     j["toast_pos_y"] = g_ToastPosY;
+    j["font"] = {
+        {"face", (int)g_FontConfig.face},
+        {"path", g_FontConfig.customPath},
+        {"px",   g_FontConfig.px},
+    };
     std::ofstream file(path);
     if (file.is_open()) file << j.dump(2);
 }
@@ -1367,6 +1374,15 @@ static void LoadSettings() {
     getBool("chat_build_detection", g_ChatBuildDetection);
     getFloat("toast_pos_x", g_ToastPosX);
     getFloat("toast_pos_y", g_ToastPosY);
+    if (j.contains("font") && j["font"].is_object()) {
+        const auto& f = j["font"];
+        if (f.contains("face") && f["face"].is_number_integer()) {
+            int face = f["face"].get<int>();
+            if (face >= 0 && face <= 2) g_FontConfig.face = (AlterEgo::Font::Face)face;
+        }
+        if (f.contains("path") && f["path"].is_string()) g_FontConfig.customPath = f["path"].get<std::string>();
+        if (f.contains("px")   && f["px"].is_number())    g_FontConfig.px = f["px"].get<float>();
+    }
 }
 
 // Character sort persistence
