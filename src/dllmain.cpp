@@ -23,6 +23,7 @@
 #include "imgui_internal.h"
 #include "GW2API.h"
 #include "FontResolve.h"
+#include "FontManager.h"
 #include "IconManager.h"
 #include "ChatLink.h"
 #include "HoardAndSeekAPI.h"
@@ -8890,6 +8891,7 @@ void AddonLoad(AddonAPI_t* aApi) {
 
     // Initialize subsystems
     AlterEgo::GW2API::Initialize(APIDefs);
+    AlterEgo::FontManager::Initialize(APIDefs);
     AlterEgo::IconManager::Initialize(APIDefs);
 
     // Load cached character data and build library from disk
@@ -9080,6 +9082,7 @@ void AddonUnload() {
         SaveAchProgress(g_AchCachedAccount);
     }
     AlterEgo::GW2API::SaveItemNameCache();
+    AlterEgo::FontManager::Shutdown();
     APIDefs = nullptr;
 }
 
