@@ -733,6 +733,7 @@ static std::string g_EditDraftId;          // id the draft currently mirrors
 static bool g_EditDirty = false;           // true once the draft diverges from the snapshot
 static int g_SpecPickerSlot = -1;          // 0..2 while spec picker open, else -1
 static int g_SkillPickerSlot = -1;         // 0=heal,1-3=util,4=elite while open, else -1
+static ImVec2 g_SkillPickerAnchor;         // screen pos of the clicked skill icon (flyout anchor)
 static int g_LegendPickerSlot = -1;        // 0..1 (Revenant) while open, else -1
 static int g_PetPickerSlot = -1;           // 0..1 (Ranger) while open, else -1
 static int g_LibFilterMode = 0;        // 0=All, 1=PvE, 2=WvW, 3=PvP, 4=Raid, 5=Fractal
@@ -6602,22 +6603,40 @@ static void RenderSpecPickerDialog() {
 // and prevents duplicate utilities.
 static void RenderSkillPickerDialog() {
     if (g_SkillPickerSlot < 0) return;
-    const char* POPUP = "Choose Skill##skillpick";
+    const char* POPUP = "##skillpick";
     if (!ImGui::IsPopupOpen(POPUP)) ImGui::OpenPopup(POPUP);
 
-    ImVec2 dispSize = ImGui::GetIO().DisplaySize;
-    ImGui::SetNextWindowPos(ImVec2(dispSize.x * 0.5f, dispSize.y * 0.5f),
-                            ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
-    bool open = true;
-    if (ImGui::BeginPopupModal(POPUP, &open, ImGuiWindowFlags_AlwaysAutoResize)) {
+    // Anchor the flyout near the clicked skill icon (clamped on screen), like the
+    // native skill picker — not a centered modal. Click-away closes it (BeginPopup).
+    ImVec2 disp = ImGui::GetIO().DisplaySize;
+    ImVec2 anchor = g_SkillPickerAnchor;
+    if (anchor.x + 200.0f > disp.x) anchor.x = disp.x - 200.0f;
+    if (anchor.x < 0.0f) anchor.x = 0.0f;
+    if (anchor.y + 390.0f > disp.y) anchor.y = disp.y - 390.0f;
+    if (anchor.y < 0.0f) anchor.y = 0.0f;
+    ImGui::SetNextWindowPos(anchor, ImGuiCond_Appearing);
+
+    if (ImGui::BeginPopup(POPUP)) {
         const int slot = g_SkillPickerSlot;
         const char* wantType = (slot == 0) ? "Heal" : (slot == 4) ? "Elite" : "Utility";
 
         auto applySkill = [&](uint32_t id) {
             if (slot == 0) { g_EditDraft.terrestrial_skills.heal = id; g_EditDraft.aquatic_skills.heal = id; }
             else if (slot == 4) { g_EditDraft.terrestrial_skills.elite = id; g_EditDraft.aquatic_skills.elite = id; }
-            else { g_EditDraft.terrestrial_skills.utilities[slot - 1] = id;
-                   g_EditDraft.aquatic_skills.utilities[slot - 1] = id; }
+            else {
+                int uidx = slot - 1;
+                uint32_t prev = g_EditDraft.terrestrial_skills.utilities[uidx];
+                // Native behaviour: picking a skill already in another utility slot
+                // swaps the two rather than refusing.
+                if (id != 0)
+                    for (int u = 0; u < 3; u++)
+                        if (u != uidx && g_EditDraft.terrestrial_skills.utilities[u] == id) {
+                            g_EditDraft.terrestrial_skills.utilities[u] = prev;
+                            g_EditDraft.aquatic_skills.utilities[u] = prev;
+                        }
+                g_EditDraft.terrestrial_skills.utilities[uidx] = id;
+                g_EditDraft.aquatic_skills.utilities[uidx] = id;
+            }
             MarkEditDirty();
             g_SkillPickerSlot = -1;
             ImGui::CloseCurrentPopup();
@@ -6626,12 +6645,6 @@ static void RenderSkillPickerDialog() {
             if (specGate == 0) return true;
             for (int i = 0; i < 3; i++)
                 if (g_EditDraft.specializations[i].spec_id == specGate) return true;
-            return false;
-        };
-        auto isDupUtil = [&](uint32_t id) -> bool {
-            if (slot < 1 || slot > 3) return false;
-            for (int u = 0; u < 3; u++)
-                if (u != slot - 1 && g_EditDraft.terrestrial_skills.utilities[u] == id) return true;
             return false;
         };
 
@@ -6645,14 +6658,14 @@ static void RenderSkillPickerDialog() {
                 if (!AlterEgo::GW2API::GetSkillInfo(id)) need.push_back(id);
             if (!need.empty()) AlterEgo::GW2API::FetchSkillDetailsAsync(need);
 
-            // Native-flyout-style grid (à la Pie UI): icons only, 4 per row.
+            // Native-flyout-style grid: every skill of this type (elite-gated), 4 per row.
+            // Skills already slotted elsewhere are shown too — picking one swaps it.
             std::vector<uint32_t> shownIds;
             for (uint32_t id : skillIds) {
                 const auto* sk = AlterEgo::GW2API::GetSkillInfo(id);
                 if (!sk) continue;
                 if (sk->type != wantType) continue;
                 if (!eliteGateOk(sk->specialization)) continue;
-                if (isDupUtil(id)) continue;
                 shownIds.push_back(id);
             }
             const int COLS = 4;
@@ -6676,8 +6689,9 @@ static void RenderSkillPickerDialog() {
             if (ImGui::Button("(None)")) applySkill(0);
         }
         ImGui::EndPopup();
+    } else {
+        g_SkillPickerSlot = -1; // closed by clicking away
     }
-    if (!open) g_SkillPickerSlot = -1; // closed via window X
 }
 
 // Revenant legend picker (active legend slot 0/1). Prevents the same legend
@@ -7558,9 +7572,10 @@ static void RenderBuildGearSlot(AlterEgo::SavedBuild& build, const char* slot) {
         ImGui::Dummy(ImVec2(iconSz, iconSz));
     }
 
-    // Invisible button over icon area (overlaid on top for click handling)
+    // Invisible button over icon area (overlaid on top for click handling).
+    // Gear is only editable in edit mode; read-only slots are inert (no click/hover).
     ImGui::SetCursorScreenPos(pos);
-    if (disabled) {
+    if (disabled || !g_LibEditMode) {
         ImGui::Dummy(ImVec2(iconSz, iconSz));
     } else if (ImGui::InvisibleButton("##icon", ImVec2(iconSz, iconSz))) {
         AlterEgo::BuildGearSlot current;
@@ -7568,7 +7583,7 @@ static void RenderBuildGearSlot(AlterEgo::SavedBuild& build, const char* slot) {
         current.slot = slot;
         OpenGearDialog(build.id, slot, current);
     }
-    bool hovered = !disabled && ImGui::IsItemHovered();
+    bool hovered = !disabled && g_LibEditMode && ImGui::IsItemHovered();
 
     // Name text next to icon — draw directly so lines fit within icon height
     bool isRelicSlot = (strcmp(slot, "Relic") == 0);
@@ -7791,7 +7806,10 @@ static void RenderBuildSkillRow(const AlterEgo::SavedBuild& src, float sz, bool 
         if (editable) {
             ImGui::PushID(slot + 700);
             ImVec2 p = ImGui::GetCursorScreenPos();
-            if (RenderEditableSkillIcon(sid, sz)) g_SkillPickerSlot = slot;
+            if (RenderEditableSkillIcon(sid, sz)) {
+                g_SkillPickerSlot = slot;
+                g_SkillPickerAnchor = ImVec2(p.x, p.y + sz + 2.0f);
+            }
             if (ImGui::IsItemHovered())
                 ImGui::GetWindowDrawList()->AddRect(p, ImVec2(p.x + sz, p.y + sz),
                     IM_COL32(227, 196, 122, 255), 0.0f, 0, 2.0f);
@@ -7814,10 +7832,6 @@ static void RenderSavedBuildPreview(const AlterEgo::SavedBuild& build, bool show
     // Re-resolve any item/stat names that weren't available at import time
     // (e.g. API rate-limited or offline). Queues async fetches for missing IDs.
     ResolveBuildItemNames(const_cast<AlterEgo::SavedBuild&>(build));
-
-    // Capture the card's top-left + width up front for the edit-mode frame (drawn at the end).
-    ImVec2 cardTL = ImGui::GetCursorScreenPos();
-    float  cardW  = ImGui::GetContentRegionAvail().x;
 
     ImVec4 profColor = GetProfessionColor(build.profession);
     {
@@ -8505,17 +8519,19 @@ static void RenderSavedBuildPreview(const AlterEgo::SavedBuild& build, bool show
         ImGui::TextColored(ImVec4(0.6f, 0.6f, 0.6f, 1.0f), "Notes: %s", build.notes.c_str());
     }
 
-    // Edit mode: animated gold marching-ants frame around the whole card (same motif
-    // as the trait connectors), so it is unmistakable that the card is editable.
+    // Edit mode: animated gold marching-ants frame (same motif as the trait
+    // connectors). Drawn around the VISIBLE pane (the scroll viewport's clip rect),
+    // not the full content height, so it never bleeds past the scroll region.
     if (g_LibEditMode) {
-        ImVec2 a(cardTL.x - 3, cardTL.y - 3);
-        ImVec2 b(cardTL.x + cardW + 3, ImGui::GetCursorScreenPos().y + 3);
-        ImDrawList* fg = ImGui::GetForegroundDrawList();
+        ImDrawList* dl2 = ImGui::GetWindowDrawList();
+        ImVec2 a = dl2->GetClipRectMin();
+        ImVec2 b = dl2->GetClipRectMax();
+        a.x += 2; a.y += 2; b.x -= 2; b.y -= 2;
         ImU32 gold = IM_COL32(227, 196, 122, 255);
-        DrawDottedLine(fg, ImVec2(a.x, a.y), ImVec2(b.x, a.y), gold, 2.0f, 6.0f, 4.0f);
-        DrawDottedLine(fg, ImVec2(b.x, a.y), ImVec2(b.x, b.y), gold, 2.0f, 6.0f, 4.0f);
-        DrawDottedLine(fg, ImVec2(b.x, b.y), ImVec2(a.x, b.y), gold, 2.0f, 6.0f, 4.0f);
-        DrawDottedLine(fg, ImVec2(a.x, b.y), ImVec2(a.x, a.y), gold, 2.0f, 6.0f, 4.0f);
+        DrawDottedLine(dl2, ImVec2(a.x, a.y), ImVec2(b.x, a.y), gold, 2.0f, 6.0f, 4.0f);
+        DrawDottedLine(dl2, ImVec2(b.x, a.y), ImVec2(b.x, b.y), gold, 2.0f, 6.0f, 4.0f);
+        DrawDottedLine(dl2, ImVec2(b.x, b.y), ImVec2(a.x, b.y), gold, 2.0f, 6.0f, 4.0f);
+        DrawDottedLine(dl2, ImVec2(a.x, b.y), ImVec2(a.x, a.y), gold, 2.0f, 6.0f, 4.0f);
     }
 }
 
