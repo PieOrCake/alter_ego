@@ -6618,6 +6618,7 @@ static void RenderSkillPickerDialog() {
             else if (slot == 4) { g_EditDraft.terrestrial_skills.elite = id; g_EditDraft.aquatic_skills.elite = id; }
             else { g_EditDraft.terrestrial_skills.utilities[slot - 1] = id;
                    g_EditDraft.aquatic_skills.utilities[slot - 1] = id; }
+            MarkEditDirty();
             g_SkillPickerSlot = -1;
             ImGui::CloseCurrentPopup();
         };
@@ -6644,22 +6645,33 @@ static void RenderSkillPickerDialog() {
                 if (!AlterEgo::GW2API::GetSkillInfo(id)) need.push_back(id);
             if (!need.empty()) AlterEgo::GW2API::FetchSkillDetailsAsync(need);
 
-            ImGui::BeginChild("##skilllist", ImVec2(330, 360), true);
-            int shown = 0;
+            // Native-flyout-style grid (à la Pie UI): icons only, 4 per row.
+            std::vector<uint32_t> shownIds;
             for (uint32_t id : skillIds) {
                 const auto* sk = AlterEgo::GW2API::GetSkillInfo(id);
                 if (!sk) continue;
                 if (sk->type != wantType) continue;
                 if (!eliteGateOk(sk->specialization)) continue;
                 if (isDupUtil(id)) continue;
-                shown++;
-                ImGui::PushID((int)id);
-                if (RenderEditableSkillIcon(id, 32.0f)) applySkill(id);
-                ImGui::SameLine();
-                if (ImGui::Selectable(sk->name.c_str(), false, 0, ImVec2(0, 32))) applySkill(id);
+                shownIds.push_back(id);
+            }
+            const int COLS = 4;
+            const float cell = 42.0f, pad = 4.0f;
+            uint32_t equipped = (slot == 0) ? g_EditDraft.terrestrial_skills.heal
+                              : (slot == 4) ? g_EditDraft.terrestrial_skills.elite
+                              : g_EditDraft.terrestrial_skills.utilities[slot - 1];
+            ImGui::BeginChild("##skillgrid", ImVec2(COLS * (cell + pad) + pad, 360), true);
+            for (size_t k = 0; k < shownIds.size(); k++) {
+                if (k % COLS) ImGui::SameLine(0, pad);
+                ImGui::PushID((int)shownIds[k]);
+                ImVec2 p = ImGui::GetCursorScreenPos();
+                if (RenderEditableSkillIcon(shownIds[k], cell)) applySkill(shownIds[k]);
+                if (shownIds[k] == equipped)  // currently-slotted: thick white border
+                    ImGui::GetWindowDrawList()->AddRect(p, ImVec2(p.x + cell, p.y + cell),
+                        IM_COL32(255, 255, 255, 255), 0.0f, 0, 3.0f);
                 ImGui::PopID();
             }
-            if (shown == 0) RenderSpinner("Loading skills...");
+            if (shownIds.empty()) RenderSpinner("Loading skills...");
             ImGui::EndChild();
             if (ImGui::Button("(None)")) applySkill(0);
         }
@@ -6688,6 +6700,7 @@ static void RenderLegendPickerDialog() {
             } else if (ImGui::Selectable(l.name)) {
                 g_EditDraft.legend_codes[slot] = l.code;
                 g_EditDraft.legend_codes[slot + 2] = l.code; // mirror to aquatic
+                MarkEditDirty();
                 g_LegendPickerSlot = -1;
                 ImGui::CloseCurrentPopup();
             }
@@ -6696,6 +6709,7 @@ static void RenderLegendPickerDialog() {
         if (ImGui::Selectable("(None)")) {
             g_EditDraft.legend_codes[slot] = 0;
             g_EditDraft.legend_codes[slot + 2] = 0;
+            MarkEditDirty();
             g_LegendPickerSlot = -1;
             ImGui::CloseCurrentPopup();
         }
@@ -6730,6 +6744,7 @@ static void RenderPetPickerDialog() {
                 } else if (ImGui::Selectable(p.name.c_str())) {
                     g_EditDraft.pets.terrestrial[slot] = p.id;
                     g_EditDraft.pets.aquatic[slot] = p.id; // mirror to aquatic
+                    MarkEditDirty();
                     g_PetPickerSlot = -1;
                     ImGui::CloseCurrentPopup();
                 }
@@ -6738,6 +6753,7 @@ static void RenderPetPickerDialog() {
             if (ImGui::Button("(None)")) {
                 g_EditDraft.pets.terrestrial[slot] = 0;
                 g_EditDraft.pets.aquatic[slot] = 0;
+                MarkEditDirty();
                 g_PetPickerSlot = -1;
                 ImGui::CloseCurrentPopup();
             }
@@ -7758,6 +7774,28 @@ static void ResolveBuildTraitPlaceholders(AlterEgo::SavedBuild& build) {
     if (changed) AlterEgo::GW2API::SaveBuildLibrary();
 }
 
+// Heal/Utility/Elite icon row for a build. When `editable`, each icon opens the skill
+// picker for its slot (0=heal, 1-3=util, 4=elite) and draws a gold hover outline.
+static void RenderBuildSkillRow(const AlterEgo::SavedBuild& src, float sz, bool editable) {
+    auto cell = [&](uint32_t sid, int slot) {
+        if (editable) {
+            ImGui::PushID(slot + 700);
+            ImVec2 p = ImGui::GetCursorScreenPos();
+            if (RenderEditableSkillIcon(sid, sz)) g_SkillPickerSlot = slot;
+            if (ImGui::IsItemHovered())
+                ImGui::GetWindowDrawList()->AddRect(p, ImVec2(p.x + sz, p.y + sz),
+                    IM_COL32(227, 196, 122, 255), 0.0f, 0, 2.0f);
+            ImGui::PopID();
+        } else {
+            RenderSkillIcon(sid, sz);
+        }
+    };
+    cell(src.terrestrial_skills.heal, 0);
+    ImGui::SameLine();
+    for (int i = 0; i < 3; i++) { cell(src.terrestrial_skills.utilities[i], 1 + i); ImGui::SameLine(); }
+    cell(src.terrestrial_skills.elite, 4);
+}
+
 // Render the build preview panel for a saved build (reuses spec/trait rendering logic)
 static void RenderSavedBuildPreview(const AlterEgo::SavedBuild& build, bool showEditButton = false) {
     // Try to resolve any placeholder traits (negative values from import without spec cache)
@@ -8246,6 +8284,11 @@ static void RenderSavedBuildPreview(const AlterEgo::SavedBuild& build, bool show
 
     float skillSz = ICON_SIZE;
 
+    // While editing, the heal/util/elite icons reflect the draft and are clickable.
+    // Revenant skills are bound to its legends, so they are not independently slottable.
+    const AlterEgo::SavedBuild& skillSrc = g_LibEditMode ? g_EditDraft : build;
+    bool skillEditable = g_LibEditMode && build.profession != "Revenant";
+
     // Compute heal/utility/elite offset: max weapon skill count + 1 icon gap
     int maxWpnCount = 5; // default for two-handed
     if (!wpnSkillsA.empty() && wpnSkillsA.size() > (size_t)maxWpnCount)
@@ -8271,25 +8314,13 @@ static void RenderSavedBuildPreview(const AlterEgo::SavedBuild& build, bool show
 
             ImGui::SameLine(utilOffset);
             ImGui::BeginGroup();
-            RenderSkillIcon(build.terrestrial_skills.heal, skillSz);
-            ImGui::SameLine();
-            for (int i = 0; i < 3; i++) {
-                RenderSkillIcon(build.terrestrial_skills.utilities[i], skillSz);
-                ImGui::SameLine();
-            }
-            RenderSkillIcon(build.terrestrial_skills.elite, skillSz);
+            RenderBuildSkillRow(skillSrc, skillSz, skillEditable);
             ImGui::EndGroup();
         } else {
             // No weapon set A, just show utility skills
             ImGui::TextColored(ImVec4(0.7f, 0.85f, 1.0f, 1.0f), "Heal / Utility / Elite");
             ImGui::BeginGroup();
-            RenderSkillIcon(build.terrestrial_skills.heal, skillSz);
-            ImGui::SameLine();
-            for (int i = 0; i < 3; i++) {
-                RenderSkillIcon(build.terrestrial_skills.utilities[i], skillSz);
-                ImGui::SameLine();
-            }
-            RenderSkillIcon(build.terrestrial_skills.elite, skillSz);
+            RenderBuildSkillRow(skillSrc, skillSz, skillEditable);
             ImGui::EndGroup();
         }
 
@@ -8308,13 +8339,7 @@ static void RenderSavedBuildPreview(const AlterEgo::SavedBuild& build, bool show
         // Fallback: no weapon types selected, just show utility skills
         ImGui::Text("Skills");
         ImGui::BeginGroup();
-        RenderSkillIcon(build.terrestrial_skills.heal, skillSz);
-        ImGui::SameLine();
-        for (int i = 0; i < 3; i++) {
-            RenderSkillIcon(build.terrestrial_skills.utilities[i], skillSz);
-            ImGui::SameLine();
-        }
-        RenderSkillIcon(build.terrestrial_skills.elite, skillSz);
+        RenderBuildSkillRow(skillSrc, skillSz, skillEditable);
         ImGui::EndGroup();
 
         // Legacy weapons from chat link
@@ -8328,6 +8353,38 @@ static void RenderSavedBuildPreview(const AlterEgo::SavedBuild& build, bool show
                 wpnStr += AlterEgo::ChatLink::WeaponName((uint16_t)build.weapons[i]);
             }
             ImGui::TextColored(ImVec4(0.8f, 0.8f, 0.8f, 1.0f), "%s", wpnStr.c_str());
+        }
+    }
+
+    // Editing: Revenant legends / Ranger pets (not part of the heal/util/elite row).
+    if (g_LibEditMode && build.profession == "Revenant") {
+        ImGui::Spacing();
+        RenderSectionHeader("Legends", ImVec4(0.70f, 0.58f, 0.20f, 1.0f));
+        for (int slot = 0; slot < 2; slot++) {
+            if (slot) ImGui::SameLine();
+            ImGui::PushID(3000 + slot);
+            const char* lbl = LegendNameForCode(g_EditDraft.legend_codes[slot]);
+            if (RenderChipButton(lbl, g_EditDraft.legend_codes[slot] != 0)) g_LegendPickerSlot = slot;
+            ImGui::PopID();
+        }
+    }
+    if (g_LibEditMode && build.profession == "Ranger") {
+        ImGui::Spacing();
+        RenderSectionHeader("Pets", ImVec4(0.70f, 0.58f, 0.20f, 1.0f));
+        if (AlterEgo::GW2API::GetPets().empty()) AlterEgo::GW2API::FetchPetsAsync();
+        auto pets = AlterEgo::GW2API::GetPets();
+        auto petName = [&](uint32_t id) -> const char* {
+            if (!id) return "Choose pet";
+            for (const auto& p : pets) if (p.id == id) return p.name.c_str();
+            return "Pet";
+        };
+        for (int slot = 0; slot < 2; slot++) {
+            if (slot) ImGui::SameLine();
+            ImGui::PushID(3100 + slot);
+            if (RenderChipButton(petName(g_EditDraft.pets.terrestrial[slot]),
+                                 g_EditDraft.pets.terrestrial[slot] != 0))
+                g_PetPickerSlot = slot;
+            ImGui::PopID();
         }
     }
 
@@ -9046,11 +9103,9 @@ static void RenderBuildLibrary() {
         if (AlterEgo::GW2API::GetProfessionSpecIds(g_EditDraft.profession).empty())
             AlterEgo::GW2API::FetchProfessionInfoAsync(g_EditDraft.profession);
 
-        // ===== Skills =====
-        ImGui::Dummy(ImVec2(0, 6));
-        RenderSectionHeader("Skills", ImVec4(0.70f, 0.58f, 0.20f, 1.0f));
+        // Skills / legends / pets are edited in-place in the rich card below.
+        // Prefetch the current skills' details so the in-card icons resolve.
         {
-            // Make sure the current skills' details are fetched (for icons/names).
             std::vector<uint32_t> cur = {
                 g_EditDraft.terrestrial_skills.heal,
                 g_EditDraft.terrestrial_skills.utilities[0],
@@ -9062,53 +9117,6 @@ static void RenderBuildLibrary() {
             for (uint32_t id : cur)
                 if (id && !AlterEgo::GW2API::GetSkillInfo(id)) need.push_back(id);
             if (!need.empty()) AlterEgo::GW2API::FetchSkillDetailsAsync(need);
-
-            const float skSz = 42.0f;
-            for (int slot = 0; slot < 5; slot++) {
-                if (slot) ImGui::SameLine();
-                if (slot == 4) ImGui::SameLine(0, 16); // gap before elite
-                ImGui::PushID(2000 + slot);
-                uint32_t sid = (slot == 0) ? g_EditDraft.terrestrial_skills.heal
-                             : (slot == 4) ? g_EditDraft.terrestrial_skills.elite
-                             : g_EditDraft.terrestrial_skills.utilities[slot - 1];
-                if (RenderEditableSkillIcon(sid, skSz)) g_SkillPickerSlot = slot;
-                ImGui::PopID();
-            }
-        }
-
-        // ===== Revenant legends =====
-        if (g_EditDraft.profession == "Revenant") {
-            ImGui::Dummy(ImVec2(0, 6));
-            RenderSectionHeader("Legends", ImVec4(0.70f, 0.58f, 0.20f, 1.0f));
-            for (int slot = 0; slot < 2; slot++) {
-                if (slot) ImGui::SameLine();
-                ImGui::PushID(3000 + slot);
-                const char* lbl = LegendNameForCode(g_EditDraft.legend_codes[slot]);
-                if (RenderChipButton(lbl, g_EditDraft.legend_codes[slot] != 0))
-                    g_LegendPickerSlot = slot;
-                ImGui::PopID();
-            }
-        }
-
-        // ===== Ranger pets =====
-        if (g_EditDraft.profession == "Ranger") {
-            ImGui::Dummy(ImVec2(0, 6));
-            RenderSectionHeader("Pets", ImVec4(0.70f, 0.58f, 0.20f, 1.0f));
-            if (AlterEgo::GW2API::GetPets().empty()) AlterEgo::GW2API::FetchPetsAsync();
-            auto pets = AlterEgo::GW2API::GetPets();
-            auto petName = [&](uint32_t id) -> const char* {
-                if (!id) return "Choose pet";
-                for (const auto& p : pets) if (p.id == id) return p.name.c_str();
-                return "Pet";
-            };
-            for (int slot = 0; slot < 2; slot++) {
-                if (slot) ImGui::SameLine();
-                ImGui::PushID(3100 + slot);
-                if (RenderChipButton(petName(g_EditDraft.pets.terrestrial[slot]),
-                                     g_EditDraft.pets.terrestrial[slot] != 0))
-                    g_PetPickerSlot = slot;
-                ImGui::PopID();
-            }
         }
 
         // Save the full definition (regenerates the chat link)
