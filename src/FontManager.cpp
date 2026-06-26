@@ -105,7 +105,7 @@ void EnsureBundledFont() {
     if (s_bundledFetching.exchange(true)) return;     // one attempt per session
     std::string dir = s_fontsDir;
     std::thread([dir]() {
-        const std::string url  = "https://raw.githubusercontent.com/PieOrCake/alter_ego/main/fonts/inter_regular.ttf";
+        const std::string url  = "https://raw.githubusercontent.com/PieOrCake/alter_ego/main/assets/inter_regular.ttf";
         const std::string dst  = dir + "/inter_regular.ttf";
         const std::string part = dst + ".part";
         if (Skinventory::HttpClient::DownloadToFile(url, part) && IsValidTtf(part)) {
