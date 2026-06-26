@@ -7815,6 +7815,10 @@ static void RenderSavedBuildPreview(const AlterEgo::SavedBuild& build, bool show
     // (e.g. API rate-limited or offline). Queues async fetches for missing IDs.
     ResolveBuildItemNames(const_cast<AlterEgo::SavedBuild&>(build));
 
+    // Capture the card's top-left + width up front for the edit-mode frame (drawn at the end).
+    ImVec2 cardTL = ImGui::GetCursorScreenPos();
+    float  cardW  = ImGui::GetContentRegionAvail().x;
+
     ImVec4 profColor = GetProfessionColor(build.profession);
     {
         // Detect elite spec — use its icon and name in the header when present
@@ -7894,6 +7898,14 @@ static void RenderSavedBuildPreview(const AlterEgo::SavedBuild& build, bool show
             ImGui::PushStyleColor(ImGuiCol_Text, profColor);
             if (InputTextString("##edit_name", g_LibEditName)) MarkEditDirty();
             ImGui::PopStyleColor();
+
+            // "● EDITING" badge to the right of the name field.
+            const char* badge = "\xE2\x97\x8F EDITING";
+            ImVec2 ts = ImGui::CalcTextSize(badge);
+            float bx = textX + 230.0f, by = textTop + 1.0f;
+            dl->AddRectFilled(ImVec2(bx - 4, by - 2), ImVec2(bx + ts.x + 4, by + ts.y + 2),
+                              IM_COL32(120, 90, 30, 230), 3.0f);
+            dl->AddText(ImVec2(bx, by), IM_COL32(245, 210, 120, 255), badge);
         } else {
             ImGui::TextColored(profColor, "%s", build.name.c_str());
         }
@@ -8491,6 +8503,19 @@ static void RenderSavedBuildPreview(const AlterEgo::SavedBuild& build, bool show
     if (!build.notes.empty()) {
         ImGui::Spacing();
         ImGui::TextColored(ImVec4(0.6f, 0.6f, 0.6f, 1.0f), "Notes: %s", build.notes.c_str());
+    }
+
+    // Edit mode: animated gold marching-ants frame around the whole card (same motif
+    // as the trait connectors), so it is unmistakable that the card is editable.
+    if (g_LibEditMode) {
+        ImVec2 a(cardTL.x - 3, cardTL.y - 3);
+        ImVec2 b(cardTL.x + cardW + 3, ImGui::GetCursorScreenPos().y + 3);
+        ImDrawList* fg = ImGui::GetForegroundDrawList();
+        ImU32 gold = IM_COL32(227, 196, 122, 255);
+        DrawDottedLine(fg, ImVec2(a.x, a.y), ImVec2(b.x, a.y), gold, 2.0f, 6.0f, 4.0f);
+        DrawDottedLine(fg, ImVec2(b.x, a.y), ImVec2(b.x, b.y), gold, 2.0f, 6.0f, 4.0f);
+        DrawDottedLine(fg, ImVec2(b.x, b.y), ImVec2(a.x, b.y), gold, 2.0f, 6.0f, 4.0f);
+        DrawDottedLine(fg, ImVec2(a.x, b.y), ImVec2(a.x, a.y), gold, 2.0f, 6.0f, 4.0f);
     }
 }
 
