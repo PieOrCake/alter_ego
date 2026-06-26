@@ -1,5 +1,6 @@
 #include "GW2API.h"
 #include "HoardAndSeekAPI.h"
+#include "ChatLink.h"
 
 #include <windows.h>
 #include <wininet.h>
@@ -116,6 +117,10 @@ namespace AlterEgo {
     std::unordered_map<std::string, std::unordered_map<uint16_t, uint32_t>> GW2API::s_palette_to_skill;
     std::unordered_map<std::string, std::unordered_map<uint32_t, uint16_t>> GW2API::s_skill_to_palette;
     std::unordered_set<std::string> GW2API::s_palette_fetching;
+    std::vector<PetInfo> GW2API::s_pets;
+    std::atomic<bool> GW2API::s_petsFetching{false};
+    std::map<uint8_t, uint32_t> GW2API::s_legend_swap;
+    std::atomic<bool> GW2API::s_legendsFetching{false};
     std::mutex GW2API::s_mutex;
 
     // --- Nexus integration ---
@@ -1740,9 +1745,18 @@ namespace AlterEgo {
                 info.name = j.value("name", prof);
                 info.icon_url = j.value("icon", "");
                 info.icon_big_url = j.value("icon_big", "");
+                if (j.contains("specializations") && j["specializations"].is_array())
+                    for (const auto& s : j["specializations"])
+                        if (s.is_number_unsigned()) info.specialization_ids.push_back(s.get<uint32_t>());
 
-                std::lock_guard<std::mutex> lock(s_mutex);
-                s_profession_cache[prof] = std::move(info);
+                std::vector<uint32_t> specIds = info.specialization_ids;
+                {
+                    std::lock_guard<std::mutex> lock(s_mutex);
+                    s_profession_cache[prof] = std::move(info);
+                }
+
+                // Populate s_spec_cache so the build editor can show trait grids.
+                if (!specIds.empty()) FetchSpecDetailsAsync(specIds);
 
                 if (s_api) {
                     std::string msg = "Loaded profession info for " + prof;
@@ -2100,6 +2114,10 @@ namespace AlterEgo {
                             if (skill.contains("description"))
                                 info.description = StripHtmlTags(skill["description"].get<std::string>());
                             info.type = skill.value("type", "");
+                            info.specialization = skill.value("specialization", 0u);
+                            if (skill.contains("professions") && skill["professions"].is_array())
+                                for (const auto& p : skill["professions"])
+                                    if (p.is_string()) info.professions.push_back(p.get<std::string>());
                             if (skill.contains("facts"))
                                 info.facts = skill["facts"];
                             s_skill_cache[info.id] = info;
@@ -2542,6 +2560,234 @@ namespace AlterEgo {
         return SaveBuildLibrary();
     }
 
+    std::string GW2API::EncodeSavedBuildToChatLink(const SavedBuild& b) {
+        auto profCode = [](const std::string& p) -> uint8_t {
+            if (p == "Guardian")     return 1;
+            if (p == "Warrior")      return 2;
+            if (p == "Engineer")     return 3;
+            if (p == "Ranger")       return 4;
+            if (p == "Thief")        return 5;
+            if (p == "Elementalist") return 6;
+            if (p == "Mesmer")       return 7;
+            if (p == "Necromancer")  return 8;
+            if (p == "Revenant")     return 9;
+            return 0;
+        };
+        DecodedBuildLink link{};
+        link.profession = profCode(b.profession);
+        for (int i = 0; i < 3; i++) {
+            link.specs[i].spec_id = (uint8_t)b.specializations[i].spec_id;
+            const auto* si = GetSpecInfo(b.specializations[i].spec_id);
+            for (int t = 0; t < 3; t++) {
+                int traitId = b.specializations[i].traits[t];
+                uint8_t choice = 0;
+                if (traitId > 0 && si && si->major_traits.size() >= 9) {
+                    for (int r = 0; r < 3; r++)
+                        if ((int)si->major_traits[t * 3 + r] == traitId) { choice = (uint8_t)(r + 1); break; }
+                } else if (traitId < 0) {
+                    choice = (uint8_t)(-traitId); // unresolved placeholder already holds the choice
+                }
+                link.specs[i].traits[t] = choice;
+            }
+        }
+        auto toPal = [&](uint32_t skill_id) -> uint16_t {
+            return skill_id ? GetPaletteIdFromSkill(b.profession, skill_id) : 0;
+        };
+        link.terrestrial_skills[0] = toPal(b.terrestrial_skills.heal);
+        link.terrestrial_skills[1] = toPal(b.terrestrial_skills.utilities[0]);
+        link.terrestrial_skills[2] = toPal(b.terrestrial_skills.utilities[1]);
+        link.terrestrial_skills[3] = toPal(b.terrestrial_skills.utilities[2]);
+        link.terrestrial_skills[4] = toPal(b.terrestrial_skills.elite);
+        link.aquatic_skills[0] = toPal(b.aquatic_skills.heal);
+        link.aquatic_skills[1] = toPal(b.aquatic_skills.utilities[0]);
+        link.aquatic_skills[2] = toPal(b.aquatic_skills.utilities[1]);
+        link.aquatic_skills[3] = toPal(b.aquatic_skills.utilities[2]);
+        link.aquatic_skills[4] = toPal(b.aquatic_skills.elite);
+        if (b.profession == "Ranger") {
+            link.pets[0] = (uint8_t)b.pets.terrestrial[0];
+            link.pets[1] = (uint8_t)b.pets.terrestrial[1];
+            link.pets[2] = (uint8_t)b.pets.aquatic[0];
+            link.pets[3] = (uint8_t)b.pets.aquatic[1];
+        }
+        if (b.profession == "Revenant") {
+            for (int i = 0; i < 4; i++) link.legends[i] = b.legend_codes[i];
+        }
+        for (auto w : b.weapons) link.weapons.push_back((uint16_t)w);
+        return ChatLink::EncodeBuild(link);
+    }
+
+    std::vector<uint32_t> GW2API::GetProfessionSpecIds(const std::string& profession) {
+        std::lock_guard<std::mutex> lock(s_mutex);
+        auto it = s_profession_cache.find(profession);
+        return it != s_profession_cache.end() ? it->second.specialization_ids
+                                              : std::vector<uint32_t>{};
+    }
+
+    std::vector<uint32_t> GW2API::GetProfessionSkillIds(const std::string& profession) {
+        std::lock_guard<std::mutex> lock(s_mutex);
+        std::vector<uint32_t> out;
+        auto it = s_palette_to_skill.find(profession);
+        if (it == s_palette_to_skill.end()) return out;
+        out.reserve(it->second.size());
+        for (const auto& kv : it->second) out.push_back(kv.second);
+        std::sort(out.begin(), out.end());
+        out.erase(std::unique(out.begin(), out.end()), out.end());
+        return out;
+    }
+
+    std::vector<PetInfo> GW2API::GetPets() {
+        std::lock_guard<std::mutex> lock(s_mutex);
+        return s_pets;
+    }
+
+    void GW2API::FetchPetsAsync() {
+        {
+            std::lock_guard<std::mutex> lock(s_mutex);
+            if (!s_pets.empty()) return;
+        }
+        if (s_petsFetching.exchange(true)) return;
+        std::thread([]() {
+            std::string response = HttpGet("https://api.guildwars2.com/v2/pets?ids=all");
+            std::vector<PetInfo> pets;
+            if (!response.empty()) {
+                try {
+                    json j = json::parse(response);
+                    if (j.is_array())
+                        for (const auto& p : j) {
+                            if (!p.contains("id")) continue;
+                            PetInfo info;
+                            info.id = p["id"].get<uint32_t>();
+                            info.name = p.value("name", "");
+                            info.icon_url = p.value("icon", "");
+                            pets.push_back(std::move(info));
+                        }
+                } catch (...) {}
+            }
+            std::sort(pets.begin(), pets.end(),
+                      [](const PetInfo& a, const PetInfo& b) { return a.name < b.name; });
+            {
+                std::lock_guard<std::mutex> lock(s_mutex);
+                s_pets = std::move(pets);
+            }
+            s_petsFetching = false;
+        }).detach();
+    }
+
+    uint32_t GW2API::GetLegendSwapSkill(uint8_t code) {
+        std::lock_guard<std::mutex> lock(s_mutex);
+        auto it = s_legend_swap.find(code);
+        return it != s_legend_swap.end() ? it->second : 0u;
+    }
+
+    void GW2API::FetchLegendsAsync() {
+        {
+            std::lock_guard<std::mutex> lock(s_mutex);
+            if (!s_legend_swap.empty()) return;
+        }
+        if (s_legendsFetching.exchange(true)) return;
+        std::thread([]() {
+            // 1) /v2/legends -> each legend's swap-skill id.
+            std::vector<uint32_t> swaps;
+            std::string resp = HttpGet("https://api.guildwars2.com/v2/legends?ids=all");
+            if (!resp.empty()) {
+                try {
+                    json j = json::parse(resp);
+                    if (j.is_array())
+                        for (const auto& l : j)
+                            if (l.contains("swap") && l["swap"].is_number())
+                                swaps.push_back(l["swap"].get<uint32_t>());
+                } catch (...) {}
+            }
+            // 2) Fetch those swap skills (for their names + emblem icons), match the
+            //    name keyword to the AE legend byte code, and cache the skill so the
+            //    icon loads via the normal skill-icon path.
+            if (!swaps.empty()) {
+                std::string idsp;
+                for (uint32_t id : swaps) { if (!idsp.empty()) idsp += ","; idsp += std::to_string(id); }
+                std::string sresp = HttpGet("https://api.guildwars2.com/v2/skills?ids=" + idsp);
+                if (!sresp.empty()) {
+                    try {
+                        json sj = json::parse(sresp);
+                        if (sj.is_array()) {
+                            std::lock_guard<std::mutex> lock(s_mutex);
+                            for (const auto& sk : sj) {
+                                if (!sk.contains("id")) continue;
+                                SkillInfo info;
+                                info.id = sk["id"].get<uint32_t>();
+                                info.name = sk.value("name", "");
+                                info.icon_url = sk.value("icon", "");
+                                info.type = sk.value("type", "");
+                                if (sk.contains("professions") && sk["professions"].is_array())
+                                    for (const auto& p : sk["professions"])
+                                        if (p.is_string()) info.professions.push_back(p.get<std::string>());
+                                s_skill_cache[info.id] = info;
+                                const std::string& n = info.name;
+                                uint8_t code = 0;
+                                if      (n.find("Dragon")   != std::string::npos) code = 13;
+                                else if (n.find("Assassin") != std::string::npos) code = 14;
+                                else if (n.find("Dwarf")    != std::string::npos) code = 15;
+                                else if (n.find("Demon")    != std::string::npos) code = 16;
+                                else if (n.find("Renegade") != std::string::npos) code = 17;
+                                else if (n.find("Centaur")  != std::string::npos) code = 18;
+                                else if (n.find("Alliance") != std::string::npos) code = 19;
+                                if (code) s_legend_swap[code] = info.id;
+                            }
+                        }
+                    } catch (...) {}
+                }
+                SaveSkillCache();
+            }
+            s_legendsFetching = false;
+        }).detach();
+    }
+
+    SavedBuild GW2API::CreateBlankBuild(const std::string& profession, GameMode mode) {
+        SavedBuild b;
+        b.profession = profession;
+        b.game_mode = mode;
+        b.name = profession + " Build";
+        b.created = time(nullptr);
+        return b;
+    }
+
+    bool GW2API::ReplaceSavedBuildDefinition(const std::string& id, const SavedBuild& def) {
+        // Copy the definition fields into the stored build under the lock, then
+        // snapshot it so the chat-link encode (which itself locks s_mutex via
+        // GetSpecInfo/GetPaletteIdFromSkill) runs OUTSIDE the lock — avoids deadlock.
+        SavedBuild snapshot;
+        bool found = false;
+        {
+            std::lock_guard<std::mutex> lock(s_mutex);
+            for (auto& b : s_saved_builds) {
+                if (b.id != id) continue;
+                b.profession = def.profession;
+                for (int i = 0; i < 3; i++) b.specializations[i] = def.specializations[i];
+                b.terrestrial_skills = def.terrestrial_skills;
+                b.aquatic_skills = def.aquatic_skills;
+                b.pets = def.pets;
+                for (int i = 0; i < 4; i++) b.legend_codes[i] = def.legend_codes[i];
+                b.weapons = def.weapons;
+                // Gear (so in-editor gear changes persist on Save).
+                b.gear = def.gear;
+                b.rune_name = def.rune_name;
+                b.rune_id = def.rune_id;
+                b.relic_name = def.relic_name;
+                b.relic_id = def.relic_id;
+                snapshot = b;
+                found = true;
+                break;
+            }
+        }
+        if (!found) return false;
+        std::string link = EncodeSavedBuildToChatLink(snapshot);
+        {
+            std::lock_guard<std::mutex> lock(s_mutex);
+            for (auto& b : s_saved_builds)
+                if (b.id == id) { b.chat_link = link; break; }
+        }
+        return SaveBuildLibrary();
+    }
+
     bool GW2API::SetSavedBuildGameMode(const std::string& id, GameMode mode) {
         {
             std::lock_guard<std::mutex> lock(s_mutex);
@@ -2954,6 +3200,8 @@ namespace AlterEgo {
                 j["icon"] = info.icon_url;
                 if (!info.description.empty()) j["description"] = info.description;
                 j["type"] = info.type;
+                j["specialization"] = info.specialization;
+                j["professions"] = info.professions;
                 if (!info.facts.is_null()) j["facts"] = info.facts;
                 arr.push_back(std::move(j));
             }
@@ -3091,12 +3339,20 @@ namespace AlterEgo {
             std::lock_guard<std::mutex> lock(s_mutex);
             for (const auto& it : j) {
                 if (!it.contains("id")) continue;
+                // Legacy cache (pre-professions/specialization) is skipped so the skill
+                // re-fetches on demand with the new fields — needed for racial filtering
+                // and elite-spec gating.
+                if (!it.contains("professions")) continue;
                 SkillInfo info;
                 info.id = it["id"].get<uint32_t>();
                 info.name = it.value("name", "");
                 info.icon_url = it.value("icon", "");
                 info.description = it.value("description", "");
                 info.type = it.value("type", "");
+                info.specialization = it.value("specialization", 0u);
+                if (it.contains("professions") && it["professions"].is_array())
+                    for (const auto& p : it["professions"])
+                        if (p.is_string()) info.professions.push_back(p.get<std::string>());
                 if (it.contains("facts")) info.facts = it["facts"];
                 s_skill_cache[info.id] = std::move(info);
             }

@@ -173,6 +173,8 @@ namespace AlterEgo {
         std::string icon_url;
         std::string description;
         std::string type;           // "Heal", "Utility", "Elite", "Weapon", etc.
+        uint32_t specialization = 0; // gating elite-spec id (0 = core, usable by all)
+        std::vector<std::string> professions; // professions that can slot it; empty = racial
         nlohmann::json facts;       // Tooltip facts array
     };
 
@@ -181,6 +183,15 @@ namespace AlterEgo {
         std::string name;
         std::string icon_url;
         std::string icon_big_url;
+        std::vector<uint32_t> specialization_ids; // /v2/professions[].specializations (core + elite)
+    };
+
+    // Ranger pet info from /v2/pets (public, no auth). The build-template pet
+    // byte is the /v2/pets id directly.
+    struct PetInfo {
+        uint32_t id = 0;
+        std::string name;
+        std::string icon_url;
     };
 
     // Dye color info from /v2/colors (public, no auth)
@@ -412,6 +423,26 @@ namespace AlterEgo {
         static bool ReorderSavedBuild(int fromIdx, int toIdx);
         static bool LoadBuildLibrary();
         static bool SaveBuildLibrary();
+        // --- Build editor support ---
+        // Encode a SavedBuild's definition (traits/skills/pets/legends/weapons) to a GW2 chat link.
+        static std::string EncodeSavedBuildToChatLink(const SavedBuild& b);
+        // List of specialization IDs (core + elite) for a profession, from /v2/professions.
+        static std::vector<uint32_t> GetProfessionSpecIds(const std::string& profession);
+        // All slottable skill IDs for a profession (from the palette map). Empty until
+        // FetchProfessionPaletteAsync has run for that profession.
+        static std::vector<uint32_t> GetProfessionSkillIds(const std::string& profession);
+        // Ranger pets (for the build editor's pet picker). Empty until fetched.
+        static std::vector<PetInfo> GetPets();
+        static void FetchPetsAsync();
+        // Revenant legend swap-skill icons. Maps AE legend byte code (13..19) -> the
+        // legend's swap skill id (its icon is the legend emblem). 0 if unknown.
+        static uint32_t GetLegendSwapSkill(uint8_t code);
+        static void FetchLegendsAsync();
+        // Make an in-memory blank build (id assigned on AddSavedBuild).
+        static SavedBuild CreateBlankBuild(const std::string& profession, GameMode mode);
+        // Overwrite a saved build's definition fields (specs/skills/pets/legends/weapons/
+        // profession) and regenerate its chat_link, leaving name/notes/gear intact, then save.
+        static bool ReplaceSavedBuildDefinition(const std::string& id, const SavedBuild& def);
         // Write the whole library to an arbitrary path as JSON.
         static bool ExportBuildLibraryToFile(const std::string& path);
         // Load a previously exported library file. If replaceAll is true the
@@ -480,6 +511,12 @@ namespace AlterEgo {
         // Profession info cache
         static std::unordered_map<std::string, ProfessionInfo> s_profession_cache;
         static std::unordered_map<std::string, std::map<std::string, ProfessionWeaponData>> s_profession_weapons;
+
+        // Ranger pets cache (build editor)
+        static std::vector<PetInfo> s_pets;
+        static std::atomic<bool> s_petsFetching;
+        static std::map<uint8_t, uint32_t> s_legend_swap; // legend byte code -> swap skill id
+        static std::atomic<bool> s_legendsFetching;
 
         // Build library
         static std::vector<SavedBuild> s_saved_builds;
