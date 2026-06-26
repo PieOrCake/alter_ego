@@ -6579,6 +6579,7 @@ static void RenderSpecPickerDialog() {
                     g_EditDraft.specializations[g_SpecPickerSlot].traits[0] = 0;
                     g_EditDraft.specializations[g_SpecPickerSlot].traits[1] = 0;
                     g_EditDraft.specializations[g_SpecPickerSlot].traits[2] = 0;
+                    MarkEditDirty();
                     g_SpecPickerSlot = -1;
                     ImGui::CloseCurrentPopup();
                 }
@@ -6586,6 +6587,7 @@ static void RenderSpecPickerDialog() {
             ImGui::Separator();
             if (ImGui::Selectable("(None)")) {
                 g_EditDraft.specializations[g_SpecPickerSlot] = AlterEgo::SpecLine{};
+                MarkEditDirty();
                 g_SpecPickerSlot = -1;
                 ImGui::CloseCurrentPopup();
             }
@@ -7917,7 +7919,14 @@ static void RenderSavedBuildPreview(const AlterEgo::SavedBuild& build, bool show
         // When editing, the grid reflects the mutable draft; otherwise the saved build.
         const auto& spec = g_LibEditMode ? g_EditDraft.specializations[i] : build.specializations[i];
         if (spec.spec_id == 0) {
-            ImGui::TextColored(ImVec4(0.4f, 0.4f, 0.4f, 1.0f), "  (empty)");
+            if (g_LibEditMode) {
+                ImGui::PushID(i);
+                if (RenderChipButton("+ Choose specialization", false)) g_SpecPickerSlot = i;
+                ImGui::PopID();
+                ImGui::Dummy(ImVec2(0, 4));
+            } else {
+                ImGui::TextColored(ImVec4(0.4f, 0.4f, 0.4f, 1.0f), "  (empty)");
+            }
             continue;
         }
 
@@ -8013,6 +8022,13 @@ static void RenderSavedBuildPreview(const AlterEgo::SavedBuild& build, bool show
                 ImVec2 prevPos = ImGui::GetCursorScreenPos();
                 ImGui::SetCursorScreenPos(nameAnchor);
                 ImGui::InvisibleButton("##specname", hitSz);
+                if (g_LibEditMode) {
+                    if (ImGui::IsItemClicked()) g_SpecPickerSlot = i;
+                    if (ImGui::IsItemHovered())
+                        dl->AddRect(nameAnchor,
+                            ImVec2(nameAnchor.x + hitSz.x, nameAnchor.y + hitSz.y),
+                            IM_COL32(227, 196, 122, 200), 2.0f);
+                }
                 if (ImGui::IsItemHovered()) {
                     ImGui::BeginTooltip();
                     ImGui::TextColored(specColor, "%s", specName.c_str());
@@ -8027,6 +8043,9 @@ static void RenderSavedBuildPreview(const AlterEgo::SavedBuild& build, bool show
                             "%s", specDesc->description);
                         ImGui::PopTextWrapPos();
                     }
+                    if (g_LibEditMode)
+                        ImGui::TextColored(ImVec4(0.7f, 0.62f, 0.35f, 1.0f),
+                            "(click to change specialization)");
                     ImGui::EndTooltip();
                 }
                 ImGui::SetCursorScreenPos(prevPos);
