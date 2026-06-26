@@ -6772,9 +6772,14 @@ static void RenderGearCustomizeDialog() {
         return;
     }
 
-    // Find the build being edited
+    // Find the build being edited. While editing in the library, gear changes go to
+    // the in-memory draft and persist only on Save (so Cancel reverts them); otherwise
+    // they edit the saved build directly and persist immediately.
     AlterEgo::SavedBuild* editBuild = nullptr;
-    {
+    bool editingDraft = (g_LibEditMode && g_GearDialogBuildId == g_EditDraft.id);
+    if (editingDraft) {
+        editBuild = &g_EditDraft;
+    } else {
         auto& builds = const_cast<std::vector<AlterEgo::SavedBuild>&>(
             AlterEgo::GW2API::GetSavedBuilds());
         for (auto& b : builds) {
@@ -6786,6 +6791,11 @@ static void RenderGearCustomizeDialog() {
         ImGui::End();
         return;
     }
+    // Commit gear changes: dirty the draft when editing, else persist to disk now.
+    auto commitGear = [&]() {
+        if (editingDraft) MarkEditDirty();
+        else AlterEgo::GW2API::SaveBuildLibrary();
+    };
 
     auto& gs = editBuild->gear[g_GearDialogSlot];
     gs.slot = g_GearDialogSlot;
@@ -6971,7 +6981,7 @@ static void RenderGearCustomizeDialog() {
                     target.stat_id = gs.stat_id;
                     target.stat_name = gs.stat_name;
                 }
-                AlterEgo::GW2API::SaveBuildLibrary();
+                commitGear();
             }
         }
         if (IsArmorSlot(g_GearDialogSlot) && !gs.rune.empty()) {
@@ -6985,7 +6995,7 @@ static void RenderGearCustomizeDialog() {
                 }
                 editBuild->rune_name = gs.rune;
                 editBuild->rune_id = gs.rune_id;
-                AlterEgo::GW2API::SaveBuildLibrary();
+                commitGear();
             }
         }
         if (IsTrinketSlot(g_GearDialogSlot) && gs.stat_id != 0) {
@@ -6997,7 +7007,7 @@ static void RenderGearCustomizeDialog() {
                     target.stat_id = gs.stat_id;
                     target.stat_name = gs.stat_name;
                 }
-                AlterEgo::GW2API::SaveBuildLibrary();
+                commitGear();
             }
         }
 
@@ -7042,7 +7052,7 @@ static void RenderGearCustomizeDialog() {
                 if (ImGui::InvisibleButton("##relsel", ImVec2(cw, ch))) {
                     editBuild->relic_name = RELIC_LIST[i].name;
                     editBuild->relic_id = RELIC_LIST[i].item_id;
-                    AlterEgo::GW2API::SaveBuildLibrary();
+                    commitGear();
                 }
 
                 ImGui::GetWindowDrawList()->AddText(
@@ -7078,7 +7088,7 @@ static void RenderGearCustomizeDialog() {
                     g_GearSelectedStatId = stat->id;
                     gs.stat_id = stat->id;
                     gs.stat_name = stat->name;
-                    AlterEgo::GW2API::SaveBuildLibrary();
+                    commitGear();
                 }
 
                 ImVec2 textPos(cardStart.x + 6, cardStart.y + 3);
@@ -7135,7 +7145,7 @@ static void RenderGearCustomizeDialog() {
                         if (editBuild) {
                             editBuild->rune_id = gs.rune_id;
                         }
-                        AlterEgo::GW2API::SaveBuildLibrary();
+                        commitGear();
                     }
 
                     ImGui::GetWindowDrawList()->AddText(
@@ -7179,7 +7189,7 @@ static void RenderGearCustomizeDialog() {
                             gs.sigil = SIGIL_LIST[i].name;
                             gs.sigil_id = sid;
                         }
-                        AlterEgo::GW2API::SaveBuildLibrary();
+                        commitGear();
                     }
 
                     ImGui::GetWindowDrawList()->AddText(
@@ -7262,7 +7272,7 @@ static void RenderGearCustomizeDialog() {
                         uint32_t weapItemId = GetLegendaryWeaponId(wname);
                         if (weapItemId != 0)
                             AlterEgo::GW2API::FetchItemDetailsAsync({weapItemId});
-                        AlterEgo::GW2API::SaveBuildLibrary();
+                        commitGear();
                     }
 
                     ImGui::GetWindowDrawList()->AddText(
@@ -7279,7 +7289,7 @@ static void RenderGearCustomizeDialog() {
 
         // Accept / Cancel buttons
         if (ImGui::Button("Accept", ImVec2(80, 0))) {
-            AlterEgo::GW2API::SaveBuildLibrary();
+            commitGear();
             g_GearDialogOpen = false;
         }
         ImGui::SameLine();
@@ -8277,17 +8287,19 @@ static void RenderSavedBuildPreview(const AlterEgo::SavedBuild& build, bool show
 
     // Helper lambda: get weapon skills for a weapon set from gear slots
     // Handles: Elementalist attunements (Fire default), Thief dual wield, standard MH+OH
+    // Weapon skills and the gear panel reflect the draft while editing.
+    const AlterEgo::SavedBuild& gearSrc = g_LibEditMode ? g_EditDraft : build;
     auto GetWeaponSkills = [&](const char* mhSlot, const char* ohSlot,
                                std::vector<uint32_t>& outSkills, std::string& outLabel) {
         outSkills.clear();
         outLabel.clear();
-        const auto* profWeapons = AlterEgo::GW2API::GetProfessionWeapons(build.profession);
+        const auto* profWeapons = AlterEgo::GW2API::GetProfessionWeapons(gearSrc.profession);
         if (!profWeapons) return;
 
-        auto mhIt = build.gear.find(mhSlot);
-        auto ohIt = build.gear.find(ohSlot);
-        std::string mhType = (mhIt != build.gear.end()) ? mhIt->second.weapon_type : "";
-        std::string ohType = (ohIt != build.gear.end()) ? ohIt->second.weapon_type : "";
+        auto mhIt = gearSrc.gear.find(mhSlot);
+        auto ohIt = gearSrc.gear.find(ohSlot);
+        std::string mhType = (mhIt != gearSrc.gear.end()) ? mhIt->second.weapon_type : "";
+        std::string ohType = (ohIt != gearSrc.gear.end()) ? ohIt->second.weapon_type : "";
 
         // Mainhand skills (1-3, or 1-5 for two-handed)
         if (!mhType.empty()) {
@@ -8473,7 +8485,8 @@ static void RenderSavedBuildPreview(const AlterEgo::SavedBuild& build, bool show
     ImGui::Separator();
 
     // Gear section (clickable slots to customize stats/runes/sigils)
-    RenderBuildGearPanel(const_cast<AlterEgo::SavedBuild&>(build));
+    RenderBuildGearPanel(g_LibEditMode ? g_EditDraft
+                                       : const_cast<AlterEgo::SavedBuild&>(build));
 
     if (!build.notes.empty()) {
         ImGui::Spacing();

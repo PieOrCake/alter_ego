@@ -2694,6 +2694,12 @@ namespace AlterEgo {
                 b.pets = def.pets;
                 for (int i = 0; i < 4; i++) b.legend_codes[i] = def.legend_codes[i];
                 b.weapons = def.weapons;
+                // Gear (so in-editor gear changes persist on Save).
+                b.gear = def.gear;
+                b.rune_name = def.rune_name;
+                b.rune_id = def.rune_id;
+                b.relic_name = def.relic_name;
+                b.relic_id = def.relic_id;
                 snapshot = b;
                 found = true;
                 break;
