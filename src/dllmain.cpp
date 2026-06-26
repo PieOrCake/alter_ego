@@ -730,6 +730,7 @@ static int  g_NewBuildGameMode = 0; // index into GameMode (0=PvE,1=WvW,2=PvP,3=
 // Build editor: working draft + spec picker state
 static AlterEgo::SavedBuild g_EditDraft;   // working copy while editing a build's definition
 static std::string g_EditDraftId;          // id the draft currently mirrors
+static bool g_EditDirty = false;           // true once the draft diverges from the snapshot
 static int g_SpecPickerSlot = -1;          // 0..2 while spec picker open, else -1
 static int g_SkillPickerSlot = -1;         // 0=heal,1-3=util,4=elite while open, else -1
 static int g_LegendPickerSlot = -1;        // 0..1 (Revenant) while open, else -1
@@ -754,6 +755,19 @@ static int g_LibDragIdx = -1;          // drag-and-drop source index
 // or notes are never silently truncated by a fixed buffer size.
 static std::string g_LibEditName;
 static std::string g_LibEditNotes;
+
+// Seed the editing draft + name/notes buffers from a build and clear the dirty flag.
+// The on-disk build is itself the pre-edit snapshot (nothing persists until Save), so
+// Cancel just discards the draft. Defined here (before the pickers/New-Build call sites).
+static void EnterBuildEditMode(const AlterEgo::SavedBuild& build) {
+    g_EditDraft = build;
+    g_EditDraftId = build.id;
+    g_LibEditName = build.name;
+    g_LibEditNotes = build.notes;
+    g_EditDirty = false;
+    g_LibEditMode = true;
+}
+static inline void MarkEditDirty() { g_EditDirty = true; }
 
 static int ImGuiInputStringResizeCallback(ImGuiInputTextCallbackData* data) {
     if (data->EventFlag == ImGuiInputTextFlags_CallbackResize) {
@@ -6525,9 +6539,7 @@ static void RenderNewBuildDialog() {
                     const auto& builds = AlterEgo::GW2API::GetSavedBuilds();
                     g_LibSelectedIdx = idx;
                     g_LibEditBuildId = builds[idx].id;
-                    g_LibEditName = builds[idx].name;
-                    g_LibEditNotes = builds[idx].notes;
-                    g_LibEditMode = true;
+                    EnterBuildEditMode(builds[idx]);
                     AlterEgo::GW2API::FetchProfessionInfoAsync(kBuildProfessions[i]);
                     AlterEgo::GW2API::FetchProfessionPaletteAsync(kBuildProfessions[i]);
                 }
@@ -7871,7 +7883,7 @@ static void RenderSavedBuildPreview(const AlterEgo::SavedBuild& build, bool show
             if (ImGui::SmallButton("Share##headerBuild")) ImGui::OpenPopup("##share_menu");
 
             ImGui::SetCursorScreenPos(ImVec2(startX + wShare + gap, btnY));
-            if (ImGui::SmallButton("Edit##headerBuild")) g_LibEditMode = true;
+            if (ImGui::SmallButton("Edit##headerBuild")) EnterBuildEditMode(build);
 
             ImGui::SetCursorScreenPos(ImVec2(startX + wShare + gap + wEdit + gap, btnY));
             ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.5f, 0.5f, 1.0f));
@@ -8954,8 +8966,9 @@ static void RenderBuildLibrary() {
             // Exit edit mode when switching to a different build
             g_LibEditMode = false;
         }
-        // Keep the editor draft in sync with the selected build.
-        if (g_EditDraftId != build.id) { g_EditDraft = build; g_EditDraftId = build.id; }
+        // Keep the editor draft in sync with the selected build, but never re-seed
+        // while actively editing (that would clobber unsaved changes).
+        if (!g_LibEditMode && g_EditDraftId != build.id) { g_EditDraft = build; g_EditDraftId = build.id; }
 
         if (!g_LibEditMode) {
             // Read-only: notes (if any) above the preview. Edit button is
