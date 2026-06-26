@@ -119,6 +119,8 @@ namespace AlterEgo {
     std::unordered_set<std::string> GW2API::s_palette_fetching;
     std::vector<PetInfo> GW2API::s_pets;
     std::atomic<bool> GW2API::s_petsFetching{false};
+    std::map<uint8_t, uint32_t> GW2API::s_legend_swap;
+    std::atomic<bool> GW2API::s_legendsFetching{false};
     std::mutex GW2API::s_mutex;
 
     // --- Nexus integration ---
@@ -2668,6 +2670,74 @@ namespace AlterEgo {
                 s_pets = std::move(pets);
             }
             s_petsFetching = false;
+        }).detach();
+    }
+
+    uint32_t GW2API::GetLegendSwapSkill(uint8_t code) {
+        std::lock_guard<std::mutex> lock(s_mutex);
+        auto it = s_legend_swap.find(code);
+        return it != s_legend_swap.end() ? it->second : 0u;
+    }
+
+    void GW2API::FetchLegendsAsync() {
+        {
+            std::lock_guard<std::mutex> lock(s_mutex);
+            if (!s_legend_swap.empty()) return;
+        }
+        if (s_legendsFetching.exchange(true)) return;
+        std::thread([]() {
+            // 1) /v2/legends -> each legend's swap-skill id.
+            std::vector<uint32_t> swaps;
+            std::string resp = HttpGet("https://api.guildwars2.com/v2/legends?ids=all");
+            if (!resp.empty()) {
+                try {
+                    json j = json::parse(resp);
+                    if (j.is_array())
+                        for (const auto& l : j)
+                            if (l.contains("swap") && l["swap"].is_number())
+                                swaps.push_back(l["swap"].get<uint32_t>());
+                } catch (...) {}
+            }
+            // 2) Fetch those swap skills (for their names + emblem icons), match the
+            //    name keyword to the AE legend byte code, and cache the skill so the
+            //    icon loads via the normal skill-icon path.
+            if (!swaps.empty()) {
+                std::string idsp;
+                for (uint32_t id : swaps) { if (!idsp.empty()) idsp += ","; idsp += std::to_string(id); }
+                std::string sresp = HttpGet("https://api.guildwars2.com/v2/skills?ids=" + idsp);
+                if (!sresp.empty()) {
+                    try {
+                        json sj = json::parse(sresp);
+                        if (sj.is_array()) {
+                            std::lock_guard<std::mutex> lock(s_mutex);
+                            for (const auto& sk : sj) {
+                                if (!sk.contains("id")) continue;
+                                SkillInfo info;
+                                info.id = sk["id"].get<uint32_t>();
+                                info.name = sk.value("name", "");
+                                info.icon_url = sk.value("icon", "");
+                                info.type = sk.value("type", "");
+                                if (sk.contains("professions") && sk["professions"].is_array())
+                                    for (const auto& p : sk["professions"])
+                                        if (p.is_string()) info.professions.push_back(p.get<std::string>());
+                                s_skill_cache[info.id] = info;
+                                const std::string& n = info.name;
+                                uint8_t code = 0;
+                                if      (n.find("Dragon")   != std::string::npos) code = 13;
+                                else if (n.find("Assassin") != std::string::npos) code = 14;
+                                else if (n.find("Dwarf")    != std::string::npos) code = 15;
+                                else if (n.find("Demon")    != std::string::npos) code = 16;
+                                else if (n.find("Renegade") != std::string::npos) code = 17;
+                                else if (n.find("Centaur")  != std::string::npos) code = 18;
+                                else if (n.find("Alliance") != std::string::npos) code = 19;
+                                if (code) s_legend_swap[code] = info.id;
+                            }
+                        }
+                    } catch (...) {}
+                }
+                SaveSkillCache();
+            }
+            s_legendsFetching = false;
         }).detach();
     }
 

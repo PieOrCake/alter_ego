@@ -731,6 +731,8 @@ static int  g_NewBuildGameMode = 0; // index into GameMode (0=PvE,1=WvW,2=PvP,3=
 static AlterEgo::SavedBuild g_EditDraft;   // working copy while editing a build's definition
 static std::string g_EditDraftId;          // id the draft currently mirrors
 static bool g_EditDirty = false;           // true once the draft diverges from the snapshot
+static bool g_EditIsNewBuild = false;      // true while editing a freshly-created build (cancel discards it)
+static std::string g_DiscardNewBuildId;    // deferred: id of a new build to delete after the render pass
 static int g_SpecPickerSlot = -1;          // 0..2 while spec picker open, else -1
 static int g_SkillPickerSlot = -1;         // 0=heal,1-3=util,4=elite while open, else -1
 static ImVec2 g_SkillPickerAnchor;         // screen pos of the clicked skill icon (flyout anchor)
@@ -6523,6 +6525,7 @@ static void RenderNewBuildDialog() {
                     g_LibSelectedIdx = idx;
                     g_LibEditBuildId = builds[idx].id;
                     EnterBuildEditMode(builds[idx]);
+                    g_EditIsNewBuild = true; // cancelling discards this blank build
                     AlterEgo::GW2API::FetchProfessionInfoAsync(kBuildProfessions[i]);
                     AlterEgo::GW2API::FetchProfessionPaletteAsync(kBuildProfessions[i]);
                 }
@@ -6567,9 +6570,29 @@ static void RenderSpecPickerDialog() {
                     if (o != g_SpecPickerSlot && g_EditDraft.specializations[o].spec_id == sid)
                         usedElsewhere = true;
                 std::string label = si->name + (si->elite ? "  (Elite)" : "");
-                if (usedElsewhere) {
-                    ImGui::TextDisabled("%s", label.c_str());
-                } else if (ImGui::Selectable(label.c_str())) {
+
+                // Spec icon (cache key = spec id + 1500000).
+                ImGui::PushID((int)sid);
+                const float specIconSz = 22.0f;
+                uint32_t ikey = sid + 1500000u;
+                Texture_t* itex = AlterEgo::IconManager::GetIcon(ikey);
+                if (itex && itex->Resource) {
+                    ImGui::Image(itex->Resource, ImVec2(specIconSz, specIconSz),
+                                 ImVec2(0, 0), ImVec2(1, 1),
+                                 usedElsewhere ? ImVec4(1, 1, 1, 0.4f) : ImVec4(1, 1, 1, 1));
+                } else {
+                    if (!si->icon_url.empty()) AlterEgo::IconManager::RequestIcon(ikey, si->icon_url);
+                    ImGui::Dummy(ImVec2(specIconSz, specIconSz));
+                }
+                ImGui::SameLine(0, 8);
+                ImGui::AlignTextToFramePadding();
+
+                bool clicked = false;
+                if (usedElsewhere) ImGui::TextDisabled("%s", label.c_str());
+                else clicked = ImGui::Selectable(label.c_str());
+                ImGui::PopID();
+
+                if (clicked) {
                     if (si->elite)
                         for (int o = 0; o < 3; o++) {
                             if (o == g_SpecPickerSlot) continue;
@@ -6723,11 +6746,34 @@ static void RenderLegendPickerDialog() {
     if (ImGui::BeginPopupModal(POPUP, &open, ImGuiWindowFlags_AlwaysAutoResize)) {
         const int slot = g_LegendPickerSlot; // 0 or 1
         const int other = slot == 0 ? 1 : 0;
+        AlterEgo::GW2API::FetchLegendsAsync();
         for (const auto& l : kRevLegends) {
             bool usedOther = (g_EditDraft.legend_codes[other] == l.code);
-            if (usedOther) {
-                ImGui::TextDisabled("%s", l.name);
-            } else if (ImGui::Selectable(l.name)) {
+            ImGui::PushID((int)l.code);
+
+            // Legend emblem icon (the swap skill's icon).
+            const float legIconSz = 26.0f;
+            uint32_t swap = AlterEgo::GW2API::GetLegendSwapSkill(l.code);
+            uint32_t ikey = swap + 5000000u;
+            Texture_t* itex = swap ? AlterEgo::IconManager::GetIcon(ikey) : nullptr;
+            if (itex && itex->Resource) {
+                ImGui::Image(itex->Resource, ImVec2(legIconSz, legIconSz),
+                             ImVec2(0, 0), ImVec2(1, 1),
+                             usedOther ? ImVec4(1, 1, 1, 0.4f) : ImVec4(1, 1, 1, 1));
+            } else {
+                const auto* sk = swap ? AlterEgo::GW2API::GetSkillInfo(swap) : nullptr;
+                if (sk && !sk->icon_url.empty()) AlterEgo::IconManager::RequestIcon(ikey, sk->icon_url);
+                ImGui::Dummy(ImVec2(legIconSz, legIconSz));
+            }
+            ImGui::SameLine(0, 8);
+            ImGui::AlignTextToFramePadding();
+
+            bool clicked = false;
+            if (usedOther) ImGui::TextDisabled("%s", l.name);
+            else clicked = ImGui::Selectable(l.name);
+            ImGui::PopID();
+
+            if (clicked) {
                 g_EditDraft.legend_codes[slot] = l.code;
                 g_EditDraft.legend_codes[slot + 2] = l.code; // mirror to aquatic
                 MarkEditDirty();
@@ -7929,13 +7975,18 @@ static void RenderSavedBuildPreview(const AlterEgo::SavedBuild& build, bool show
             if (InputTextString("##edit_name", g_LibEditName)) MarkEditDirty();
             ImGui::PopStyleColor();
 
-            // "● EDITING" badge to the right of the name field.
-            const char* badge = "\xE2\x97\x8F EDITING";
+            // "EDITING" badge with a drawn dot (Nexus's font atlas has no ● glyph).
+            const char* badge = "EDITING";
             ImVec2 ts = ImGui::CalcTextSize(badge);
+            float dotR = ts.y * 0.26f;
             float bx = textX + 230.0f, by = textTop + 1.0f;
-            dl->AddRectFilled(ImVec2(bx - 4, by - 2), ImVec2(bx + ts.x + 4, by + ts.y + 2),
+            float gap = dotR * 2.0f + 6.0f;
+            dl->AddRectFilled(ImVec2(bx - 5, by - 2),
+                              ImVec2(bx + gap + ts.x + 5, by + ts.y + 2),
                               IM_COL32(120, 90, 30, 230), 3.0f);
-            dl->AddText(ImVec2(bx, by), IM_COL32(245, 210, 120, 255), badge);
+            dl->AddCircleFilled(ImVec2(bx + dotR, by + ts.y * 0.5f), dotR,
+                                IM_COL32(240, 120, 120, 255));
+            dl->AddText(ImVec2(bx + gap, by), IM_COL32(245, 210, 120, 255), badge);
         } else {
             ImGui::TextColored(profColor, "%s", build.name.c_str());
         }
@@ -7993,13 +8044,19 @@ static void RenderSavedBuildPreview(const AlterEgo::SavedBuild& build, bool show
                     AlterEgo::GW2API::ReplaceSavedBuildDefinition(build.id, g_EditDraft);
                     g_EditDraftId.clear();   // force re-sync from the persisted build
                     g_LibEditMode = false; g_EditDirty = false;
+                    g_EditIsNewBuild = false; // now a real, saved build
                 }
                 if (!canSave) ImGui::PopStyleVar();
 
                 ImGui::SetCursorScreenPos(ImVec2(startX + wSave + gap, btnY));
                 if (ImGui::SmallButton("Cancel##hdr")) {
                     if (g_EditDirty) ImGui::OpenPopup("Discard changes?##editcancel");
-                    else g_LibEditMode = false;
+                    else {
+                        // Clean cancel: a brand-new build is discarded (deferred to
+                        // after the render pass so `build` isn't freed mid-draw).
+                        if (g_EditIsNewBuild) g_DiscardNewBuildId = build.id;
+                        g_LibEditMode = false; g_EditIsNewBuild = false;
+                    }
                 }
                 ImGui::SetCursorScreenPos(prevCursor);
             } else {
@@ -8060,7 +8117,9 @@ static void RenderSavedBuildPreview(const AlterEgo::SavedBuild& build, bool show
                 ImGui::TextColored(ImVec4(0.85f, 0.8f, 0.7f, 1.0f), "Discard your unsaved changes?");
                 ImGui::Spacing();
                 if (ImGui::Button("Discard", ImVec2(110, 0))) {
+                    if (g_EditIsNewBuild) g_DiscardNewBuildId = build.id; // discard the blank build
                     g_LibEditMode = false; g_EditDirty = false; g_EditDraftId.clear();
+                    g_EditIsNewBuild = false;
                     ImGui::CloseCurrentPopup();
                 }
                 ImGui::SameLine();
@@ -8492,15 +8551,33 @@ static void RenderSavedBuildPreview(const AlterEgo::SavedBuild& build, bool show
     }
 
     // Editing: Revenant legends / Ranger pets (not part of the heal/util/elite row).
-    if (g_LibEditMode && build.profession == "Revenant") {
-        ImGui::Spacing();
-        RenderSectionHeader("Legends", ImVec4(0.70f, 0.58f, 0.20f, 1.0f));
-        for (int slot = 0; slot < 2; slot++) {
-            if (slot) ImGui::SameLine();
-            ImGui::PushID(3000 + slot);
-            const char* lbl = LegendNameForCode(g_EditDraft.legend_codes[slot]);
-            if (RenderChipButton(lbl, g_EditDraft.legend_codes[slot] != 0)) g_LegendPickerSlot = slot;
-            ImGui::PopID();
+    if (build.profession == "Revenant") {
+        const uint8_t* legends = g_LibEditMode ? g_EditDraft.legend_codes : build.legend_codes;
+        if (g_LibEditMode || legends[0] || legends[1]) {
+            ImGui::Spacing();
+            RenderSectionHeader("Legends", ImVec4(0.70f, 0.58f, 0.20f, 1.0f));
+            AlterEgo::GW2API::FetchLegendsAsync();
+            for (int slot = 0; slot < 2; slot++) {
+                if (slot) ImGui::SameLine(0, 18);
+                uint8_t code = legends[slot];
+                uint32_t swap = code ? AlterEgo::GW2API::GetLegendSwapSkill(code) : 0;
+                ImGui::PushID(3000 + slot);
+                ImGui::BeginGroup();
+                if (g_LibEditMode) {
+                    ImVec2 ip = ImGui::GetCursorScreenPos();
+                    if (RenderEditableSkillIcon(swap, 40.0f)) g_LegendPickerSlot = slot;
+                    if (ImGui::IsItemHovered())
+                        ImGui::GetWindowDrawList()->AddRect(ip, ImVec2(ip.x + 40, ip.y + 40),
+                            IM_COL32(227, 196, 122, 255), 0.0f, 0, 2.0f);
+                } else {
+                    RenderSkillIcon(swap, 40.0f); // read-only emblem
+                }
+                ImGui::TextColored(code ? ImVec4(0.85f, 0.82f, 0.70f, 1.0f)
+                                        : ImVec4(0.55f, 0.55f, 0.55f, 1.0f),
+                                   "%s", code ? LegendNameForCode(code) : "Choose legend");
+                ImGui::EndGroup();
+                ImGui::PopID();
+            }
         }
     }
     if (g_LibEditMode && build.profession == "Ranger") {
@@ -9218,6 +9295,15 @@ static void RenderBuildLibrary() {
         ImGui::Separator();
 
         RenderSavedBuildPreview(build, /*showEditButton=*/true);
+
+        // Deferred: a cancelled brand-new build is removed here, after the preview
+        // has finished using `build` (removing it mid-draw would dangle the ref).
+        if (!g_DiscardNewBuildId.empty()) {
+            AlterEgo::GW2API::RemoveSavedBuild(g_DiscardNewBuildId);
+            g_DiscardNewBuildId.clear();
+            g_EditDraftId.clear();
+            g_LibSelectedIdx = -1;
+        }
     } else {
         ImGui::TextColored(ImVec4(0.5f, 0.5f, 0.5f, 1.0f), "Select a build from the list.");
     }

@@ -434,6 +434,10 @@ namespace AlterEgo {
         // Ranger pets (for the build editor's pet picker). Empty until fetched.
         static std::vector<PetInfo> GetPets();
         static void FetchPetsAsync();
+        // Revenant legend swap-skill icons. Maps AE legend byte code (13..19) -> the
+        // legend's swap skill id (its icon is the legend emblem). 0 if unknown.
+        static uint32_t GetLegendSwapSkill(uint8_t code);
+        static void FetchLegendsAsync();
         // Make an in-memory blank build (id assigned on AddSavedBuild).
         static SavedBuild CreateBlankBuild(const std::string& profession, GameMode mode);
         // Overwrite a saved build's definition fields (specs/skills/pets/legends/weapons/
@@ -511,6 +515,8 @@ namespace AlterEgo {
         // Ranger pets cache (build editor)
         static std::vector<PetInfo> s_pets;
         static std::atomic<bool> s_petsFetching;
+        static std::map<uint8_t, uint32_t> s_legend_swap; // legend byte code -> swap skill id
+        static std::atomic<bool> s_legendsFetching;
 
         // Build library
         static std::vector<SavedBuild> s_saved_builds;
