@@ -7876,30 +7876,86 @@ static void RenderSavedBuildPreview(const AlterEgo::SavedBuild& build, bool show
         float textX = iconLeft + headerIconSz + 10.0f;
         float textTop = pos.y + (h - lineH * 2.0f) * 0.5f - 2.0f;
 
-        // Title: build name. Subtitle: elite spec + profession + mode.
+        // Title: build name (editable input while editing). Subtitle: elite spec +
+        // profession + mode (mode becomes clickable chips bound to the draft).
         ImGui::SetCursorScreenPos(ImVec2(textX, textTop));
-        ImGui::TextColored(profColor, "%s", build.name.c_str());
+        if (g_LibEditMode) {
+            ImGui::SetNextItemWidth(220.0f);
+            ImGui::PushStyleColor(ImGuiCol_Text, profColor);
+            if (InputTextString("##edit_name", g_LibEditName)) MarkEditDirty();
+            ImGui::PopStyleColor();
+        } else {
+            ImGui::TextColored(profColor, "%s", build.name.c_str());
+        }
 
         ImGui::SetCursorScreenPos(ImVec2(textX, textTop + lineH));
         std::string sub;
         if (eliteSpec) { sub = eliteSpec->name; sub += " "; }
         sub += build.profession;
         sub += "  \xc2\xb7  ";
-        sub += GameModeLabel(build.game_mode);
-        ImGui::TextColored(ImVec4(0.55f, 0.50f, 0.40f, 1.0f), "%s", sub.c_str());
+        if (!g_LibEditMode) {
+            sub += GameModeLabel(build.game_mode);
+            ImGui::TextColored(ImVec4(0.55f, 0.50f, 0.40f, 1.0f), "%s", sub.c_str());
+        } else {
+            ImGui::TextColored(ImVec4(0.55f, 0.50f, 0.40f, 1.0f), "%s", sub.c_str());
+            ImGui::SameLine(0, 6);
+            struct MC { AlterEgo::GameMode mode; const char* lbl; };
+            const MC modes[] = {
+                { AlterEgo::GameMode::PvE,     "PvE" },
+                { AlterEgo::GameMode::WvW,     "WvW" },
+                { AlterEgo::GameMode::PvP,     "PvP" },
+                { AlterEgo::GameMode::Raid,    "Raid" },
+                { AlterEgo::GameMode::Fractal, "Fractal" },
+            };
+            for (int m = 0; m < 5; m++) {
+                if (m) ImGui::SameLine(0, 3);
+                ImGui::PushID(m + 800);
+                if (RenderChipButton(modes[m].lbl, g_EditDraft.game_mode == modes[m].mode)) {
+                    g_EditDraft.game_mode = modes[m].mode;
+                    MarkEditDirty();
+                }
+                ImGui::PopID();
+            }
+        }
 
-        // Edit / Share / Delete buttons overlaid in the top-right of the header card
+        // Top-right header buttons. Editing: Save / Cancel. Otherwise: Share / Edit / Delete.
         if (showEditButton) {
             ImVec2 prevCursor = ImGui::GetCursorScreenPos();
             ImGuiStyle& style = ImGui::GetStyle();
             auto btnWidth = [&](const char* t){ return ImGui::CalcTextSize(t).x + style.FramePadding.x * 2.0f; };
             const float gap = 4.0f;
+            float btnY   = pos.y + 6.0f;
+
+            if (g_LibEditMode) {
+                float wSave = btnWidth("Save"), wCancel = btnWidth("Cancel");
+                float startX = pos.x + w - (wSave + gap + wCancel) - 8.0f;
+
+                // ImGui 1.80 has no BeginDisabled — dim when clean and guard the click.
+                bool canSave = g_EditDirty;
+                if (!canSave) ImGui::PushStyleVar(ImGuiStyleVar_Alpha,
+                                                  ImGui::GetStyle().Alpha * 0.5f);
+                ImGui::SetCursorScreenPos(ImVec2(startX, btnY));
+                if (ImGui::SmallButton("Save##hdr") && canSave) {
+                    AlterEgo::GW2API::UpdateSavedBuild(build.id, g_LibEditName.c_str(), g_LibEditNotes.c_str());
+                    AlterEgo::GW2API::SetSavedBuildGameMode(build.id, g_EditDraft.game_mode);
+                    AlterEgo::GW2API::ReplaceSavedBuildDefinition(build.id, g_EditDraft);
+                    g_EditDraftId.clear();   // force re-sync from the persisted build
+                    g_LibEditMode = false; g_EditDirty = false;
+                }
+                if (!canSave) ImGui::PopStyleVar();
+
+                ImGui::SetCursorScreenPos(ImVec2(startX + wSave + gap, btnY));
+                if (ImGui::SmallButton("Cancel##hdr")) {
+                    if (g_EditDirty) ImGui::OpenPopup("Discard changes?##editcancel");
+                    else g_LibEditMode = false;
+                }
+                ImGui::SetCursorScreenPos(prevCursor);
+            } else {
             float wDel   = btnWidth("Delete");
             float wShare = btnWidth("Share");
             float wEdit  = btnWidth("Edit");
             float totalW = wDel + gap + wShare + gap + wEdit;
             float startX = pos.x + w - totalW - 8.0f;
-            float btnY   = pos.y + 6.0f;
 
             ImGui::SetCursorScreenPos(ImVec2(startX, btnY));
             if (ImGui::SmallButton("Share##headerBuild")) ImGui::OpenPopup("##share_menu");
@@ -7944,9 +8000,34 @@ static void RenderSavedBuildPreview(const AlterEgo::SavedBuild& build, bool show
             }
 
             ImGui::SetCursorScreenPos(prevCursor);
+            } // end else (non-edit Share / Edit / Delete cluster)
+
+            // Cancel-with-unsaved-changes confirmation (paired with the Cancel button).
+            if (ImGui::BeginPopupModal("Discard changes?##editcancel", nullptr,
+                                       ImGuiWindowFlags_AlwaysAutoResize)) {
+                ImGui::TextColored(ImVec4(0.85f, 0.8f, 0.7f, 1.0f), "Discard your unsaved changes?");
+                ImGui::Spacing();
+                if (ImGui::Button("Discard", ImVec2(110, 0))) {
+                    g_LibEditMode = false; g_EditDirty = false; g_EditDraftId.clear();
+                    ImGui::CloseCurrentPopup();
+                }
+                ImGui::SameLine();
+                if (ImGui::Button("Keep editing", ImVec2(110, 0))) ImGui::CloseCurrentPopup();
+                ImGui::EndPopup();
+            }
         }
 
         ImGui::SetCursorScreenPos(ImVec2(pos.x, pos.y + h + 4));
+    }
+
+    // Notes editor, just under the header, while editing.
+    if (g_LibEditMode) {
+        ImGui::TextColored(ImVec4(0.55f, 0.53f, 0.45f, 1.0f), "Notes:");
+        ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x);
+        if (InputTextMultilineString("##edit_notes", g_LibEditNotes, ImVec2(0, 50)))
+            MarkEditDirty();
+        if (ImGui::IsItemDeactivatedAfterEdit()) MarkEditDirty();
+        ImGui::Spacing();
     }
 
     // Specializations with trait grid (same logic as RenderBuildPanel)
@@ -9046,66 +9127,11 @@ static void RenderBuildLibrary() {
                 ImGui::PopTextWrapPos();
             }
         } else {
-        // ===== Edit mode =====
-        ImGui::Text("Name:");
-        ImGui::SameLine();
-        ImGui::SetNextItemWidth(250.0f);
-        if (InputTextString("##edit_name", g_LibEditName,
-                ImGuiInputTextFlags_EnterReturnsTrue)) {
-            AlterEgo::GW2API::UpdateSavedBuild(build.id, g_LibEditName.c_str(), g_LibEditNotes.c_str());
-        }
-        if (ImGui::IsItemDeactivatedAfterEdit()) {
-            AlterEgo::GW2API::UpdateSavedBuild(build.id, g_LibEditName.c_str(), g_LibEditNotes.c_str());
-        }
-
-        // Game-mode chip strip — fix mis-imported modes after the fact
-        ImGui::SameLine(0, 12);
-        ImGui::TextColored(ImVec4(0.55f, 0.53f, 0.45f, 1.0f), "Mode:");
-        ImGui::SameLine(0, 6);
-        {
-            struct ModeChip { AlterEgo::GameMode mode; const char* lbl; };
-            const ModeChip modes[] = {
-                { AlterEgo::GameMode::PvE,     "PvE" },
-                { AlterEgo::GameMode::WvW,     "WvW" },
-                { AlterEgo::GameMode::PvP,     "PvP" },
-                { AlterEgo::GameMode::Raid,    "Raid" },
-                { AlterEgo::GameMode::Fractal, "Fractal" },
-            };
-            for (int i = 0; i < (int)(sizeof(modes)/sizeof(modes[0])); i++) {
-                bool active = (build.game_mode == modes[i].mode);
-                if (active) {
-                    ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.50f, 0.40f, 0.18f, 0.80f));
-                    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.58f, 0.46f, 0.22f, 0.90f));
-                    ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.58f, 0.46f, 0.22f, 0.90f));
-                    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.95f, 0.85f, 0.55f, 1.0f));
-                }
-                ImGui::PushID(i);
-                if (ImGui::SmallButton(modes[i].lbl)) {
-                    AlterEgo::GW2API::SetSavedBuildGameMode(build.id, modes[i].mode);
-                }
-                ImGui::PopID();
-                if (active) ImGui::PopStyleColor(4);
-                if (i < (int)(sizeof(modes)/sizeof(modes[0])) - 1) ImGui::SameLine(0, 3);
-            }
-        }
-
-        ImGui::Text("Notes:");
-        ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x);
-        if (InputTextMultilineString("##edit_notes", g_LibEditNotes, ImVec2(0, 60))) {
-            // live typing — save handled on deactivate
-        }
-        if (ImGui::IsItemDeactivatedAfterEdit()) {
-            AlterEgo::GW2API::UpdateSavedBuild(build.id, g_LibEditName.c_str(), g_LibEditNotes.c_str());
-        }
-
-        // Specializations & traits are edited in-place in the rich card below
-        // (RenderSavedBuildPreview). Ensure the draft profession's spec data is queued.
-        if (AlterEgo::GW2API::GetProfessionSpecIds(g_EditDraft.profession).empty())
-            AlterEgo::GW2API::FetchProfessionInfoAsync(g_EditDraft.profession);
-
-        // Skills / legends / pets are edited in-place in the rich card below.
-        // Prefetch the current skills' details so the in-card icons resolve.
-        {
+            // Editing happens in-place in the card below (name/mode/notes/traits/
+            // skills/gear). Here we only queue the draft's reference data so the
+            // in-card editors resolve their icons/names.
+            if (AlterEgo::GW2API::GetProfessionSpecIds(g_EditDraft.profession).empty())
+                AlterEgo::GW2API::FetchProfessionInfoAsync(g_EditDraft.profession);
             std::vector<uint32_t> cur = {
                 g_EditDraft.terrestrial_skills.heal,
                 g_EditDraft.terrestrial_skills.utilities[0],
@@ -9119,25 +9145,9 @@ static void RenderBuildLibrary() {
             if (!need.empty()) AlterEgo::GW2API::FetchSkillDetailsAsync(need);
         }
 
-        // Save the full definition (regenerates the chat link)
-        if (RenderGoldButton("Save Build")) {
-            AlterEgo::GW2API::UpdateSavedBuild(build.id, g_LibEditName.c_str(), g_LibEditNotes.c_str());
-            AlterEgo::GW2API::ReplaceSavedBuildDefinition(build.id, g_EditDraft);
-            g_EditDraftId.clear(); // force re-sync from persisted build next frame
-            g_LibEditMode = false;
-        }
-        ImGui::SameLine();
-
-        // Done button to leave edit mode (also persists pending edits)
-        if (RenderChipButton("Done##edit", false)) {
-            AlterEgo::GW2API::UpdateSavedBuild(build.id, g_LibEditName.c_str(), g_LibEditNotes.c_str());
-            g_LibEditMode = false;
-        }
-        } // end of edit-mode else
-
         ImGui::Separator();
 
-        RenderSavedBuildPreview(build, /*showEditButton=*/!g_LibEditMode);
+        RenderSavedBuildPreview(build, /*showEditButton=*/true);
     } else {
         ImGui::TextColored(ImVec4(0.5f, 0.5f, 0.5f, 1.0f), "Select a build from the list.");
     }
