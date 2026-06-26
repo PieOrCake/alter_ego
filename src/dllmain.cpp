@@ -2858,7 +2858,7 @@ static std::string BuildEquipSubtitle(const AlterEgo::EquipmentItem* eq) {
                     break;
                 }
             }
-            if (!out.empty()) out += " \xe2\x80\xa2 "; // bullet
+            if (!out.empty()) out += " - "; // separator (ASCII; TTF atlas has no bullet glyph)
             else out = "";
             out += upgradeShort;
         }
@@ -3224,7 +3224,7 @@ static void ResolveEquipDisplay(const AlterEgo::EquipmentItem* eq, const char* s
 // Truncate a string with "..." so its rendered width fits maxW.
 static std::string TruncateToWidth(const std::string& s, float maxW) {
     if (ImGui::CalcTextSize(s.c_str()).x <= maxW) return s;
-    const char* ell = "\xe2\x80\xa6"; // …
+    const char* ell = "..."; // …
     float ellW = ImGui::CalcTextSize(ell).x;
     int lo = 0, hi = (int)s.size();
     while (lo < hi) {
@@ -7507,7 +7507,7 @@ static void RenderSavedBuildPreview(const AlterEgo::SavedBuild& build, bool show
         std::string sub;
         if (eliteSpec) { sub = eliteSpec->name; sub += " "; }
         sub += build.profession;
-        sub += "  \xc2\xb7  ";
+        sub += "  -  ";
         sub += GameModeLabel(build.game_mode);
         ImGui::TextColored(ImVec4(0.55f, 0.50f, 0.40f, 1.0f), "%s", sub.c_str());
 
@@ -10659,7 +10659,7 @@ static bool RenderChipStrip(const std::vector<std::string>& labels,
         std::string drawLabel = label;
         if (ts.x > chipW - 12.0f) {
             // Find truncated length
-            const char* ell = "\xe2\x80\xa6";
+            const char* ell = "...";
             float ellW = ImGui::CalcTextSize(ell).x;
             int lo = 0, hi = (int)label.size();
             while (lo < hi) {
@@ -13281,7 +13281,7 @@ void AddonRender() {
                         std::string profUp = ch.profession;
                         for (auto& c : raceUp) c = (char)toupper((unsigned char)c);
                         for (auto& c : profUp) c = (char)toupper((unsigned char)c);
-                        snprintf(meta, sizeof(meta), "LV %d  \xe2\x80\xa2  %s  \xe2\x80\xa2  %s",
+                        snprintf(meta, sizeof(meta), "LV %d  -  %s  -  %s",
                             ch.level, raceUp.c_str(), profUp.c_str());
                         ImGui::TextColored(ImVec4(0.55f, 0.50f, 0.40f, 1.0f), "%s", meta);
                         ImGui::PopTextWrapPos();
@@ -13309,7 +13309,7 @@ void AddonRender() {
 
                         if (birthdayToday) {
                             ImGui::TextColored(ImVec4(1.0f, 0.85f, 0.0f, 1.0f),
-                                "\xe2\x9c\xa6 Happy Birthday! Turning %d today!", age + 1);
+                                "Happy Birthday! Turning %d today!", age + 1);
                         } else {
                             const ImVec4 dim(0.50f, 0.47f, 0.40f, 1.0f);
                             const ImVec4 dot(0.40f, 0.37f, 0.30f, 1.0f);
@@ -13317,7 +13317,7 @@ void AddonRender() {
                             float iconSize = ImGui::GetTextLineHeight();
                             auto Sep = [&]() {
                                 ImGui::SameLine(0, 6);
-                                ImGui::TextColored(dot, "\xc2\xb7");
+                                ImGui::TextColored(dot, "-");
                                 ImGui::SameLine(0, 6);
                             };
                             // Render an item-icon + value pair. Falls back to a
