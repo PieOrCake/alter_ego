@@ -13741,6 +13741,24 @@ void AddonRender() {
 
 // --- Options/Settings Render ---
 
+// List *.ttf filenames in <data>/fonts (created if missing). Returns bare filenames.
+static std::vector<std::string> ScanFontFolder(std::string& outDir) {
+    outDir = AlterEgo::GW2API::GetDataDirectory() + "/fonts";
+    std::error_code ec; std::filesystem::create_directories(outDir, ec);
+    std::vector<std::string> out;
+    for (auto& e : std::filesystem::directory_iterator(outDir, ec)) {
+        if (!e.is_regular_file()) continue;
+        std::string name = e.path().filename().string();
+        if (name.size() > 4) {
+            std::string ext = name.substr(name.size() - 4);
+            for (auto& ch : ext) ch = (char)tolower((unsigned char)ch);
+            if (ext == ".ttf") out.push_back(name);
+        }
+    }
+    std::sort(out.begin(), out.end());
+    return out;
+}
+
 void AddonOptions() {
     ThemeGuard themeGuard;
     // Header with links
@@ -13861,6 +13879,56 @@ void AddonOptions() {
         ImGui::PopItemFlag();
     }
     ImGui::Unindent(16.0f);
+
+    ImGui::Separator();
+    ImGui::TextColored(ImVec4(0.85f, 0.78f, 0.55f, 1.0f), "Font");
+
+    std::string fontsDir;
+    std::vector<std::string> ttfs = ScanFontFolder(fontsDir);
+
+    // Current selection label.
+    std::string current;
+    if (g_FontConfig.face == AlterEgo::Font::Face::NexusDefault) current = "Nexus default";
+    else if (g_FontConfig.face == AlterEgo::Font::Face::Bundled)  current = "Inter (bundled)";
+    else {
+        current = g_FontConfig.customPath;
+        auto slash = current.find_last_of("/\\");
+        if (slash != std::string::npos) current = current.substr(slash + 1);
+    }
+
+    ImGui::SetNextItemWidth(220.0f);
+    if (ImGui::BeginCombo("##fontface", current.c_str())) {
+        if (ImGui::Selectable("Nexus default", g_FontConfig.face == AlterEgo::Font::Face::NexusDefault)) {
+            g_FontConfig.face = AlterEgo::Font::Face::NexusDefault;
+            g_FontConfig.customPath.clear();
+            SaveSettings();
+        }
+        if (ImGui::Selectable("Inter (bundled)", g_FontConfig.face == AlterEgo::Font::Face::Bundled)) {
+            g_FontConfig.face = AlterEgo::Font::Face::Bundled;
+            g_FontConfig.customPath.clear();
+            SaveSettings();
+        }
+        for (const auto& name : ttfs) {
+            std::string full = fontsDir + "/" + name;
+            bool sel = (g_FontConfig.face == AlterEgo::Font::Face::Custom && g_FontConfig.customPath == full);
+            if (ImGui::Selectable(name.c_str(), sel)) {
+                g_FontConfig.face = AlterEgo::Font::Face::Custom;
+                g_FontConfig.customPath = full;
+                SaveSettings();
+            }
+        }
+        ImGui::EndCombo();
+    }
+
+    // Size slider only for TTF faces (the Nexus-default face is unscaled).
+    if (g_FontConfig.face != AlterEgo::Font::Face::NexusDefault) {
+        ImGui::SetNextItemWidth(220.0f);
+        ImGui::SliderFloat("Size (px)", &g_FontConfig.px, 10.0f, 32.0f, "%.0f");
+        if (ImGui::IsItemDeactivatedAfterEdit()) SaveSettings();
+    }
+
+    ImGui::TextColored(ImVec4(0.55f, 0.53f, 0.45f, 1.0f),
+                       "Drop your own .ttf files in: %s", fontsDir.c_str());
 }
 
 // --- Export: GetAddonDef ---
