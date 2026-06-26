@@ -6673,7 +6673,9 @@ static void RenderSkillPickerDialog() {
             uint32_t equipped = (slot == 0) ? g_EditDraft.terrestrial_skills.heal
                               : (slot == 4) ? g_EditDraft.terrestrial_skills.elite
                               : g_EditDraft.terrestrial_skills.utilities[slot - 1];
-            ImGui::BeginChild("##skillgrid", ImVec2(COLS * (cell + pad) + pad, 360), true);
+            // Widen by the scrollbar + a little padding so the rightmost column isn't clipped.
+            float gridW = COLS * (cell + pad) + pad * 2.0f + ImGui::GetStyle().ScrollbarSize;
+            ImGui::BeginChild("##skillgrid", ImVec2(gridW, 360), true);
             for (size_t k = 0; k < shownIds.size(); k++) {
                 if (k % COLS) ImGui::SameLine(0, pad);
                 ImGui::PushID((int)shownIds[k]);
