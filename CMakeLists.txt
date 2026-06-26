@@ -42,6 +42,7 @@ set(SOURCES
     src/dllmain.cpp
     src/Clears.cpp
     src/GW2API.cpp
+    src/FontManager.cpp
     src/IconManager.cpp
     src/ChatLink.cpp
     src/HttpClient.cpp

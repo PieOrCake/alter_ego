@@ -22,6 +22,8 @@
 #include "imgui.h"
 #include "imgui_internal.h"
 #include "GW2API.h"
+#include "FontResolve.h"
+#include "FontManager.h"
 #include "IconManager.h"
 #include "ChatLink.h"
 #include "HoardAndSeekAPI.h"
@@ -37,8 +39,8 @@
 
 // Version constants
 #define V_MAJOR 1
-#define V_MINOR 0
-#define V_BUILD 2
+#define V_MINOR 1
+#define V_BUILD 0
 #define V_REVISION 0
 
 // Quick Access icon identifiers
@@ -456,6 +458,7 @@ static float g_EquipTabScroll = 0.0f;  // Horizontal scroll offset for equipment
 static float g_BuildTabScroll = 0.0f;  // Horizontal scroll offset for build tab chip strip
 static int g_SelectedBuildTab = 0;     // Build tab filter
 static bool g_ShowQAIcon = true;
+static AlterEgo::Font::Config g_FontConfig; // default = {NexusDefault, "", 16}
 static bool g_CompactCharList = false;
 static bool g_ShowCraftingIcons = false;
 static bool g_ShowAge = false;
@@ -1362,6 +1365,11 @@ static void SaveSettings() {
     j["chat_build_detection"] = g_ChatBuildDetection;
     j["toast_pos_x"] = g_ToastPosX;
     j["toast_pos_y"] = g_ToastPosY;
+    j["font"] = {
+        {"face", (int)g_FontConfig.face},
+        {"path", g_FontConfig.customPath},
+        {"px",   g_FontConfig.px},
+    };
     std::ofstream file(path);
     if (file.is_open()) file << j.dump(2);
 }
@@ -1394,6 +1402,15 @@ static void LoadSettings() {
     getBool("chat_build_detection", g_ChatBuildDetection);
     getFloat("toast_pos_x", g_ToastPosX);
     getFloat("toast_pos_y", g_ToastPosY);
+    if (j.contains("font") && j["font"].is_object()) {
+        const auto& f = j["font"];
+        if (f.contains("face") && f["face"].is_number_integer()) {
+            int face = f["face"].get<int>();
+            if (face >= 0 && face <= 2) g_FontConfig.face = (AlterEgo::Font::Face)face;
+        }
+        if (f.contains("path") && f["path"].is_string()) g_FontConfig.customPath = f["path"].get<std::string>();
+        if (f.contains("px")   && f["px"].is_number())    g_FontConfig.px = f["px"].get<float>();
+    }
 }
 
 // Character sort persistence
@@ -2868,7 +2885,7 @@ static std::string BuildEquipSubtitle(const AlterEgo::EquipmentItem* eq) {
                     break;
                 }
             }
-            if (!out.empty()) out += " \xe2\x80\xa2 "; // bullet
+            if (!out.empty()) out += " - "; // separator (ASCII; TTF atlas has no bullet glyph)
             else out = "";
             out += upgradeShort;
         }
@@ -3234,7 +3251,7 @@ static void ResolveEquipDisplay(const AlterEgo::EquipmentItem* eq, const char* s
 // Truncate a string with "..." so its rendered width fits maxW.
 static std::string TruncateToWidth(const std::string& s, float maxW) {
     if (ImGui::CalcTextSize(s.c_str()).x <= maxW) return s;
-    const char* ell = "\xe2\x80\xa6"; // …
+    const char* ell = "..."; // …
     float ellW = ImGui::CalcTextSize(ell).x;
     int lo = 0, hi = (int)s.size();
     while (lo < hi) {
@@ -7995,7 +8012,7 @@ static void RenderSavedBuildPreview(const AlterEgo::SavedBuild& build, bool show
         std::string sub;
         if (eliteSpec) { sub = eliteSpec->name; sub += " "; }
         sub += build.profession;
-        sub += "  \xc2\xb7  ";
+        sub += "  -  ";
         if (!g_LibEditMode) {
             sub += GameModeLabel(build.game_mode);
             ImGui::TextColored(ImVec4(0.55f, 0.50f, 0.40f, 1.0f), "%s", sub.c_str());
@@ -9517,6 +9534,7 @@ void AddonLoad(AddonAPI_t* aApi) {
 
     // Initialize subsystems
     AlterEgo::GW2API::Initialize(APIDefs);
+    AlterEgo::FontManager::Initialize(APIDefs);
     AlterEgo::IconManager::Initialize(APIDefs);
 
     // Load cached character data and build library from disk
@@ -9707,6 +9725,7 @@ void AddonUnload() {
         SaveAchProgress(g_AchCachedAccount);
     }
     AlterEgo::GW2API::SaveItemNameCache();
+    AlterEgo::FontManager::Shutdown();
     APIDefs = nullptr;
 }
 
@@ -11283,7 +11302,7 @@ static bool RenderChipStrip(const std::vector<std::string>& labels,
         std::string drawLabel = label;
         if (ts.x > chipW - 12.0f) {
             // Find truncated length
-            const char* ell = "\xe2\x80\xa6";
+            const char* ell = "...";
             float ellW = ImGui::CalcTextSize(ell).x;
             int lo = 0, hi = (int)label.size();
             while (lo < hi) {
@@ -13114,7 +13133,19 @@ static void RenderSkinventory() {
 
 // --- Main Render ---
 
+// Pushes the configured default TTF for the whole frame (all windows + popouts).
+// Pushes NOTHING for the Nexus-default face or a still-loading TTF (OOTB invariant).
+struct DefaultFontScope {
+    bool pushed = false;
+    explicit DefaultFontScope(const AlterEgo::Font::Config& cfg) {
+        ImFont* f = AlterEgo::FontManager::ResolveDefault(cfg);
+        if (f) { ImGui::PushFont(f); pushed = true; }
+    }
+    ~DefaultFontScope() { if (pushed) ImGui::PopFont(); }
+};
+
 void AddonRender() {
+    DefaultFontScope _fontScope(g_FontConfig);
     // Process icon download queue every frame
     AlterEgo::IconManager::Tick();
     Skinventory::WikiImage::Tick();
@@ -13898,7 +13929,7 @@ void AddonRender() {
                         std::string profUp = ch.profession;
                         for (auto& c : raceUp) c = (char)toupper((unsigned char)c);
                         for (auto& c : profUp) c = (char)toupper((unsigned char)c);
-                        snprintf(meta, sizeof(meta), "LV %d  \xe2\x80\xa2  %s  \xe2\x80\xa2  %s",
+                        snprintf(meta, sizeof(meta), "LV %d  -  %s  -  %s",
                             ch.level, raceUp.c_str(), profUp.c_str());
                         ImGui::TextColored(ImVec4(0.55f, 0.50f, 0.40f, 1.0f), "%s", meta);
                         ImGui::PopTextWrapPos();
@@ -13926,7 +13957,7 @@ void AddonRender() {
 
                         if (birthdayToday) {
                             ImGui::TextColored(ImVec4(1.0f, 0.85f, 0.0f, 1.0f),
-                                "\xe2\x9c\xa6 Happy Birthday! Turning %d today!", age + 1);
+                                "Happy Birthday! Turning %d today!", age + 1);
                         } else {
                             const ImVec4 dim(0.50f, 0.47f, 0.40f, 1.0f);
                             const ImVec4 dot(0.40f, 0.37f, 0.30f, 1.0f);
@@ -13934,7 +13965,7 @@ void AddonRender() {
                             float iconSize = ImGui::GetTextLineHeight();
                             auto Sep = [&]() {
                                 ImGui::SameLine(0, 6);
-                                ImGui::TextColored(dot, "\xc2\xb7");
+                                ImGui::TextColored(dot, "-");
                                 ImGui::SameLine(0, 6);
                             };
                             // Render an item-icon + value pair. Falls back to a
@@ -14370,6 +14401,25 @@ void AddonRender() {
 
 // --- Options/Settings Render ---
 
+// List *.ttf filenames in <data>/fonts (created if missing). Returns bare filenames.
+static std::vector<std::string> ScanFontFolder(std::string& outDir) {
+    outDir = AlterEgo::GW2API::GetDataDirectory() + "/fonts";
+    std::error_code ec; std::filesystem::create_directories(outDir, ec);
+    std::vector<std::string> out;
+    for (auto& e : std::filesystem::directory_iterator(outDir, ec)) {
+        if (!e.is_regular_file()) continue;
+        std::string name = e.path().filename().string();
+        std::string lower = name;
+        for (auto& ch : lower) ch = (char)tolower((unsigned char)ch);
+        // Skip the bundled face's cache file — it's already listed as "Inter (bundled)".
+        if (lower == "inter_regular.ttf") continue;
+        if (lower.size() > 4 && lower.substr(lower.size() - 4) == ".ttf")
+            out.push_back(name);
+    }
+    std::sort(out.begin(), out.end());
+    return out;
+}
+
 void AddonOptions() {
     ThemeGuard themeGuard;
     // Header with links
@@ -14490,6 +14540,56 @@ void AddonOptions() {
         ImGui::PopItemFlag();
     }
     ImGui::Unindent(16.0f);
+
+    ImGui::Separator();
+    ImGui::TextColored(ImVec4(0.85f, 0.78f, 0.55f, 1.0f), "Font");
+
+    std::string fontsDir;
+    std::vector<std::string> ttfs = ScanFontFolder(fontsDir);
+
+    // Current selection label.
+    std::string current;
+    if (g_FontConfig.face == AlterEgo::Font::Face::NexusDefault) current = "Nexus default";
+    else if (g_FontConfig.face == AlterEgo::Font::Face::Bundled)  current = "Inter (bundled)";
+    else {
+        current = g_FontConfig.customPath;
+        auto slash = current.find_last_of("/\\");
+        if (slash != std::string::npos) current = current.substr(slash + 1);
+    }
+
+    ImGui::SetNextItemWidth(220.0f);
+    if (ImGui::BeginCombo("##fontface", current.c_str())) {
+        if (ImGui::Selectable("Nexus default", g_FontConfig.face == AlterEgo::Font::Face::NexusDefault)) {
+            g_FontConfig.face = AlterEgo::Font::Face::NexusDefault;
+            g_FontConfig.customPath.clear();
+            SaveSettings();
+        }
+        if (ImGui::Selectable("Inter (bundled)", g_FontConfig.face == AlterEgo::Font::Face::Bundled)) {
+            g_FontConfig.face = AlterEgo::Font::Face::Bundled;
+            g_FontConfig.customPath.clear();
+            SaveSettings();
+        }
+        for (const auto& name : ttfs) {
+            std::string full = fontsDir + "/" + name;
+            bool sel = (g_FontConfig.face == AlterEgo::Font::Face::Custom && g_FontConfig.customPath == full);
+            if (ImGui::Selectable(name.c_str(), sel)) {
+                g_FontConfig.face = AlterEgo::Font::Face::Custom;
+                g_FontConfig.customPath = full;
+                SaveSettings();
+            }
+        }
+        ImGui::EndCombo();
+    }
+
+    // Size slider only for TTF faces (the Nexus-default face is unscaled).
+    if (g_FontConfig.face != AlterEgo::Font::Face::NexusDefault) {
+        ImGui::SetNextItemWidth(220.0f);
+        ImGui::SliderFloat("Size (px)", &g_FontConfig.px, 10.0f, 32.0f, "%.0f");
+        if (ImGui::IsItemDeactivatedAfterEdit()) SaveSettings();
+    }
+
+    ImGui::TextColored(ImVec4(0.55f, 0.53f, 0.45f, 1.0f),
+                       "Drop your own .ttf files in: %s", fontsDir.c_str());
 }
 
 // --- Export: GetAddonDef ---
