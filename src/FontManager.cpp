@@ -1,5 +1,6 @@
 #include "FontManager.h"
 #include "GW2API.h"            // GetDataDirectory
+#include "HttpClient.h"
 #include "imgui.h"
 #include <mutex>
 #include <unordered_map>
@@ -7,6 +8,12 @@
 #include <string>
 #include <filesystem>
 #include <thread>
+#include <atomic>
+#include <fstream>
+#include <cstdint>
+
+// Non-static global from dllmain.cpp (same local-extern pattern as Commerce/WikiImage).
+extern AddonAPI_t* APIDefs;
 
 namespace AlterEgo { namespace FontManager {
 
@@ -73,8 +80,45 @@ void Shutdown() {
     s_api = nullptr;
 }
 
-// ---- Bundled font: stubbed here, fully implemented in Task 4 ----
-bool BundledFontReady() { return std::filesystem::exists(BundledPath()); }
-void EnsureBundledFont() { /* Task 4 */ }
+// ---- Bundled font: download on first use, validate, cache atomically ----
+static std::atomic<bool> s_bundledFetching{false};
+
+// Valid TTF = size > 50 KB AND magic in {00 01 00 00, 'true', 'ttcf'}.
+static bool IsValidTtf(const std::string& path) {
+    std::error_code ec;
+    auto sz = std::filesystem::file_size(path, ec);
+    if (ec || sz < 50u * 1024u) return false;
+    std::ifstream f(path, std::ios::binary);
+    unsigned char m[4] = {0,0,0,0};
+    f.read((char*)m, 4);
+    if (f.gcount() < 4) return false;
+    bool sfnt = (m[0]==0x00 && m[1]==0x01 && m[2]==0x00 && m[3]==0x00);
+    bool tru  = (m[0]=='t' && m[1]=='r' && m[2]=='u' && m[3]=='e');
+    bool ttcf = (m[0]=='t' && m[1]=='t' && m[2]=='c' && m[3]=='f');
+    return sfnt || tru || ttcf;
+}
+
+bool BundledFontReady() { return IsValidTtf(BundledPath()); }
+
+void EnsureBundledFont() {
+    if (BundledFontReady()) return;
+    if (s_bundledFetching.exchange(true)) return;     // one attempt per session
+    std::string dir = s_fontsDir;
+    std::thread([dir]() {
+        const std::string url  = "https://raw.githubusercontent.com/PieOrCake/alter_ego/main/fonts/inter_regular.ttf";
+        const std::string dst  = dir + "/inter_regular.ttf";
+        const std::string part = dst + ".part";
+        if (Skinventory::HttpClient::DownloadToFile(url, part) && IsValidTtf(part)) {
+            std::error_code ec;
+            std::filesystem::rename(part, dst, ec);    // atomic move into place
+            if (ec) std::filesystem::remove(part, ec);
+        } else {
+            std::error_code ec; std::filesystem::remove(part, ec);
+            if (APIDefs && APIDefs->Log)
+                APIDefs->Log(LOGL_WARNING, "AlterEgo", "Bundled font download failed; using Nexus default.");
+        }
+        s_bundledFetching = false;
+    }).detach();
+}
 
 }} // namespace AlterEgo::FontManager
