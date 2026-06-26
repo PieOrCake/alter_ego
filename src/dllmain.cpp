@@ -12490,7 +12490,19 @@ static void RenderSkinventory() {
 
 // --- Main Render ---
 
+// Pushes the configured default TTF for the whole frame (all windows + popouts).
+// Pushes NOTHING for the Nexus-default face or a still-loading TTF (OOTB invariant).
+struct DefaultFontScope {
+    bool pushed = false;
+    explicit DefaultFontScope(const AlterEgo::Font::Config& cfg) {
+        ImFont* f = AlterEgo::FontManager::ResolveDefault(cfg);
+        if (f) { ImGui::PushFont(f); pushed = true; }
+    }
+    ~DefaultFontScope() { if (pushed) ImGui::PopFont(); }
+};
+
 void AddonRender() {
+    DefaultFontScope _fontScope(g_FontConfig);
     // Process icon download queue every frame
     AlterEgo::IconManager::Tick();
     Skinventory::WikiImage::Tick();
