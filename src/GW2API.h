@@ -174,6 +174,7 @@ namespace AlterEgo {
         std::string description;
         std::string type;           // "Heal", "Utility", "Elite", "Weapon", etc.
         uint32_t specialization = 0; // gating elite-spec id (0 = core, usable by all)
+        std::vector<std::string> professions; // professions that can slot it; empty = racial
         nlohmann::json facts;       // Tooltip facts array
     };
 

@@ -2113,6 +2113,9 @@ namespace AlterEgo {
                                 info.description = StripHtmlTags(skill["description"].get<std::string>());
                             info.type = skill.value("type", "");
                             info.specialization = skill.value("specialization", 0u);
+                            if (skill.contains("professions") && skill["professions"].is_array())
+                                for (const auto& p : skill["professions"])
+                                    if (p.is_string()) info.professions.push_back(p.get<std::string>());
                             if (skill.contains("facts"))
                                 info.facts = skill["facts"];
                             s_skill_cache[info.id] = info;
@@ -3127,6 +3130,8 @@ namespace AlterEgo {
                 j["icon"] = info.icon_url;
                 if (!info.description.empty()) j["description"] = info.description;
                 j["type"] = info.type;
+                j["specialization"] = info.specialization;
+                j["professions"] = info.professions;
                 if (!info.facts.is_null()) j["facts"] = info.facts;
                 arr.push_back(std::move(j));
             }
@@ -3264,12 +3269,20 @@ namespace AlterEgo {
             std::lock_guard<std::mutex> lock(s_mutex);
             for (const auto& it : j) {
                 if (!it.contains("id")) continue;
+                // Legacy cache (pre-professions/specialization) is skipped so the skill
+                // re-fetches on demand with the new fields — needed for racial filtering
+                // and elite-spec gating.
+                if (!it.contains("professions")) continue;
                 SkillInfo info;
                 info.id = it["id"].get<uint32_t>();
                 info.name = it.value("name", "");
                 info.icon_url = it.value("icon", "");
                 info.description = it.value("description", "");
                 info.type = it.value("type", "");
+                info.specialization = it.value("specialization", 0u);
+                if (it.contains("professions") && it["professions"].is_array())
+                    for (const auto& p : it["professions"])
+                        if (p.is_string()) info.professions.push_back(p.get<std::string>());
                 if (it.contains("facts")) info.facts = it["facts"];
                 s_skill_cache[info.id] = std::move(info);
             }

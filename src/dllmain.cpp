@@ -6560,6 +6560,8 @@ static void RenderSpecPickerDialog() {
             for (uint32_t sid : specIds) {
                 const auto* si = AlterEgo::GW2API::GetSpecInfo(sid);
                 if (!si) continue;
+                // Elite specs are only valid on the third spec line (slot index 2).
+                if (si->elite && g_SpecPickerSlot != 2) continue;
                 bool usedElsewhere = false;
                 for (int o = 0; o < 3; o++)
                     if (o != g_SpecPickerSlot && g_EditDraft.specializations[o].spec_id == sid)
@@ -6602,19 +6604,25 @@ static void RenderSpecPickerDialog() {
 // of the slot's type (Heal / Utility / Elite), gated by slotted elite specs,
 // and prevents duplicate utilities.
 static void RenderSkillPickerDialog() {
-    if (g_SkillPickerSlot < 0) return;
     const char* POPUP = "##skillpick";
-    if (!ImGui::IsPopupOpen(POPUP)) ImGui::OpenPopup(POPUP);
+    // Latch the open: OpenPopup ONCE per (re)request, not every frame — otherwise a
+    // click-away closes the popup and the next frame immediately reopens it.
+    static int s_openForSlot = -1;
+    static ImVec2 s_anchor;
+    if (g_SkillPickerSlot < 0) { s_openForSlot = -1; return; }
 
-    // Anchor the flyout near the clicked skill icon (clamped on screen), like the
-    // native skill picker — not a centered modal. Click-away closes it (BeginPopup).
-    ImVec2 disp = ImGui::GetIO().DisplaySize;
-    ImVec2 anchor = g_SkillPickerAnchor;
-    if (anchor.x + 200.0f > disp.x) anchor.x = disp.x - 200.0f;
-    if (anchor.x < 0.0f) anchor.x = 0.0f;
-    if (anchor.y + 390.0f > disp.y) anchor.y = disp.y - 390.0f;
-    if (anchor.y < 0.0f) anchor.y = 0.0f;
-    ImGui::SetNextWindowPos(anchor, ImGuiCond_Appearing);
+    if (g_SkillPickerSlot != s_openForSlot) {
+        // Newly requested (or switched to a different slot) — (re)open at the anchor.
+        ImVec2 disp = ImGui::GetIO().DisplaySize;
+        s_anchor = g_SkillPickerAnchor;
+        if (s_anchor.x + 200.0f > disp.x) s_anchor.x = disp.x - 200.0f;
+        if (s_anchor.x < 0.0f) s_anchor.x = 0.0f;
+        if (s_anchor.y + 390.0f > disp.y) s_anchor.y = disp.y - 390.0f;
+        if (s_anchor.y < 0.0f) s_anchor.y = 0.0f;
+        ImGui::OpenPopup(POPUP);
+        s_openForSlot = g_SkillPickerSlot;
+    }
+    ImGui::SetNextWindowPos(s_anchor, ImGuiCond_Always);
 
     if (ImGui::BeginPopup(POPUP)) {
         const int slot = g_SkillPickerSlot;
@@ -6666,6 +6674,12 @@ static void RenderSkillPickerDialog() {
                 if (!sk) continue;
                 if (sk->type != wantType) continue;
                 if (!eliteGateOk(sk->specialization)) continue;
+                // Exclude racial skills (and any non-profession skills): racial skills
+                // list no profession; profession skills list this profession.
+                bool forProf = false;
+                for (const auto& pr : sk->professions)
+                    if (pr == g_EditDraft.profession) { forProf = true; break; }
+                if (!forProf) continue;
                 shownIds.push_back(id);
             }
             const int COLS = 4;
