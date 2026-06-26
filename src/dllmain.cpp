@@ -3829,24 +3829,43 @@ static void DrawDottedLine(ImDrawList* dl, ImVec2 a, ImVec2 b, ImU32 color, floa
 
 // Helper: render a single trait icon with selected/dimmed state and tooltip
 // Returns the center screen position of the rendered icon
-static ImVec2 RenderTraitIcon(uint32_t trait_id, bool selected, bool isMinor, float size) {
+static ImVec2 RenderTraitIcon(uint32_t trait_id, bool selected, bool isMinor, float size,
+                              bool editable = false, bool* clicked = nullptr) {
     const auto* tinfo = AlterEgo::GW2API::GetTraitInfo(trait_id);
 
     ImGui::PushID((int)(trait_id + 2000000));
 
     ImVec2 pos = ImGui::GetCursorScreenPos();
     ImVec2 center(pos.x + size * 0.5f, pos.y + size * 0.5f);
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+
+    // Editable: an invisible button owns the click; the icon draws via the draw list so
+    // the cell layout stays identical to the read-only path. Reset the cursor afterwards.
+    bool hovered = false;
+    if (editable) {
+        if (ImGui::InvisibleButton("##et", ImVec2(size, size)) && clicked) *clicked = true;
+        hovered = ImGui::IsItemHovered();
+        ImGui::SetCursorScreenPos(pos);
+    }
 
     Texture_t* tex = AlterEgo::IconManager::GetIcon(trait_id + 2000000);
     if (tex && tex->Resource) {
         if (selected) {
-            ImGui::GetWindowDrawList()->AddRect(
+            dl->AddRect(
                 pos,
                 ImVec2(pos.x + size, pos.y + size),
                 IM_COL32(100, 220, 255, 255), 0.0f, 0, 1.5f);
         }
 
-        if (!selected && !isMinor) {
+        if (editable) {
+            int a = (!selected && !isMinor) ? 76 : 255; // 0.3*255 dim for unselected majors
+            if (hovered) a = 255;                        // brighten on hover
+            dl->AddImage(tex->Resource, pos, ImVec2(pos.x + size, pos.y + size),
+                         ImVec2(0, 0), ImVec2(1, 1), IM_COL32(255, 255, 255, a));
+            if (hovered)
+                dl->AddRect(pos, ImVec2(pos.x + size, pos.y + size),
+                            IM_COL32(227, 196, 122, 255), 0.0f, 0, 2.0f);
+        } else if (!selected && !isMinor) {
             ImGui::PushStyleVar(ImGuiStyleVar_Alpha, 0.3f);
             ImGui::Image(tex->Resource, ImVec2(size, size));
             ImGui::PopStyleVar();
@@ -3855,9 +3874,9 @@ static ImVec2 RenderTraitIcon(uint32_t trait_id, bool selected, bool isMinor, fl
         }
     } else {
         ImVec4 col = selected ? ImVec4(0.3f, 0.5f, 0.7f, 0.8f) : ImVec4(0.15f, 0.15f, 0.15f, 0.5f);
-        ImGui::GetWindowDrawList()->AddRectFilled(pos, ImVec2(pos.x + size, pos.y + size),
+        dl->AddRectFilled(pos, ImVec2(pos.x + size, pos.y + size),
             ImGui::ColorConvertFloat4ToU32(col));
-        ImGui::Dummy(ImVec2(size, size));
+        if (!editable) ImGui::Dummy(ImVec2(size, size));
 
         if (tinfo && !tinfo->icon_url.empty())
             AlterEgo::IconManager::RequestIcon(trait_id + 2000000, tinfo->icon_url);
@@ -3879,43 +3898,6 @@ static ImVec2 RenderTraitIcon(uint32_t trait_id, bool selected, bool isMinor, fl
 
     ImGui::PopID();
     return center;
-}
-
-// Clickable trait icon for the build editor. Shares the IconManager cache
-// (trait_id + 2000000) with RenderTraitIcon. Returns true when clicked.
-static bool RenderEditableTraitIcon(uint32_t trait_id, bool selected, float size) {
-    const auto* tinfo = AlterEgo::GW2API::GetTraitInfo(trait_id);
-    ImGui::PushID((int)(trait_id + 3000000));
-    ImVec2 pos = ImGui::GetCursorScreenPos();
-    bool clicked = ImGui::InvisibleButton("##et", ImVec2(size, size));
-    ImDrawList* dl = ImGui::GetWindowDrawList();
-    Texture_t* tex = AlterEgo::IconManager::GetIcon(trait_id + 2000000);
-    if (tex && tex->Resource) {
-        int a = selected ? 255 : 115;
-        dl->AddImage(tex->Resource, pos, ImVec2(pos.x + size, pos.y + size),
-                     ImVec2(0, 0), ImVec2(1, 1), IM_COL32(255, 255, 255, a));
-    } else {
-        ImU32 col = selected ? IM_COL32(80, 130, 180, 200) : IM_COL32(40, 40, 40, 160);
-        dl->AddRectFilled(pos, ImVec2(pos.x + size, pos.y + size), col);
-        if (tinfo && !tinfo->icon_url.empty())
-            AlterEgo::IconManager::RequestIcon(trait_id + 2000000, tinfo->icon_url);
-    }
-    if (selected)
-        dl->AddRect(pos, ImVec2(pos.x + size, pos.y + size),
-                    IM_COL32(100, 220, 255, 255), 0.0f, 0, 2.0f);
-    if (ImGui::IsItemHovered() && tinfo) {
-        ImGui::BeginTooltip();
-        ImGui::TextColored(ImVec4(1.0f, 0.9f, 0.5f, 1.0f), "%s", tinfo->name.c_str());
-        if (!tinfo->description.empty()) {
-            ImGui::PushTextWrapPos(300.0f);
-            std::string d = StripGW2Markup(tinfo->description);
-            ImGui::TextColored(ImVec4(0.8f, 0.8f, 0.8f, 1.0f), "%s", d.c_str());
-            ImGui::PopTextWrapPos();
-        }
-        ImGui::EndTooltip();
-    }
-    ImGui::PopID();
-    return clicked;
 }
 
 // Clickable skill icon for the build editor (icon cache = skill_id + 5000000).
@@ -7932,7 +7914,8 @@ static void RenderSavedBuildPreview(const AlterEgo::SavedBuild& build, bool show
     const float colW = iconSz * 2.0f;
 
     for (int i = 0; i < 3; i++) {
-        const auto& spec = build.specializations[i];
+        // When editing, the grid reflects the mutable draft; otherwise the saved build.
+        const auto& spec = g_LibEditMode ? g_EditDraft.specializations[i] : build.specializations[i];
         if (spec.spec_id == 0) {
             ImGui::TextColored(ImVec4(0.4f, 0.4f, 0.4f, 1.0f), "  (empty)");
             continue;
@@ -8089,7 +8072,13 @@ static void RenderSavedBuildPreview(const AlterEgo::SavedBuild& build, bool show
                             } else {
                                 selected = ((uint32_t)spec.traits[tier] == tid);
                             }
-                            ImVec2 c = RenderTraitIcon(tid, selected, false, iconSz);
+                            bool tClicked = false;
+                            ImVec2 c = RenderTraitIcon(tid, selected, false, iconSz,
+                                                       g_LibEditMode, &tClicked);
+                            if (tClicked) {
+                                g_EditDraft.specializations[i].traits[tier] = (int)tid;
+                                MarkEditDirty();
+                            }
                             if (selected) {
                                 selectedCenters[tier] = c;
                                 hasSelected[tier] = true;
@@ -9033,33 +9022,10 @@ static void RenderBuildLibrary() {
             AlterEgo::GW2API::UpdateSavedBuild(build.id, g_LibEditName.c_str(), g_LibEditNotes.c_str());
         }
 
-        // ===== Specializations & traits =====
-        ImGui::Dummy(ImVec2(0, 6));
-        RenderSectionHeader("Specializations", ImVec4(0.70f, 0.58f, 0.20f, 1.0f));
+        // Specializations & traits are edited in-place in the rich card below
+        // (RenderSavedBuildPreview). Ensure the draft profession's spec data is queued.
         if (AlterEgo::GW2API::GetProfessionSpecIds(g_EditDraft.profession).empty())
             AlterEgo::GW2API::FetchProfessionInfoAsync(g_EditDraft.profession);
-        for (int s = 0; s < 3; s++) {
-            ImGui::PushID(1000 + s);
-            const auto* si = AlterEgo::GW2API::GetSpecInfo(g_EditDraft.specializations[s].spec_id);
-            std::string label = si ? si->name : "Choose specialization";
-            if (si && si->elite) label += "  (Elite)";
-            if (RenderChipButton(label.c_str(), g_EditDraft.specializations[s].spec_id != 0))
-                g_SpecPickerSlot = s;
-            if (si && si->major_traits.size() >= 9) {
-                const float iconSz = 34.0f;
-                for (int tier = 0; tier < 3; tier++) {
-                    for (int r = 0; r < 3; r++) {
-                        if (r) ImGui::SameLine();
-                        uint32_t tid = si->major_traits[tier * 3 + r];
-                        bool sel = ((int)tid == g_EditDraft.specializations[s].traits[tier]);
-                        if (RenderEditableTraitIcon(tid, sel, iconSz))
-                            g_EditDraft.specializations[s].traits[tier] = (int)tid;
-                    }
-                }
-            }
-            ImGui::PopID();
-            ImGui::Dummy(ImVec2(0, 4));
-        }
 
         // ===== Skills =====
         ImGui::Dummy(ImVec2(0, 6));
