@@ -13761,11 +13761,12 @@ static std::vector<std::string> ScanFontFolder(std::string& outDir) {
     for (auto& e : std::filesystem::directory_iterator(outDir, ec)) {
         if (!e.is_regular_file()) continue;
         std::string name = e.path().filename().string();
-        if (name.size() > 4) {
-            std::string ext = name.substr(name.size() - 4);
-            for (auto& ch : ext) ch = (char)tolower((unsigned char)ch);
-            if (ext == ".ttf") out.push_back(name);
-        }
+        std::string lower = name;
+        for (auto& ch : lower) ch = (char)tolower((unsigned char)ch);
+        // Skip the bundled face's cache file — it's already listed as "Inter (bundled)".
+        if (lower == "inter_regular.ttf") continue;
+        if (lower.size() > 4 && lower.substr(lower.size() - 4) == ".ttf")
+            out.push_back(name);
     }
     std::sort(out.begin(), out.end());
     return out;
