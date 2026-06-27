@@ -40,7 +40,7 @@
 // Version constants
 #define V_MAJOR 1
 #define V_MINOR 1
-#define V_BUILD 0
+#define V_BUILD 1
 #define V_REVISION 0
 
 // Quick Access icon identifiers
@@ -451,9 +451,12 @@ static bool RenderChipStrip(const std::vector<std::string>& labels,
                             const std::vector<bool>& activeMarkers,
                             int& selectedIdx,
                             float& scrollOffset,
-                            const char* idScope);
+                            const char* idScope,
+                            const char* chipTooltip = nullptr,
+                            int* rightClickedIdx = nullptr);
 
 static int g_SelectedEquipTab = 0;     // Equipment tab filter
+static int g_FashionTab = 0;           // Equipment tab whose fashion menu was opened (1-based)
 static float g_EquipTabScroll = 0.0f;  // Horizontal scroll offset for equipment tab chip strip
 static float g_BuildTabScroll = 0.0f;  // Horizontal scroll offset for build tab chip strip
 static int g_SelectedBuildTab = 0;     // Build tab filter
@@ -988,9 +991,22 @@ static bool g_ChatAddonConnected = false; // true once we receive any EV_CHAT:Me
 #define EV_ALTER_EGO_READY         "EV_ALTER_EGO_READY"
 #define EV_ALTER_EGO_PING          "EV_ALTER_EGO_PING"
 #define EV_ALTER_EGO_IMPORT_BUILD  "EV_ALTER_EGO_IMPORT_BUILD"
+// Pie UI generic action: hand it a NUL-terminated "[&...]" chatcode and it
+// performs the link's native action on the game thread. For a wardrobe-template
+// link that opens the native Wardrobe Template preview window (read-only).
+#define EV_PIEUI_OPEN_CHATLINK     "EV_PIEUI_OPEN_CHATLINK"
 
 static std::atomic<bool> g_PieUIPresent{false};
 static void OnPieUIReady(void* eventArgs);
+
+// Ask Pie UI to preview a chatcode natively. No-op if Pie isn't loaded or the
+// code is empty. Nexus dispatches synchronously, so c_str() is valid for the
+// raise; Pie copies the string immediately.
+static void PieUI_PreviewChatLink(const std::string& chatCode) {
+    if (!APIDefs || !APIDefs->Events_Raise || chatCode.empty()) return;
+    if (!g_PieUIPresent.load()) return;
+    APIDefs->Events_Raise(EV_PIEUI_OPEN_CHATLINK, (void*)chatCode.c_str());
+}
 static void OnAlterEgoPing(void* eventArgs);
 static void OnPieImportBuild(void* eventArgs);
 
@@ -2626,12 +2642,26 @@ static void FetchDetailsForCharacter(const AlterEgo::Character& ch) {
     std::vector<uint32_t> spec_ids;
     std::vector<uint32_t> stat_ids;
 
+    // Gear pieces that are cached but missing default_skin: re-fetch them once so
+    // the Fashion wardrobe link can resolve default (non-transmuted) appearances.
+    std::vector<uint32_t> backfill_ids;
+    auto wardrobeSlot = [](const std::string& s) {
+        return s == "Helm" || s == "Shoulders" || s == "Coat" || s == "Gloves" ||
+               s == "Leggings" || s == "Boots" || s == "Backpack" ||
+               s == "WeaponA1" || s == "WeaponA2" || s == "WeaponB1" || s == "WeaponB2";
+    };
+
     for (const auto& eq : ch.equipment) {
         if (eq.id != 0) item_ids.push_back(eq.id);
         if (eq.skin != 0) skin_ids.push_back(eq.skin);
         if (eq.stat_id != 0) stat_ids.push_back(eq.stat_id);
         for (auto u : eq.upgrades) if (u != 0) item_ids.push_back(u);
         for (auto inf : eq.infusions) if (inf != 0) item_ids.push_back(inf);
+
+        if (eq.id != 0 && eq.skin == 0 && wardrobeSlot(eq.slot)) {
+            const auto* ii = AlterEgo::GW2API::GetItemInfo(eq.id);
+            if (ii && ii->default_skin == 0) backfill_ids.push_back(eq.id);
+        }
     }
 
     std::vector<uint32_t> skill_ids;
@@ -2652,6 +2682,7 @@ static void FetchDetailsForCharacter(const AlterEgo::Character& ch) {
     }
 
     if (!item_ids.empty()) AlterEgo::GW2API::FetchItemDetailsAsync(item_ids);
+    if (!backfill_ids.empty()) AlterEgo::GW2API::FetchItemDetailsAsync(backfill_ids, true);
     if (!skin_ids.empty()) AlterEgo::GW2API::FetchSkinDetailsAsync(skin_ids);
     if (!spec_ids.empty()) AlterEgo::GW2API::FetchSpecDetailsAsync(spec_ids);
     if (!skill_ids.empty()) AlterEgo::GW2API::FetchSkillDetailsAsync(skill_ids);
@@ -3522,6 +3553,69 @@ static void DrawRaceSilhouette(ImDrawList* dl, const std::string& race, const st
 }
 
 // Render the equipment panel (game-matching layout)
+// Build a native GW2 wardrobe template chat link ([&...], type 0x0F) from the
+// armor + weapons shown on the given equipment tab. Per slot: the transmuted
+// skin if present, otherwise the item's default skin; plus up to 4 armor dyes.
+// Underwater gear and outfits are intentionally omitted.
+static std::string BuildWardrobeLink(const AlterEgo::Character& ch, int tab) {
+    using namespace AlterEgo;
+
+    auto skinOf = [](const EquipmentItem* eq) -> uint16_t {
+        if (!eq) return 0;
+        if (eq->skin) return (uint16_t)eq->skin;
+        const ItemInfo* ii = GW2API::GetItemInfo(eq->id);
+        if (ii && ii->default_skin) return (uint16_t)ii->default_skin;
+        return 0;
+    };
+    // Per the wiki spec: unused/empty dye channels are 1 (Dye Remover), not 0.
+    auto dyesOf = [](const EquipmentItem* eq, uint16_t out[4]) {
+        for (int i = 0; i < 4; i++)
+            out[i] = (eq && i < (int)eq->dyes.size() && eq->dyes[i] > 0)
+                         ? (uint16_t)eq->dyes[i] : 1;
+    };
+
+    DecodedWardrobeLink w{};
+
+    const EquipmentItem* helm      = FindEquipment(ch, "Helm", tab);
+    const EquipmentItem* shoulders = FindEquipment(ch, "Shoulders", tab);
+    const EquipmentItem* chest     = FindEquipment(ch, "Coat", tab);
+    const EquipmentItem* gloves    = FindEquipment(ch, "Gloves", tab);
+    const EquipmentItem* leggings  = FindEquipment(ch, "Leggings", tab);
+    const EquipmentItem* boots     = FindEquipment(ch, "Boots", tab);
+    const EquipmentItem* backpack  = FindEquipment(ch, "Backpack", tab);
+
+    w.helm_skin      = skinOf(helm);      dyesOf(helm, w.helm_dyes);
+    w.shoulders_skin = skinOf(shoulders); dyesOf(shoulders, w.shoulders_dyes);
+    w.chest_skin     = skinOf(chest);     dyesOf(chest, w.chest_dyes);
+    w.gloves_skin    = skinOf(gloves);    dyesOf(gloves, w.gloves_dyes);
+    w.leggings_skin  = skinOf(leggings);  dyesOf(leggings, w.leggings_dyes);
+    w.boots_skin     = skinOf(boots);     dyesOf(boots, w.boots_dyes);
+    w.backpack_skin  = skinOf(backpack);  dyesOf(backpack, w.backpack_dyes);
+
+    // Unused slots (outfit, underwater) get Dye Remover in their dye channels.
+    for (int i = 0; i < 4; i++) w.outfit_dyes[i] = 1;
+
+    w.weapon_a_main = skinOf(FindEquipment(ch, "WeaponA1", tab));
+    w.weapon_a_off  = skinOf(FindEquipment(ch, "WeaponA2", tab));
+    w.weapon_b_main = skinOf(FindEquipment(ch, "WeaponB1", tab));
+    w.weapon_b_off  = skinOf(FindEquipment(ch, "WeaponB2", tab));
+
+    // Visibility bit flags: which slots the template shows. Chest/shoes/leggings
+    // are always set; other slots are flagged only when populated.
+    uint16_t vis = 0x0004 | 0x0008 | 0x0040;
+    if (w.backpack_skin)  vis |= 0x0002;
+    if (w.gloves_skin)    vis |= 0x0010;
+    if (w.helm_skin)      vis |= 0x0020;
+    if (w.shoulders_skin) vis |= 0x0080;
+    if (w.weapon_a_main)  vis |= 0x0800;
+    if (w.weapon_a_off)   vis |= 0x1000;
+    if (w.weapon_b_main)  vis |= 0x2000;
+    if (w.weapon_b_off)   vis |= 0x4000;
+    w.visibility_flags = vis;
+
+    return ChatLink::EncodeWardrobe(w);
+}
+
 static void RenderEquipmentPanel(const AlterEgo::Character& ch) {
     // Add padding so icons don't touch the pane edges
     ImVec2 cursor = ImGui::GetCursorPos();
@@ -3535,7 +3629,9 @@ static void RenderEquipmentPanel(const AlterEgo::Character& ch) {
     int tab = (g_SelectedEquipTab > 0) ? g_SelectedEquipTab : ch.active_equipment_tab;
     if (tab == 0) tab = 1;
 
-    if (maxTab > 1) {
+    // Equipment tab chips. Always shown (even for a single tab) so the tab is a
+    // consistent right-click target for the Fashion menu.
+    {
         std::vector<std::string> labels;
         std::vector<bool> activeMarkers;
         labels.reserve(maxTab);
@@ -3552,11 +3648,38 @@ static void RenderEquipmentPanel(const AlterEgo::Character& ch) {
             activeMarkers.push_back(ch.active_equipment_tab == t);
         }
         int selIdx = tab - 1;
-        if (RenderChipStrip(labels, activeMarkers, selIdx, g_EquipTabScroll, "##equip_chips")) {
+        int fashionChip = -1;
+        if (RenderChipStrip(labels, activeMarkers, selIdx, g_EquipTabScroll, "##equip_chips",
+                            "Right-click for fashion options", &fashionChip)) {
             g_SelectedEquipTab = selIdx + 1;
             g_DetailsFetched = false;
         }
+        if (fashionChip >= 0) {
+            g_FashionTab = fashionChip + 1;
+            ImGui::OpenPopup("##fashion_menu");
+        }
     }
+
+    // Fashion menu: share the right-clicked tab's look as a wardrobe template chat link.
+    if (ImGui::BeginPopup("##fashion_menu")) {
+        int fTab = (g_FashionTab > 0) ? g_FashionTab : tab;
+        if (ImGui::Selectable("Copy Code")) {
+            std::string link = BuildWardrobeLink(ch, fTab);
+            if (!link.empty()) {
+                CopyToClipboard(link);
+                if (APIDefs) APIDefs->GUI_SendAlert("Wardrobe code copied to clipboard! Paste in GW2 chat.");
+            } else if (APIDefs) {
+                APIDefs->GUI_SendAlert("Could not build a wardrobe code for this tab.");
+            }
+        }
+        // Preview opens Pie UI's native Wardrobe Template window for this look.
+        // Only offered when Pie UI is loaded (it performs the native action).
+        if (g_PieUIPresent.load() && ImGui::Selectable("Preview in Pie UI")) {
+            PieUI_PreviewChatLink(BuildWardrobeLink(ch, fTab));
+        }
+        ImGui::EndPopup();
+    }
+
     ImGui::Spacing();
 
     // Record start position for silhouette overlay
@@ -11166,7 +11289,9 @@ static bool RenderChipStrip(const std::vector<std::string>& labels,
                             const std::vector<bool>& activeMarkers,
                             int& selectedIdx,
                             float& scrollOffset,
-                            const char* idScope) {
+                            const char* idScope,
+                            const char* chipTooltip,
+                            int* rightClickedIdx) {
     int n = (int)labels.size();
     if (n <= 0) return false;
 
@@ -11275,6 +11400,8 @@ static bool RenderChipStrip(const std::vector<std::string>& labels,
             }
         }
         bool hovered = ImGui::IsItemHovered();
+        if (hovered && chipTooltip) ImGui::SetTooltip("%s", chipTooltip);
+        if (rightClickedIdx && ImGui::IsItemClicked(ImGuiMouseButton_Right)) *rightClickedIdx = i;
         ImGui::PopID();
 
         if (active) {

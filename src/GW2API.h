@@ -126,6 +126,7 @@ namespace AlterEgo {
         std::string type;
         std::string description;
         std::string chat_link;
+        uint32_t default_skin = 0;  // Default appearance skin ID (when not transmuted)
         nlohmann::json details;     // Full details block for stats, etc.
     };
 
@@ -384,8 +385,8 @@ namespace AlterEgo {
         static const std::map<std::string, ProfessionWeaponData>* GetProfessionWeapons(const std::string& profession);
 
         // Fetch detail data on-demand (direct HTTP — no auth needed)
-        static void FetchItemDetails(const std::vector<uint32_t>& item_ids); // synchronous
-        static void FetchItemDetailsAsync(const std::vector<uint32_t>& item_ids);
+        static void FetchItemDetails(const std::vector<uint32_t>& item_ids, bool forceRefetch = false); // synchronous
+        static void FetchItemDetailsAsync(const std::vector<uint32_t>& item_ids, bool forceRefetch = false);
         static void FetchSkinDetailsAsync(const std::vector<uint32_t>& skin_ids);
         static void FetchSpecDetailsAsync(const std::vector<uint32_t>& spec_ids);
         static void FetchTraitDetailsAsync(const std::vector<uint32_t>& trait_ids);

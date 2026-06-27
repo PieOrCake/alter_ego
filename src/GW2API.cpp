@@ -1798,14 +1798,15 @@ namespace AlterEgo {
 
     // --- Batch fetch: items ---
 
-    void GW2API::FetchItemDetails(const std::vector<uint32_t>& item_ids) {
+    void GW2API::FetchItemDetails(const std::vector<uint32_t>& item_ids, bool forceRefetch) {
         if (item_ids.empty()) return;
 
         std::vector<uint32_t> to_fetch;
         {
             std::lock_guard<std::mutex> lock(s_mutex);
             for (uint32_t id : item_ids) {
-                if (id != 0 && s_item_cache.find(id) == s_item_cache.end())
+                if (id == 0) continue;
+                if (forceRefetch || s_item_cache.find(id) == s_item_cache.end())
                     to_fetch.push_back(id);
             }
         }
@@ -1840,6 +1841,7 @@ namespace AlterEgo {
                         info.rarity = item.value("rarity", "");
                         info.type = item.value("type", "");
                         info.chat_link = item.value("chat_link", "");
+                        info.default_skin = item.value("default_skin", 0u);
                         if (item.contains("description"))
                             info.description = StripHtmlTags(item["description"].get<std::string>());
                         if (item.contains("details"))
@@ -1929,9 +1931,9 @@ namespace AlterEgo {
 
     // --- Async wrappers ---
 
-    void GW2API::FetchItemDetailsAsync(const std::vector<uint32_t>& item_ids) {
+    void GW2API::FetchItemDetailsAsync(const std::vector<uint32_t>& item_ids, bool forceRefetch) {
         auto ids = item_ids;
-        std::thread([ids]() { FetchItemDetails(ids); }).detach();
+        std::thread([ids, forceRefetch]() { FetchItemDetails(ids, forceRefetch); }).detach();
     }
 
     void GW2API::FetchSkinDetailsAsync(const std::vector<uint32_t>& skin_ids) {
@@ -3097,6 +3099,7 @@ namespace AlterEgo {
                 j["type"] = info.type;
                 if (!info.description.empty()) j["description"] = info.description;
                 if (!info.chat_link.empty()) j["chat_link"] = info.chat_link;
+                if (info.default_skin) j["default_skin"] = info.default_skin;
                 if (!info.details.is_null()) j["details"] = info.details;
                 arr.push_back(std::move(j));
             }
@@ -3277,6 +3280,7 @@ namespace AlterEgo {
                 info.type = it.value("type", "");
                 info.description = it.value("description", "");
                 info.chat_link = it.value("chat_link", "");
+                info.default_skin = it.value("default_skin", 0u);
                 if (it.contains("details")) info.details = it["details"];
                 s_item_cache[info.id] = std::move(info);
             }

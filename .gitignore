@@ -22,6 +22,7 @@ Thumbs.db
 
 # LLM session artifacts
 handover.md
+*-prompt.md
 tools/.banner_cache/
 
 # Dev-only UI mockups (not shipped)

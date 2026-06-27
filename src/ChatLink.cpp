@@ -364,6 +364,36 @@ bool ChatLink::DecodeBuild(const std::string& link, DecodedBuildLink& out) {
     return true;
 }
 
+// --- Wardrobe template encoding ---
+
+std::string ChatLink::EncodeWardrobe(const DecodedWardrobeLink& w) {
+    std::vector<uint8_t> buf;
+    buf.push_back(LINK_WARDROBE_TMPL);
+
+    auto w16 = [&](uint16_t v) { WriteU16LE(buf, v); };
+    auto dyes = [&](const uint16_t d[4]) { for (int i = 0; i < 4; i++) w16(d[i]); };
+
+    // Exact field order mirrors DecodeWardrobe below.
+    w16(w.aquabreather_skin);
+    w16(w.backpack_skin);   dyes(w.backpack_dyes);
+    w16(w.chest_skin);      dyes(w.chest_dyes);
+    w16(w.boots_skin);      dyes(w.boots_dyes);
+    w16(w.gloves_skin);     dyes(w.gloves_dyes);
+    w16(w.helm_skin);       dyes(w.helm_dyes);
+    w16(w.leggings_skin);   dyes(w.leggings_dyes);
+    w16(w.shoulders_skin);  dyes(w.shoulders_dyes);
+    w16(w.outfit_id);       dyes(w.outfit_dyes);
+    w16(w.aquatic_weapon_a);
+    w16(w.aquatic_weapon_b);
+    w16(w.weapon_a_main);
+    w16(w.weapon_a_off);
+    w16(w.weapon_b_main);
+    w16(w.weapon_b_off);
+    w16(w.visibility_flags);
+
+    return "[&" + Base64Encode(buf.data(), buf.size()) + "]";
+}
+
 // --- Wardrobe template decoding ---
 
 bool ChatLink::DecodeWardrobe(const std::string& link, DecodedWardrobeLink& out) {

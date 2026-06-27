@@ -147,6 +147,9 @@ namespace AlterEgo {
         // Generate build template chat link
         static std::string EncodeBuild(const DecodedBuildLink& build);
 
+        // Generate wardrobe template chat link (inverse of DecodeWardrobe)
+        static std::string EncodeWardrobe(const DecodedWardrobeLink& wardrobe);
+
         // --- Decoding ---
 
         // Detect link type from a chat link string
