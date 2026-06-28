@@ -460,6 +460,7 @@ static int g_FashionTab = 0;           // Equipment tab whose fashion menu was o
 static float g_EquipTabScroll = 0.0f;  // Horizontal scroll offset for equipment tab chip strip
 static float g_BuildTabScroll = 0.0f;  // Horizontal scroll offset for build tab chip strip
 static int g_SelectedBuildTab = 0;     // Build tab filter
+static int g_BuildMenuTab = -1;        // Right-clicked build tab chip (0-based) for the build options menu
 static bool g_ShowQAIcon = true;
 static AlterEgo::Font::Config g_FontConfig; // default = {NexusDefault, "", 16}
 static bool g_CompactCharList = false;
@@ -3663,7 +3664,7 @@ static void RenderEquipmentPanel(const AlterEgo::Character& ch) {
     // Fashion menu: share the right-clicked tab's look as a wardrobe template chat link.
     if (ImGui::BeginPopup("##fashion_menu")) {
         int fTab = (g_FashionTab > 0) ? g_FashionTab : tab;
-        if (ImGui::Selectable("Copy Code")) {
+        if (ImGui::Selectable("Copy Wardrobe Template chat link")) {
             std::string link = BuildWardrobeLink(ch, fTab);
             if (!link.empty()) {
                 CopyToClipboard(link);
@@ -4237,6 +4238,72 @@ static void RenderSkillIcon(uint32_t skill_id, float size);
 static bool DecodeBuildLink(const std::string& link, const std::string& name,
                             AlterEgo::GameMode mode, AlterEgo::SavedBuild& out);
 
+// Encode a live build template (a character's build tab) to a GW2 build chat link [&...].
+// NOTE: BuildTemplate's SpecLine.traits stores choice indices 0-3 directly (see GW2API.h),
+// so they map straight into the chat-link trait fields — no major_traits ID lookup.
+static std::string EncodeBuildTabChatLink(const AlterEgo::BuildTemplate& bt) {
+    auto ProfCode = [](const std::string& p) -> uint8_t {
+        if (p == "Guardian")     return 1;
+        if (p == "Warrior")      return 2;
+        if (p == "Engineer")     return 3;
+        if (p == "Ranger")       return 4;
+        if (p == "Thief")        return 5;
+        if (p == "Elementalist") return 6;
+        if (p == "Mesmer")       return 7;
+        if (p == "Necromancer")  return 8;
+        if (p == "Revenant")     return 9;
+        return 0;
+    };
+
+    AlterEgo::DecodedBuildLink link{};
+    link.profession = ProfCode(bt.profession);
+
+    for (int i = 0; i < 3; i++) {
+        link.specs[i].spec_id = (uint8_t)bt.specializations[i].spec_id;
+        for (int t = 0; t < 3; t++)
+            link.specs[i].traits[t] = (uint8_t)bt.specializations[i].traits[t];
+    }
+
+    auto ToPalette = [&](uint32_t skill_id) -> uint16_t {
+        if (skill_id == 0) return 0;
+        return AlterEgo::GW2API::GetPaletteIdFromSkill(bt.profession, skill_id);
+    };
+    link.terrestrial_skills[0] = ToPalette(bt.terrestrial_skills.heal);
+    link.terrestrial_skills[1] = ToPalette(bt.terrestrial_skills.utilities[0]);
+    link.terrestrial_skills[2] = ToPalette(bt.terrestrial_skills.utilities[1]);
+    link.terrestrial_skills[3] = ToPalette(bt.terrestrial_skills.utilities[2]);
+    link.terrestrial_skills[4] = ToPalette(bt.terrestrial_skills.elite);
+    link.aquatic_skills[0] = ToPalette(bt.aquatic_skills.heal);
+    link.aquatic_skills[1] = ToPalette(bt.aquatic_skills.utilities[0]);
+    link.aquatic_skills[2] = ToPalette(bt.aquatic_skills.utilities[1]);
+    link.aquatic_skills[3] = ToPalette(bt.aquatic_skills.utilities[2]);
+    link.aquatic_skills[4] = ToPalette(bt.aquatic_skills.elite);
+
+    if (bt.profession == "Ranger") {
+        link.pets[0] = (uint8_t)bt.pets.terrestrial[0];
+        link.pets[1] = (uint8_t)bt.pets.terrestrial[1];
+        link.pets[2] = (uint8_t)bt.pets.aquatic[0];
+        link.pets[3] = (uint8_t)bt.pets.aquatic[1];
+    }
+
+    if (bt.profession == "Revenant") {
+        auto LegendByte = [](const std::string& s) -> uint8_t {
+            if (s.size() > 6 && s.substr(0, 6) == "Legend")
+                return (uint8_t)std::atoi(s.c_str() + 6);
+            return 0;
+        };
+        link.legends[0] = LegendByte(bt.legends.terrestrial[0]);
+        link.legends[1] = LegendByte(bt.legends.terrestrial[1]);
+        link.legends[2] = LegendByte(bt.legends.aquatic[0]);
+        link.legends[3] = LegendByte(bt.legends.aquatic[1]);
+    }
+
+    for (auto w : bt.weapons)
+        link.weapons.push_back((uint16_t)w);
+
+    return AlterEgo::ChatLink::EncodeBuild(link);
+}
+
 static void RenderBuildPanel(const AlterEgo::Character& ch) {
     if (ch.build_tabs.empty()) {
         ImGui::TextColored(ImVec4(0.6f, 0.6f, 0.6f, 1.0f), "No build tabs available.");
@@ -4253,7 +4320,43 @@ static void RenderBuildPanel(const AlterEgo::Character& ch) {
             labels.push_back(bt.name.empty() ? ("Tab " + std::to_string(bt.tab)) : bt.name);
             activeMarkers.push_back(bt.is_active);
         }
-        RenderChipStrip(labels, activeMarkers, g_SelectedBuildTab, g_BuildTabScroll, "##build_chips");
+        int buildMenuChip = -1;
+        RenderChipStrip(labels, activeMarkers, g_SelectedBuildTab, g_BuildTabScroll, "##build_chips",
+                        "Right-click for build options", &buildMenuChip);
+        if (buildMenuChip >= 0) {
+            g_BuildMenuTab = buildMenuChip;
+            ImGui::OpenPopup("##build_menu");
+        }
+    }
+
+    // Build menu: actions for the right-clicked build tab (mirrors the equipment
+    // tab Fashion menu). Acts on the right-clicked chip, not the selected one.
+    if (ImGui::BeginPopup("##build_menu")) {
+        int mTab = (g_BuildMenuTab >= 0 && g_BuildMenuTab < (int)ch.build_tabs.size())
+                       ? g_BuildMenuTab : g_SelectedBuildTab;
+        if (mTab < 0 || mTab >= (int)ch.build_tabs.size()) mTab = 0;
+        const auto& mbt = ch.build_tabs[mTab];
+        bool hasPalette = AlterEgo::GW2API::HasPaletteData(mbt.profession);
+        if (!hasPalette)
+            AlterEgo::GW2API::FetchProfessionPaletteAsync(mbt.profession);
+
+        if (ImGui::Selectable(hasPalette ? "Copy Build Chat Link" : "Copy Build Chat Link (loading...)") && hasPalette) {
+            CopyToClipboard(EncodeBuildTabChatLink(mbt));
+            if (APIDefs) APIDefs->GUI_SendAlert("Build link copied!");
+        }
+        if (ImGui::Selectable(hasPalette ? "Save to Library..." : "Save to Library (loading...)") && hasPalette) {
+            g_SaveLibChatLink = EncodeBuildTabChatLink(mbt);
+            std::string defaultName = ch.name + " - " +
+                (mbt.name.empty() ? ("Tab " + std::to_string(mbt.tab)) : mbt.name);
+            snprintf(g_SaveLibName, sizeof(g_SaveLibName), "%s", defaultName.c_str());
+            g_SaveLibMode = 0;
+            g_SaveLibIncludeEquip = false;
+            g_SaveLibEquipTab = ch.active_equipment_tab > 0 ? ch.active_equipment_tab : 1;
+            g_SaveLibCharName = ch.name;
+            g_SaveLibProfession = ch.profession;
+            g_SaveLibDialogOpen = true;
+        }
+        ImGui::EndPopup();
     }
 
     int buildIdx = g_SelectedBuildTab;
@@ -4531,178 +4634,6 @@ static void RenderBuildPanel(const AlterEgo::Character& ch) {
         }
         RenderSkillIcon(bt.terrestrial_skills.elite, skillSz);
         ImGui::EndGroup();
-    }
-
-    ImGui::Spacing();
-    ImGui::Separator();
-
-    // Copy build chat link button
-    bool hasPalette = AlterEgo::GW2API::HasPaletteData(bt.profession);
-    if (!hasPalette)
-        AlterEgo::GW2API::FetchProfessionPaletteAsync(bt.profession);
-    {
-        if (RenderGoldButton(hasPalette ? "Copy Build Chat Link" : "Copy Build Chat Link (loading...)") && hasPalette) {
-            // Map profession name to code
-            auto ProfCode = [](const std::string& p) -> uint8_t {
-                if (p == "Guardian")     return 1;
-                if (p == "Warrior")      return 2;
-                if (p == "Engineer")     return 3;
-                if (p == "Ranger")       return 4;
-                if (p == "Thief")        return 5;
-                if (p == "Elementalist") return 6;
-                if (p == "Mesmer")       return 7;
-                if (p == "Necromancer")  return 8;
-                if (p == "Revenant")     return 9;
-                return 0;
-            };
-
-            AlterEgo::DecodedBuildLink link{};
-            link.profession = ProfCode(bt.profession);
-
-            // Specializations: spec_id and trait choices are already in the right format
-            for (int i = 0; i < 3; i++) {
-                link.specs[i].spec_id = (uint8_t)bt.specializations[i].spec_id;
-                for (int t = 0; t < 3; t++)
-                    link.specs[i].traits[t] = (uint8_t)bt.specializations[i].traits[t];
-            }
-
-            // Skills: convert skill IDs to palette IDs
-            auto ToPalette = [&](uint32_t skill_id) -> uint16_t {
-                if (skill_id == 0) return 0;
-                return AlterEgo::GW2API::GetPaletteIdFromSkill(bt.profession, skill_id);
-            };
-            link.terrestrial_skills[0] = ToPalette(bt.terrestrial_skills.heal);
-            link.terrestrial_skills[1] = ToPalette(bt.terrestrial_skills.utilities[0]);
-            link.terrestrial_skills[2] = ToPalette(bt.terrestrial_skills.utilities[1]);
-            link.terrestrial_skills[3] = ToPalette(bt.terrestrial_skills.utilities[2]);
-            link.terrestrial_skills[4] = ToPalette(bt.terrestrial_skills.elite);
-            link.aquatic_skills[0] = ToPalette(bt.aquatic_skills.heal);
-            link.aquatic_skills[1] = ToPalette(bt.aquatic_skills.utilities[0]);
-            link.aquatic_skills[2] = ToPalette(bt.aquatic_skills.utilities[1]);
-            link.aquatic_skills[3] = ToPalette(bt.aquatic_skills.utilities[2]);
-            link.aquatic_skills[4] = ToPalette(bt.aquatic_skills.elite);
-
-            // Ranger pets
-            if (bt.profession == "Ranger") {
-                link.pets[0] = (uint8_t)bt.pets.terrestrial[0];
-                link.pets[1] = (uint8_t)bt.pets.terrestrial[1];
-                link.pets[2] = (uint8_t)bt.pets.aquatic[0];
-                link.pets[3] = (uint8_t)bt.pets.aquatic[1];
-            }
-
-            // Revenant legends: parse number from "Legend1" etc.
-            if (bt.profession == "Revenant") {
-                auto LegendByte = [](const std::string& s) -> uint8_t {
-                    if (s.size() > 6 && s.substr(0, 6) == "Legend")
-                        return (uint8_t)std::atoi(s.c_str() + 6);
-                    return 0;
-                };
-                link.legends[0] = LegendByte(bt.legends.terrestrial[0]);
-                link.legends[1] = LegendByte(bt.legends.terrestrial[1]);
-                link.legends[2] = LegendByte(bt.legends.aquatic[0]);
-                link.legends[3] = LegendByte(bt.legends.aquatic[1]);
-            }
-
-            // Weapons
-            for (auto w : bt.weapons)
-                link.weapons.push_back((uint16_t)w);
-
-            std::string chatLink = AlterEgo::ChatLink::EncodeBuild(link);
-            CopyToClipboard(chatLink);
-            if (APIDefs) APIDefs->GUI_SendAlert("Build link copied!");
-        }
-    }
-    if (ImGui::IsItemHovered()) {
-        ImGui::BeginTooltip();
-        if (!hasPalette)
-            RenderSpinner("Loading profession data...");
-        else
-            ImGui::Text("Export this build as a GW2 chat link");
-        ImGui::EndTooltip();
-    }
-
-    // Save to Library button — opens dialog
-    ImGui::SameLine();
-    if (RenderGoldButton(hasPalette ? "Save to Library" : "Save to Library (loading...)") && hasPalette) {
-        // Build the chat link
-        auto ProfCodeLib = [](const std::string& p) -> uint8_t {
-            if (p == "Guardian")     return 1;
-            if (p == "Warrior")      return 2;
-            if (p == "Engineer")     return 3;
-            if (p == "Ranger")       return 4;
-            if (p == "Thief")        return 5;
-            if (p == "Elementalist") return 6;
-            if (p == "Mesmer")       return 7;
-            if (p == "Necromancer")  return 8;
-            if (p == "Revenant")     return 9;
-            return 0;
-        };
-
-        AlterEgo::DecodedBuildLink saveLink{};
-        saveLink.profession = ProfCodeLib(bt.profession);
-        for (int i = 0; i < 3; i++) {
-            saveLink.specs[i].spec_id = (uint8_t)bt.specializations[i].spec_id;
-            const auto* specInfo = AlterEgo::GW2API::GetSpecInfo(bt.specializations[i].spec_id);
-            for (int t = 0; t < 3; t++) {
-                int traitId = bt.specializations[i].traits[t];
-                uint8_t choice = 0;
-                if (traitId != 0 && specInfo && specInfo->major_traits.size() >= 9) {
-                    for (int r = 0; r < 3; r++) {
-                        if ((int)specInfo->major_traits[t * 3 + r] == traitId) {
-                            choice = (uint8_t)(r + 1);
-                            break;
-                        }
-                    }
-                }
-                saveLink.specs[i].traits[t] = choice;
-            }
-        }
-        auto ToPaletteLib = [&](uint32_t skill_id) -> uint16_t {
-            if (skill_id == 0) return 0;
-            return AlterEgo::GW2API::GetPaletteIdFromSkill(bt.profession, skill_id);
-        };
-        saveLink.terrestrial_skills[0] = ToPaletteLib(bt.terrestrial_skills.heal);
-        saveLink.terrestrial_skills[1] = ToPaletteLib(bt.terrestrial_skills.utilities[0]);
-        saveLink.terrestrial_skills[2] = ToPaletteLib(bt.terrestrial_skills.utilities[1]);
-        saveLink.terrestrial_skills[3] = ToPaletteLib(bt.terrestrial_skills.utilities[2]);
-        saveLink.terrestrial_skills[4] = ToPaletteLib(bt.terrestrial_skills.elite);
-        saveLink.aquatic_skills[0] = ToPaletteLib(bt.aquatic_skills.heal);
-        saveLink.aquatic_skills[1] = ToPaletteLib(bt.aquatic_skills.utilities[0]);
-        saveLink.aquatic_skills[2] = ToPaletteLib(bt.aquatic_skills.utilities[1]);
-        saveLink.aquatic_skills[3] = ToPaletteLib(bt.aquatic_skills.utilities[2]);
-        saveLink.aquatic_skills[4] = ToPaletteLib(bt.aquatic_skills.elite);
-        if (bt.profession == "Ranger") {
-            saveLink.pets[0] = (uint8_t)bt.pets.terrestrial[0];
-            saveLink.pets[1] = (uint8_t)bt.pets.terrestrial[1];
-            saveLink.pets[2] = (uint8_t)bt.pets.aquatic[0];
-            saveLink.pets[3] = (uint8_t)bt.pets.aquatic[1];
-        }
-        if (bt.profession == "Revenant") {
-            auto LegByte = [](const std::string& s) -> uint8_t {
-                if (s.size() > 6 && s.substr(0, 6) == "Legend")
-                    return (uint8_t)std::atoi(s.c_str() + 6);
-                return 0;
-            };
-            saveLink.legends[0] = LegByte(bt.legends.terrestrial[0]);
-            saveLink.legends[1] = LegByte(bt.legends.terrestrial[1]);
-            saveLink.legends[2] = LegByte(bt.legends.aquatic[0]);
-            saveLink.legends[3] = LegByte(bt.legends.aquatic[1]);
-        }
-        for (auto w : bt.weapons)
-            saveLink.weapons.push_back((uint16_t)w);
-
-        g_SaveLibChatLink = AlterEgo::ChatLink::EncodeBuild(saveLink);
-
-        // Pre-fill dialog state
-        std::string defaultName = ch.name + " - " +
-            (bt.name.empty() ? ("Tab " + std::to_string(bt.tab)) : bt.name);
-        snprintf(g_SaveLibName, sizeof(g_SaveLibName), "%s", defaultName.c_str());
-        g_SaveLibMode = 0;
-        g_SaveLibIncludeEquip = false;
-        g_SaveLibEquipTab = ch.active_equipment_tab > 0 ? ch.active_equipment_tab : 1;
-        g_SaveLibCharName = ch.name;
-        g_SaveLibProfession = ch.profession;
-        g_SaveLibDialogOpen = true;
     }
 
     ImGui::Unindent(4.0f);
