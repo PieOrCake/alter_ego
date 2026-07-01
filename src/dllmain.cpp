@@ -14,6 +14,8 @@
 #include <fstream>
 #include <filesystem>
 #include <chrono>
+#include <ctime>
+#include <cctype>
 #include <atomic>
 #include <functional>
 #include <memory>
@@ -40,7 +42,7 @@
 // Version constants
 #define V_MAJOR 1
 #define V_MINOR 1
-#define V_BUILD 1
+#define V_BUILD 2
 #define V_REVISION 0
 
 // Quick Access icon identifiers
@@ -588,6 +590,170 @@ static bool IsBonusEventJunk(const std::string& name) {
            name.find("Black Lion") != std::string::npos ||
            name.find("Wizard's Vault") != std::string::npos ||
            name.find("Adventure Guide") != std::string::npos;
+}
+
+// Categories the in-game client lists under "Bonus Events" but the public API
+// files elsewhere (usually Historical). Force them into Bonus Events for parity.
+// Add new category IDs here as returning bonus events rotate in.
+static const std::unordered_set<uint32_t> BONUS_EVENT_CATEGORY_OVERRIDES = {
+    452, // Roller Beetle Racing
+    401, // World vs. World Rush
+    400, // Player vs. Player Rush
+    447, // April Fools!
+    67,  // Festival of the Four Winds
+    231, // Dragon Bash
+    386, // Dungeon Rush
+    402, // New Hero Jump Start
+    342, // Extra Life Donation Drive
+    // Already in the Bonus Events group per the API (no relocation needed):
+    //   Fractal Rush (393), Fractal Incursion (462), Gnashbash "Birthday" Celebration (473).
+};
+
+// Relocate override categories into the "Bonus Events" group. Caller must hold g_AchMutex.
+static void ApplyBonusEventOverrides() {
+    if (BONUS_EVENT_CATEGORY_OVERRIDES.empty()) return;
+    AchGroupDef* bonus = nullptr;
+    for (auto& g : g_AchGroups) {
+        if (g.name == "Bonus Events") { bonus = &g; break; }
+    }
+    if (!bonus) return;
+    for (uint32_t cid : BONUS_EVENT_CATEGORY_OVERRIDES) {
+        // Strip the category out of whatever group the API assigned it to
+        for (auto& g : g_AchGroups) {
+            if (&g == bonus) continue;
+            auto& v = g.categories;
+            v.erase(std::remove(v.begin(), v.end(), cid), v.end());
+        }
+        // Add to Bonus Events (only if the category exists and isn't already there)
+        if (g_AchCategories.count(cid) &&
+            std::find(bonus->categories.begin(), bonus->categories.end(), cid) == bonus->categories.end()) {
+            bonus->categories.push_back(cid);
+        }
+    }
+}
+
+// Maps wiki "Special event" row titles to achievement category IDs.
+// Checked case-insensitively as substrings; list most-specific phrases first.
+static const std::vector<std::pair<std::string, uint32_t>> WIKI_EVENT_CATEGORY_KEYWORDS = {
+    {"roller beetle",        452},
+    {"world vs. world rush", 401}, {"wvw rush", 401},
+    {"player vs. player rush",400}, {"pvp rush", 400},
+    {"dungeon rush",         386},
+    {"fractal incursion",    462},
+    {"fractal rush",         393},
+    {"dragon bash",          231},
+    {"festival of the four winds", 67}, {"four winds", 67},
+    {"april fools",          447},
+    {"world boss rush",      228}, {"boss rush", 228},
+    {"new hero jump start",  402},
+    {"extra life",           342},
+    {"gnashblade",           473}, {"gnashbash", 473},
+};
+
+struct ActiveEventResult { std::string name; uint32_t catId; };
+
+// Lowercase copy for case-insensitive matching.
+static std::string AeToLower(std::string s) {
+    std::transform(s.begin(), s.end(), s.begin(),
+                   [](unsigned char c){ return (char)std::tolower(c); });
+    return s;
+}
+
+// Read a single-line wiki template field: "| <key> = <value>" up to end of line.
+// Returns "" if not found. Trims surrounding whitespace.
+static std::string AeWikiField(const std::string& block, const std::string& key) {
+    size_t pos = 0;
+    while ((pos = block.find('|', pos)) != std::string::npos) {
+        size_t lineEnd = block.find('\n', pos);
+        std::string line = block.substr(pos, (lineEnd == std::string::npos ? block.size() : lineEnd) - pos);
+        size_t eq = line.find('=');
+        if (eq != std::string::npos) {
+            std::string name = line.substr(1, eq - 1); // strip leading '|'
+            size_t a = name.find_first_not_of(" \t");
+            size_t b = name.find_last_not_of(" \t");
+            if (a != std::string::npos) name = name.substr(a, b - a + 1);
+            if (AeToLower(name) == AeToLower(key)) {
+                std::string val = line.substr(eq + 1);
+                size_t va = val.find_first_not_of(" \t");
+                size_t vb = val.find_last_not_of(" \t\r");
+                if (va == std::string::npos) return "";
+                return val.substr(va, vb - va + 1);
+            }
+        }
+        pos = (lineEnd == std::string::npos) ? block.size() : lineEnd;
+    }
+    return "";
+}
+
+// Parse "June 30, 2026" -> 20260630. Returns 0 on failure.
+static int AeParseWikiDate(const std::string& s) {
+    static const char* months[] = {"january","february","march","april","may","june",
+        "july","august","september","october","november","december"};
+    std::string low = AeToLower(s);
+    int mon = 0;
+    for (int i = 0; i < 12; ++i) {
+        if (low.rfind(months[i], 0) == 0) { mon = i + 1; break; }
+    }
+    if (!mon) return 0;
+    int day = 0, year = 0;
+    size_t p = low.find_first_of("0123456789");
+    if (p == std::string::npos) return 0;
+    day = std::atoi(low.c_str() + p);
+    size_t comma = low.find(',');
+    if (comma == std::string::npos) return 0;
+    size_t yp = low.find_first_of("0123456789", comma);
+    if (yp == std::string::npos) return 0;
+    year = std::atoi(low.c_str() + yp);
+    if (day < 1 || day > 31 || year < 2012) return 0;
+    return year * 10000 + mon * 100 + day;
+}
+
+// Extract the "== Active events ==" section, find its {{Special event row}} blocks,
+// select the one whose [start,end] window contains today, and map its title to a
+// category ID. Falls back to the first recognised row if dates are unparseable.
+static ActiveEventResult ParseActiveSpecialEvent(const std::string& wikitext, int todayYmd) {
+    ActiveEventResult empty{"", 0};
+    size_t h = wikitext.find("== Active events ==");
+    if (h == std::string::npos) return empty;
+    size_t sectionStart = h + 19;
+    size_t sectionEnd = wikitext.find("\n== ", sectionStart);
+    std::string section = wikitext.substr(sectionStart,
+        (sectionEnd == std::string::npos ? wikitext.size() : sectionEnd) - sectionStart);
+
+    const std::string ROW = "{{Special event row";
+    size_t rp = section.find(ROW);
+    if (rp == std::string::npos) return empty; // no active event
+
+    // Return the active row's title even when no keyword matches (catId 0) — the
+    // caller resolves the category by name, since some events (e.g. "Return to X")
+    // only expose their category in the API while they are live.
+    ActiveEventResult firstRow{"", 0};
+    bool haveFirst = false;
+    while (rp != std::string::npos) {
+        size_t next = section.find(ROW, rp + ROW.size());
+        std::string block = section.substr(rp,
+            (next == std::string::npos ? section.size() : next) - rp);
+        rp = next;
+
+        std::string title = AeWikiField(block, "title");
+        if (title.empty()) continue;
+
+        std::string lowTitle = AeToLower(title);
+        uint32_t catId = 0;
+        for (const auto& kv : WIKI_EVENT_CATEGORY_KEYWORDS) {
+            if (lowTitle.find(kv.first) != std::string::npos) { catId = kv.second; break; }
+        }
+
+        ActiveEventResult r{title, catId};
+        if (!haveFirst) { firstRow = r; haveFirst = true; }
+
+        int startYmd = AeParseWikiDate(AeWikiField(block, "start date"));
+        int endYmd   = AeParseWikiDate(AeWikiField(block, "end date"));
+        if (startYmd && endYmd && todayYmd >= startYmd && todayYmd <= endYmd) {
+            return r; // dated window contains today — definitive
+        }
+    }
+    return firstRow; // no dated match; fall back to first active row
 }
 
 // Optimistic update grace period — protects alert-based increments from stale API snapback
@@ -1620,6 +1786,9 @@ static void LoadAchGroupCache() {
             }
         }
 
+        // Relocate curated bonus-event categories the API misfiles
+        ApplyBonusEventOverrides();
+
         // Build hidden category set
         g_AchHiddenCatIds.clear();
         for (const auto& g : g_AchGroups) {
@@ -1977,6 +2146,8 @@ static void FetchAchGroups() {
             g_AchGroups = std::move(groups);
             g_AchCategories = std::move(cats);
             g_AchIdToCategory = std::move(idToCat);
+            // Relocate curated bonus-event categories the API misfiles
+            ApplyBonusEventOverrides();
             // Build hidden category set
             g_AchHiddenCatIds.clear();
             for (const auto& g : g_AchGroups) {
@@ -1998,154 +2169,82 @@ static void FetchActiveSpecialEvent() {
     if (g_AchActiveEventFetching) return;
     g_AchActiveEventFetching = true;
     std::thread([]() {
-        // Try disk-cached daily response (1-hour TTL) before hitting the API
-        std::string json;
-        std::string dailyCachePath = AlterEgo::GW2API::GetDataDirectory() + "/ach_daily_cache.json";
+        // 6-hour disk cache: {ts, body} wrapper. Events change weekly, so 6h is safe.
+        std::string wikitext;
+        std::string cachePath = AlterEgo::GW2API::GetDataDirectory() + "/wiki_special_event.json";
         try {
-            std::ifstream cf(dailyCachePath);
+            std::ifstream cf(cachePath);
             if (cf.is_open()) {
-                nlohmann::json wrap;
-                cf >> wrap;
+                nlohmann::json wrap; cf >> wrap;
                 if (wrap.is_object() && wrap.contains("ts") && wrap.contains("body")) {
                     int64_t ts = wrap["ts"].get<int64_t>();
                     int64_t now = std::chrono::duration_cast<std::chrono::seconds>(
                         std::chrono::system_clock::now().time_since_epoch()).count();
-                    if (now - ts < 3600 && wrap["body"].is_string()) {
-                        json = wrap["body"].get<std::string>();
-                    }
+                    if (now - ts < 21600 && wrap["body"].is_string())
+                        wikitext = wrap["body"].get<std::string>();
                 }
             }
         } catch (...) {}
 
-        if (json.empty()) {
-            json = Skinventory::HttpClient::Get("https://api.guildwars2.com/v2/achievements/daily");
-            if (!json.empty()) {
+        if (wikitext.empty()) {
+            std::string resp = Skinventory::HttpClient::Get(
+                "https://wiki.guildwars2.com/api.php?action=parse&page=Special_event"
+                "&prop=wikitext&format=json");
+            if (!resp.empty()) {
                 try {
+                    auto j = nlohmann::json::parse(resp);
+                    wikitext = j["parse"]["wikitext"]["*"].get<std::string>();
                     nlohmann::json wrap;
                     wrap["ts"] = std::chrono::duration_cast<std::chrono::seconds>(
                         std::chrono::system_clock::now().time_since_epoch()).count();
-                    wrap["body"] = json;
-                    WriteFileAtomic(dailyCachePath, wrap.dump());
-                } catch (...) {}
+                    wrap["body"] = wikitext;
+                    WriteFileAtomic(cachePath, wrap.dump());
+                } catch (...) { wikitext.clear(); }
             }
         }
-        if (json.empty()) {
-            g_AchActiveEventFetching = false;
-            return;
-        }
-        std::vector<uint32_t> specialAchIds;
-        try {
-            auto j = nlohmann::json::parse(json);
-            if (j.contains("special") && j["special"].is_array()) {
-                for (const auto& entry : j["special"]) {
-                    if (entry.contains("id")) specialAchIds.push_back(entry["id"].get<uint32_t>());
-                }
-            }
-        } catch (...) {
-            g_AchActiveEventFetching = false;
-            return;
-        }
+        if (wikitext.empty()) { g_AchActiveEventFetching = false; return; }
 
-        // Resolve special achievement IDs to their category IDs
-        std::unordered_set<uint32_t> triggerCatIds;
-        {
-            std::lock_guard<std::recursive_mutex> lock(g_AchMutex);
-            for (uint32_t achId : specialAchIds) {
-                auto it = g_AchIdToCategory.find(achId);
-                if (it != g_AchIdToCategory.end()) triggerCatIds.insert(it->second);
-            }
-        }
+        // Today's date as YYYYMMDD (local time — event windows are day-granular).
+        std::time_t tt = std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
+        std::tm lt{};
+#ifdef _WIN32
+        localtime_s(&lt, &tt);
+#else
+        lt = *std::localtime(&tt);
+#endif
+        int todayYmd = (lt.tm_year + 1900) * 10000 + (lt.tm_mon + 1) * 100 + lt.tm_mday;
 
-        // Build keyword list and classify trigger categories as daily or main
-        std::vector<std::string> keywords;
-        std::vector<uint32_t> dailyCats;
-        std::vector<uint32_t> mainCats;
-        std::string eventName;
-        {
-            std::lock_guard<std::recursive_mutex> lock(g_AchMutex);
-
-            for (uint32_t cid : triggerCatIds) {
-                // Check if this is a known festival daily
-                auto festIt = FESTIVAL_MAPPINGS.find(cid);
-                if (festIt != FESTIVAL_MAPPINGS.end()) {
-                    dailyCats.push_back(cid);
-                    if (eventName.empty()) eventName = festIt->second.displayName;
-                    for (const auto& kw : festIt->second.keywords) keywords.push_back(kw);
-                    continue;
-                }
-
-                // Non-festival: classify by category name
-                auto catIt = g_AchCategories.find(cid);
-                if (catIt == g_AchCategories.end()) continue;
-                const auto& name = catIt->second.name;
-
-                // Skip junk
-                if (IsBonusEventJunk(name)) continue;
-
-                if (name.find("Daily") != std::string::npos) {
-                    // Daily bonus event (e.g. "Daily Roller Beetle Racing")
-                    dailyCats.push_back(cid);
-                    // Derive keyword by stripping "Daily " prefix
-                    std::string kw = name;
-                    if (kw.substr(0, 6) == "Daily ") kw = kw.substr(6);
-                    keywords.push_back(kw);
-                    if (eventName.empty()) eventName = kw;
-                } else {
-                    // Main bonus event category (e.g. "Fractal Rush", "Gnashbash")
-                    mainCats.push_back(cid);
-                    keywords.push_back(name);
-                    if (eventName.empty()) eventName = name;
-                }
-            }
-
-            // Search Historical group for categories matching any keyword
-            if (!keywords.empty()) {
-                for (const auto& grp : g_AchGroups) {
-                    if (grp.name != "Historical") continue;
-                    for (uint32_t cid : grp.categories) {
-                        if (triggerCatIds.count(cid)) continue; // already classified
-                        auto catIt = g_AchCategories.find(cid);
-                        if (catIt == g_AchCategories.end()) continue;
-                        const auto& name = catIt->second.name;
-                        for (const auto& kw : keywords) {
-                            if (name.find(kw) != std::string::npos) {
-                                mainCats.push_back(cid);
-                                break;
-                            }
-                        }
-                    }
-                    break;
-                }
-            }
-
-            // Also search Bonus Events group for non-daily, non-junk matching categories
-            if (!keywords.empty()) {
-                for (const auto& grp : g_AchGroups) {
-                    if (grp.name != "Bonus Events") continue;
-                    for (uint32_t cid : grp.categories) {
-                        if (triggerCatIds.count(cid)) continue; // already classified
-                        auto catIt = g_AchCategories.find(cid);
-                        if (catIt == g_AchCategories.end()) continue;
-                        const auto& name = catIt->second.name;
-                        if (IsBonusEventJunk(name)) continue;
-                        if (name.find("Daily") != std::string::npos) continue; // dailies handled above
-                        for (const auto& kw : keywords) {
-                            if (name.find(kw) != std::string::npos) {
-                                mainCats.push_back(cid);
-                                break;
-                            }
-                        }
-                    }
-                    break;
-                }
-            }
-        }
+        ActiveEventResult res = ParseActiveSpecialEvent(wikitext, todayYmd);
 
         {
             std::lock_guard<std::recursive_mutex> lock(g_AchMutex);
-            g_AchActiveMainCatIds = std::move(mainCats);
-            g_AchActiveDailyCatIds = std::move(dailyCats);
-            g_AchActiveEventName = std::move(eventName);
+            // Tidy the display name (drop a leading "Bonus Event: ").
+            std::string display = res.name;
+            const std::string pfx = "Bonus Event: ";
+            if (display.rfind(pfx, 0) == 0) display = display.substr(pfx.size());
+
+            uint32_t catId = res.catId;
+            // Fallback: resolve the category by name against the live category set.
+            // Handles events whose category only appears in the API while active
+            // (e.g. "Return to End of Dragons"), and any event the keyword map misses.
+            if (catId == 0 && !display.empty()) {
+                std::string want = AeToLower(display);
+                for (const auto& kv : g_AchCategories) {
+                    if (AeToLower(kv.second.name) == want) { catId = kv.first; break; }
+                }
+            }
+
+            if (display.empty()) {
+                g_AchActiveMainCatIds.clear();
+                g_AchActiveEventName.clear();
+            } else {
+                g_AchActiveEventName = display;
+                if (catId != 0 && g_AchCategories.count(catId))
+                    g_AchActiveMainCatIds = { catId };
+                else
+                    g_AchActiveMainCatIds.clear(); // name-only banner (no tracked category)
+            }
+            g_AchActiveDailyCatIds.clear(); // wiki path drives main category only
             g_AchActiveEventFetched = true;
             g_AchActiveEventFetching = false;
         }
@@ -12283,7 +12382,7 @@ static void RenderAchievements() {
         };
 
         // Active event — shown at top of tree when a bonus event or festival is active
-        if (!g_AchActiveMainCatIds.empty()) {
+        if (!g_AchActiveMainCatIds.empty() || !g_AchActiveEventName.empty()) {
             static const std::string kEventGroupId = "__active_event__";
             bool forceOpenEvent = g_AchRestoreScroll && (g_AchSelectedGroupId == kEventGroupId);
             if (forceOpenEvent) ImGui::SetNextItemOpen(true);
@@ -12291,6 +12390,13 @@ static void RenderAchievements() {
 
             std::string eventLabel = g_AchActiveEventName.empty() ? "Current Event" : g_AchActiveEventName;
             if (ImGui::TreeNode(eventLabel.c_str())) {
+                if (g_AchActiveMainCatIds.empty()) {
+                    // Recognised event with no tracked achievement category (e.g. a
+                    // pure reward-boost event, or one whose category isn't live yet).
+                    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.6f, 0.6f, 0.6f, 1.0f));
+                    ImGui::TextWrapped("Bonus rewards event - no tracked achievements.");
+                    ImGui::PopStyleColor();
+                }
                 for (uint32_t catId : g_AchActiveMainCatIds) {
                     auto it = g_AchCategories.find(catId);
                     if (it == g_AchCategories.end() || it->second.name.empty()) continue;
